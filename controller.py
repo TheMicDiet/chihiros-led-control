@@ -52,7 +52,7 @@ def _create_command_encoding(cmd_id: int, cmd_mode: int, msg_id: tuple[bytes], p
 
 def _encode_timestamp(ts: datetime.datetime) -> list[int]:
     # note: day is weekday e.g. wednessday
-    return [ts.year - 2000, ts.month, ts.isoweekday, ts.hour, ts.minute, ts.second]
+    return [ts.year - 2000, ts.month, ts.isoweekday(), ts.hour, ts.minute, ts.second]
 
 
 def create_set_time_command(msg_id: tuple[bytes]) -> bytearray:
