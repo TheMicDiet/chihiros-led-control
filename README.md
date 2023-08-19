@@ -8,8 +8,8 @@ This repository contains an example python CLI script that can be used to contro
 - other LED models might work as well but are not tested
 
 ## Requirements
-- a device with bluetooth LE support
-- [Python 3](https://www.python.org/downloads/)
+- a device with bluetooth LE support for sending the commands to the LED
+- [Python 3](https://www.python.org/downloads/) with pip
 
 ## Using the CLI
 ```bash
@@ -30,7 +30,10 @@ python ./chihirosctl.py set-brightness <device-address> 100
 # create an automatic timed setting that turns on the light from 8:00 to 18:00
 python ./chihirosctl.py add-setting <device-address> 8:00 18:00
 
-# enable auto mode to activate timed settings
+# create a setting for specific weekdays with maximum brightness of 75 and ramp up time of 30 minutes
+python ./chihirosctl.py add-setting <device-address> 9:00 18:00 --weekdays Monday --weekdays Tuesday --ramp-up-in-minutes 30 --brightness 75
+
+# enable auto mode to activate the created timed settings
 python ./chihirosctl.py enable-auto-mode <device-address>
 
 # delete a created setting
