@@ -4,12 +4,12 @@ This repository contains an example python script that can be used to control th
 
 
 ## Supported Devices
-- Chihiros LED A2
+- [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
 - other LED models might work as well but are not tested
 
 ## Requirements
 - a device with bluetooth LE support
-- Python 3 (https://www.python.org/downloads/)
+- [Python 3](https://www.python.org/downloads/)
 
 ## Running the script
 ```
