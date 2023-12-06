@@ -31,7 +31,7 @@ python ./chihirosctl.py set-brightness <device-address> 100
 python ./chihirosctl.py add-setting <device-address> 8:00 18:00
 
 # create a setting for specific weekdays with maximum brightness of 75 and ramp up time of 30 minutes
-python ./chihirosctl.py add-setting <device-address> 9:00 18:00 --weekdays Monday --weekdays Tuesday --ramp-up-in-minutes 30 --brightness 75
+python ./chihirosctl.py add-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 75
 
 # enable auto mode to activate the created timed settings
 python ./chihirosctl.py enable-auto-mode <device-address>
