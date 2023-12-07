@@ -5,6 +5,7 @@ This repository contains an example python CLI script that can be used to contro
 
 ## Supported Devices
 - [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
+- [Chihiros WRGB II](https://www.chihirosaquaticstudio.com/products/chihiros-wrgb-ii-led-built-in-bluetooth)
 - other LED models might work as well but are not tested
 
 ## Requirements
@@ -32,6 +33,17 @@ python ./chihirosctl.py add-setting <device-address> 8:00 18:00
 
 # create a setting for specific weekdays with maximum brightness of 75 and ramp up time of 30 minutes
 python ./chihirosctl.py add-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 75
+
+# on RGB models, use the RGB versions of the above commands
+
+# manually set the brightness to 60 red, 80 green, 100 blue on RGB models
+python ./chihirosctl.py set-rgb-brightness <device-address> 60 80 100
+
+# create an automatic timed setting that turns on the light from 8:00 to 18:00
+python ./chihirosctl.py add-rgb-setting <device-address> 8:00 18:00
+
+# create a setting for specific weekdays with maximum brightness of 35, 55, 75 and ramp up time of 30 minutes
+python ./chihirosctl.py add-rgb-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 35 55 75
 
 # enable auto mode to activate the created timed settings
 python ./chihirosctl.py enable-auto-mode <device-address>
