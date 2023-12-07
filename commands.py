@@ -45,7 +45,7 @@ def _create_command_encoding(cmd_id: int, cmd_mode: int, msg_id: tuple[bytes], p
 
 
 def _encode_timestamp(ts: datetime.datetime) -> list[int]:
-    # note: day is weekday e.g. 3 for wednessday
+    # note: day is weekday e.g. 3 for wednesday
     return [ts.year - 2000, ts.month, ts.isoweekday(), ts.hour, ts.minute, ts.second]
 
 
@@ -64,7 +64,7 @@ def create_manual_setting_command(msg_id: tuple[bytes], brightness_level: int) -
 
 def create_add_auto_setting_command(msg_id: tuple[bytes], sunrise: datetime.time, sunset: datetime.time, brightness: int, ramp_up_minutes: int, weekdays: int) -> bytearray:
     """
-    weekdays: int resulting of selection bit mask (Monday Thuesday Wednessday Thursday Friday Saturday Sunday) in decimal
+    weekdays: int resulting of selection bit mask (Monday Tuesday Wednesday Thursday Friday Saturday Sunday) in decimal
     """
     parameters = [sunrise.hour, sunrise.minute, sunset.hour, sunset.minute,
                   ramp_up_minutes, weekdays, brightness, 255, 255, 255, 255, 255, 255, 255]
