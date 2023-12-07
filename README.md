@@ -31,7 +31,7 @@ python ./chihirosctl.py set-brightness <device-address> 100
 python ./chihirosctl.py add-setting <device-address> 8:00 18:00
 
 # create a setting for specific weekdays with maximum brightness of 75 and ramp up time of 30 minutes
-python ./chihirosctl.py add-setting <device-address> 9:00 18:00 --weekdays Monday --weekdays Tuesday --ramp-up-in-minutes 30 --brightness 75
+python ./chihirosctl.py add-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 75
 
 # enable auto mode to activate the created timed settings
 python ./chihirosctl.py enable-auto-mode <device-address>
@@ -80,7 +80,7 @@ With auto mode enabled, the LED can be set to automatically turn on and off at a
 - Mode: **25**
 - Parameters: [ **sunrise hour**, **sunrise minutes**, **sunset hour**, **sunset minutes**, **ramp up minutes**, **weekdays**, **brightness**, 7x **255** ]
 
-The weekdays are encoded as a sequence of 7 bits with the following structure: `Monday Thuesday Wednessday Thursday Friday Saturday Sunday`. A bit is set to 1 if the LED should be on on that day. It is only possible to set one setting per day i.e. no conflicting settings. There is also a maximum of 7 settings.
+The weekdays are encoded as a sequence of 7 bits with the following structure: `Monday Thuesday Wednesday Thursday Friday Saturday Sunday`. A bit is set to 1 if the LED should be on on that day. It is only possible to set one setting per day i.e. no conflicting settings. There is also a maximum of 7 settings.
 
 To deactivate a setting, the same command can be used but the brightness has to be set to **255**.
 

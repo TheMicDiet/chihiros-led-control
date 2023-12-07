@@ -3,7 +3,7 @@ from enum import Enum
 class WeekdaySelect(str, Enum):
     monday = "monday"
     tuesday = "tuesday"
-    wednessday = "wednessday"
+    wednesday = "wednesday"
     thursday = "thursday"
     friday = "friday"
     saturday = "saturday"
@@ -19,7 +19,7 @@ def encode_selected_weekdays(selection: list[WeekdaySelect]) -> int:
         encoding += 64
     if WeekdaySelect.tuesday in selection:
         encoding += 32
-    if WeekdaySelect.wednessday in selection:
+    if WeekdaySelect.wednesday in selection:
         encoding += 16
     if WeekdaySelect.thursday in selection:
         encoding += 8
