@@ -30,8 +30,17 @@ def list_devices(timeout: Annotated[int, typer.Option()] = 5):
 
 @app.command()
 def set_brightness(device_address: str, brightness: Annotated[int, typer.Argument(min=0, max=100)]):
-    cmd = commands.create_manual_setting_command(msg_id, brightness)
+    cmd = commands.create_manual_setting_command(msg_id, 0, brightness)
     asyncio.run(_execute_command(device_address, cmd))
+
+@app.command()
+def set_rgb_brightness(device_address: str, brightness: Annotated[tuple[int, int, int], typer.Argument()]):
+    global msg_id
+    cmds = []
+    for c, b in enumerate(brightness):
+        cmds.append(commands.create_manual_setting_command(msg_id, c, b))
+        msg_id = commands.next_message_id(msg_id)
+    asyncio.run(_execute_command(device_address, *cmds))
 
 @app.command()
 def add_setting(device_address: str, 
@@ -40,6 +49,16 @@ def add_setting(device_address: str,
                      max_brightness: Annotated[int, typer.Option(max=100, min=0)] = 100,
                      ramp_up_in_minutes: Annotated[int, typer.Option(min=0, max=150)] = 0, 
                      weekdays: Annotated[List[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday]):    
+    cmd = commands.create_add_auto_setting_command(msg_id, sunrise.time(), sunset.time(), (max_brightness, 255, 255), ramp_up_in_minutes, encode_selected_weekdays(weekdays))
+    asyncio.run(_execute_command(device_address, cmd))
+
+@app.command()
+def add_rgb_setting(device_address: str,
+                         sunrise: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
+                         sunset: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
+                         max_brightness: Annotated[tuple[int, int, int], typer.Option()] = (100, 100, 100),
+                         ramp_up_in_minutes: Annotated[int, typer.Option(min=0, max=150)] = 0,
+                         weekdays: Annotated[List[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday]):
     cmd = commands.create_add_auto_setting_command(msg_id, sunrise.time(), sunset.time(), max_brightness, ramp_up_in_minutes, encode_selected_weekdays(weekdays))
     asyncio.run(_execute_command(device_address, cmd))
 

@@ -53,27 +53,29 @@ def create_set_time_command(msg_id: tuple[bytes]) -> bytearray:
     return _create_command_encoding(90, 9, msg_id, _encode_timestamp(datetime.datetime.now()))
 
 
-def create_manual_setting_command(msg_id: tuple[bytes], brightness_level: int) -> bytearray:
+def create_manual_setting_command(msg_id: tuple[bytes], color: int, brightness_level: int) -> bytearray:
     """
     set brightness
+    param: color: 0-2 (0 is red, 1 is green, 2 is blue; on non-RGB models, 0 is white)
     param: brightness_level: 0 - 100
     """
-    color = 0  # white
     return _create_command_encoding(90, 7, msg_id, [color, brightness_level])
 
 
-def create_add_auto_setting_command(msg_id: tuple[bytes], sunrise: datetime.time, sunset: datetime.time, brightness: int, ramp_up_minutes: int, weekdays: int) -> bytearray:
+def create_add_auto_setting_command(msg_id: tuple[bytes], sunrise: datetime.time, sunset: datetime.time, brightness: tuple[int, int, int], ramp_up_minutes: int, weekdays: int) -> bytearray:
     """
+    brightness: tuple of 3 ints for red, green, and blue brightness, respectively
+                on non-RGB models, set to (white brightness, 255, 255)
     weekdays: int resulting of selection bit mask (Monday Tuesday Wednesday Thursday Friday Saturday Sunday) in decimal
     """
     parameters = [sunrise.hour, sunrise.minute, sunset.hour, sunset.minute,
-                  ramp_up_minutes, weekdays, brightness, 255, 255, 255, 255, 255, 255, 255]
+                  ramp_up_minutes, weekdays, *brightness, 255, 255, 255, 255, 255]
 
     return _create_command_encoding(165, 25, msg_id, parameters)
 
 
 def create_delete_auto_setting_command(msg_id: tuple[bytes], sunrise: datetime.time, sunset: datetime.time, ramp_up_minutes: int, weekdays: int) -> bytearray:
-    return create_add_auto_setting_command(msg_id, sunrise, sunset, 255, ramp_up_minutes, weekdays)
+    return create_add_auto_setting_command(msg_id, sunrise, sunset, (255, 255, 255), ramp_up_minutes, weekdays)
 
 
 def create_reset_auto_settings_command(msg_id: tuple[bytes]) -> bytearray:

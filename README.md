@@ -5,6 +5,7 @@ This repository contains an example python CLI script that can be used to contro
 
 ## Supported Devices
 - [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
+- [Chihiros WRGB II](https://www.chihirosaquaticstudio.com/products/chihiros-wrgb-ii-led-built-in-bluetooth)
 - other LED models might work as well but are not tested
 
 ## Requirements
@@ -32,6 +33,17 @@ python ./chihirosctl.py add-setting <device-address> 8:00 18:00
 
 # create a setting for specific weekdays with maximum brightness of 75 and ramp up time of 30 minutes
 python ./chihirosctl.py add-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 75
+
+# on RGB models, use the RGB versions of the above commands
+
+# manually set the brightness to 60 red, 80 green, 100 blue on RGB models
+python ./chihirosctl.py set-rgb-brightness <device-address> 60 80 100
+
+# create an automatic timed setting that turns on the light from 8:00 to 18:00
+python ./chihirosctl.py add-rgb-setting <device-address> 8:00 18:00
+
+# create a setting for specific weekdays with maximum brightness of 35, 55, 75 and ramp up time of 30 minutes
+python ./chihirosctl.py add-rgb-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 35 55 75
 
 # enable auto mode to activate the created timed settings
 python ./chihirosctl.py enable-auto-mode <device-address>
@@ -65,8 +77,9 @@ The command length is the number of parameters + 5.
 The LED can be set to a specific brightness by sending the following command with the following options:
 - Command ID: **90**
 - Mode: **7**
-- Parameters: [ **Color** (0), **Brightness** (0 - 100)]
+- Parameters: [ **Color** (0-2), **Brightness** (0 - 100)]
 
+On non-RGB models, the color parameter should be set to 0 to indicate white. On RGB models, each color's brightness is sent as a separate command. Red is 0, green is 1, blue is 2.
 
 ### Auto Mode
 To switch to auto mode, the following command can be used:
@@ -78,9 +91,11 @@ With auto mode enabled, the LED can be set to automatically turn on and off at a
 
 - Command ID: **165**
 - Mode: **25**
-- Parameters: [ **sunrise hour**, **sunrise minutes**, **sunset hour**, **sunset minutes**, **ramp up minutes**, **weekdays**, **brightness**, 7x **255** ]
+- Parameters: [ **sunrise hour**, **sunrise minutes**, **sunset hour**, **sunset minutes**, **ramp up minutes**, **weekdays**, **red brightness**, **green brightness**, **blue brightness**, 5x **255** ]
 
 The weekdays are encoded as a sequence of 7 bits with the following structure: `Monday Thuesday Wednesday Thursday Friday Saturday Sunday`. A bit is set to 1 if the LED should be on on that day. It is only possible to set one setting per day i.e. no conflicting settings. There is also a maximum of 7 settings.
+
+On non-RGB models, the desired brightness should be set as the red brightness while the other two colors should be set to **255**.
 
 To deactivate a setting, the same command can be used but the brightness has to be set to **255**.
 
