@@ -12,7 +12,7 @@ dynamic = ["version", "dependencies"]
 description = "Chihiros LED control without the official vendor app"
 readme = "README.md"
 authors = [
-    {name = "Michael Dietrich", email = "michael_dietrich@outlook.com"}
+    {name = "Michael Dietrich", email = "github@mi-dietrich.de"}
 ]
 license = {text = "MIT"}
 classifiers = [
