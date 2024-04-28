@@ -17,42 +17,42 @@ This repository contains an example python CLI script that can be used to contro
 # setup the environment
 python -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 
 # show help
-python ./chihirosctl.py --help
+chihirosctl --help
 
 # discover devices
-python ./chihirosctl.py list-devices
+chihirosctl list-devices
 
 # manually set the brightness to 100
-python ./chihirosctl.py set-brightness <device-address> 100
+chihirosctl set-brightness <device-address> 100
 
 # create an automatic timed setting that turns on the light from 8:00 to 18:00
-python ./chihirosctl.py add-setting <device-address> 8:00 18:00
+chihirosctl add-setting <device-address> 8:00 18:00
 
 # create a setting for specific weekdays with maximum brightness of 75 and ramp up time of 30 minutes
-python ./chihirosctl.py add-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 75
+chihirosctl add-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 75
 
 # on RGB models, use the RGB versions of the above commands
 
 # manually set the brightness to 60 red, 80 green, 100 blue on RGB models
-python ./chihirosctl.py set-rgb-brightness <device-address> 60 80 100
+chihirosctl set-rgb-brightness <device-address> 60 80 100
 
 # create an automatic timed setting that turns on the light from 8:00 to 18:00
-python ./chihirosctl.py add-rgb-setting <device-address> 8:00 18:00
+chihirosctl add-rgb-setting <device-address> 8:00 18:00
 
 # create a setting for specific weekdays with maximum brightness of 35, 55, 75 and ramp up time of 30 minutes
-python ./chihirosctl.py add-rgb-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 35 55 75
+chihirosctl add-rgb-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 35 55 75
 
 # enable auto mode to activate the created timed settings
-python ./chihirosctl.py enable-auto-mode <device-address>
+chihirosctl enable-auto-mode <device-address>
 
 # delete a created setting
-python ./chihirosctl.py delete-setting <device-address> 8:00 18:00
+chihirosctl delete-setting <device-address> 8:00 18:00
 
 # reset all created settings
-python ./chihirosctl.py reset-settings <device-address>
+chihirosctl reset-settings <device-address>
 
 ```
 
@@ -69,9 +69,9 @@ The commands are sent as a byte array with the following structure:
 
 The checksum is calculated by XORing all bytes of the command together. The checksum is then added to the command as the last byte.
 
-The message id is a 16 bit number that is incremented with each command. It is split into two bytes. The first byte is the high byte and the second byte is the low byte. 
+The message id is a 16 bit number that is incremented with each command. It is split into two bytes. The first byte is the high byte and the second byte is the low byte.
 
-The command length is the number of parameters + 5. 
+The command length is the number of parameters + 5.
 
 ### Manual Mode
 The LED can be set to a specific brightness by sending the following command with the following options:

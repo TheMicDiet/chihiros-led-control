@@ -1,0 +1,42 @@
+[build-system]
+requires = [
+    "setuptools==69.0.3",
+    "setuptools_scm[toml]==8.0.4",
+    "wheel==0.42.0",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chihiros-led-control"
+dynamic = ["version", "dependencies"]
+description = "Chihiros LED control without the official vendor app"
+readme = "README.md"
+authors = [
+    {name = "Michael Dietrich", email = "michael_dietrich@outlook.com"}
+]
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+keywords = ["chihiros", "bluetooth", "lib"]
+
+requires-python = ">=3.10.0"
+
+[project.urls]
+"Source Code" = "https://github.com/TheMicDiet/chihiros-led-control"
+"Bug Reports" = "https://github.com/TheMicDiet/chihiros-led-control/issues"
+"Home-page"   = "https://github.com/TheMicDiet/chihiros-led-control"
+
+[tool.setuptools]
+platforms = ["any"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["chihiros_led_control*"]
+
+[tool.setuptools_scm]
+
+
+[project.scripts]
+chihirosctl = "chihiros_led_control.chihirosctl:app"
