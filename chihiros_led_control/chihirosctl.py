@@ -1,8 +1,9 @@
 """Chihiros led control CLI entrypoint."""
 
 import asyncio
+import inspect
 from datetime import datetime
-from typing import List
+from typing import Any
 
 import typer
 from bleak import BleakScanner
@@ -11,7 +12,7 @@ from rich.table import Table
 from typing_extensions import Annotated
 
 from chihiros_led_control import commands
-from chihiros_led_control.device.fallback import Fallback
+from chihiros_led_control.device import get_device_from_address
 from chihiros_led_control.weekday_encoding import WeekdaySelect
 
 UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
@@ -22,6 +23,20 @@ UART_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 app = typer.Typer()
 
 msg_id = commands.next_message_id()
+
+
+def _run_device_func(device_address: str, **kwargs: Any) -> None:
+    command_name = inspect.stack()[1][3]
+
+    async def _async_func() -> None:
+        dev = await get_device_from_address(device_address)
+        if hasattr(dev, command_name):
+            await getattr(dev, command_name)(**kwargs)
+        else:
+            print(f"{dev.__class__.__name__} doesn't support {command_name}")
+            raise typer.Abort()
+
+    asyncio.run(_async_func())
 
 
 @app.command()
@@ -38,30 +53,14 @@ def list_devices(timeout: Annotated[int, typer.Option()] = 5) -> None:
 def set_brightness(
     device_address: str, brightness: Annotated[int, typer.Argument(min=0, max=100)]
 ) -> None:
-    async def _set_brightness() -> None:
-        ble_dev = await BleakScanner.find_device_by_address(  # type: ignore
-            device_address, macos=dict(use_bdaddr=True)
-        )
-        if ble_dev:
-            dev = Fallback(ble_dev)
-            await dev.set_brightness(brightness)
-
-    asyncio.run(_set_brightness())
+    _run_device_func(device_address, brightness=brightness)
 
 
 @app.command()
 def set_rgb_brightness(
     device_address: str, brightness: Annotated[tuple[int, int, int], typer.Argument()]
 ) -> None:
-    async def _set_rgb_brightness() -> None:
-        ble_dev = await BleakScanner.find_device_by_address(  # type: ignore
-            device_address, macos=dict(use_bdaddr=True)
-        )
-        if ble_dev:
-            dev = Fallback(ble_dev)
-            await dev.set_rgb_brightness(brightness)
-
-    asyncio.run(_set_rgb_brightness())
+    _run_device_func(device_address, brightness=brightness)
 
 
 @app.command()
@@ -71,19 +70,16 @@ def add_setting(
     sunset: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
     max_brightness: Annotated[int, typer.Option(max=100, min=0)] = 100,
     ramp_up_in_minutes: Annotated[int, typer.Option(min=0, max=150)] = 0,
-    weekdays: Annotated[List[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday],
+    weekdays: Annotated[list[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday],
 ) -> None:
-    async def _add_setting() -> None:
-        ble_dev = await BleakScanner.find_device_by_address(  # type: ignore
-            device_address, macos=dict(use_bdaddr=True)
-        )
-        if ble_dev:
-            dev = Fallback(ble_dev)
-            await dev.add_setting(
-                sunrise, sunset, max_brightness, ramp_up_in_minutes, weekdays
-            )
-
-    asyncio.run(_add_setting())
+    _run_device_func(
+        device_address,
+        sunrise=sunrise,
+        sunset=sunset,
+        max_brightness=max_brightness,
+        ramp_up_in_minutes=ramp_up_in_minutes,
+        weekdays=weekdays,
+    )
 
 
 @app.command()
@@ -93,19 +89,16 @@ def add_rgb_setting(
     sunset: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
     max_brightness: Annotated[tuple[int, int, int], typer.Option()] = (100, 100, 100),
     ramp_up_in_minutes: Annotated[int, typer.Option(min=0, max=150)] = 0,
-    weekdays: Annotated[List[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday],
+    weekdays: Annotated[list[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday],
 ) -> None:
-    async def _add_rgb_setting() -> None:
-        ble_dev = await BleakScanner.find_device_by_address(  # type: ignore
-            device_address, macos=dict(use_bdaddr=True)
-        )
-        if ble_dev:
-            dev = Fallback(ble_dev)
-            await dev.add_rgb_setting(
-                sunrise, sunset, max_brightness, ramp_up_in_minutes, weekdays
-            )
-
-    asyncio.run(_add_rgb_setting())
+    _run_device_func(
+        device_address,
+        sunrise=sunrise,
+        sunset=sunset,
+        max_brightness=max_brightness,
+        ramp_up_in_minutes=ramp_up_in_minutes,
+        weekdays=weekdays,
+    )
 
 
 @app.command()
@@ -114,44 +107,25 @@ def remove_setting(
     sunrise: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
     sunset: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
     ramp_up_in_minutes: Annotated[int, typer.Option(min=0, max=150)] = 0,
-    weekdays: Annotated[List[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday],
+    weekdays: Annotated[list[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday],
 ) -> None:
-    async def _remove_setting() -> None:
-        ble_dev = await BleakScanner.find_device_by_address(  # type: ignore
-            device_address, macos=dict(use_bdaddr=True)
-        )
-        if ble_dev:
-            dev = Fallback(ble_dev)
-            await dev.remove_setting(sunrise, sunset, ramp_up_in_minutes, weekdays)
-
-    asyncio.run(_remove_setting())
+    _run_device_func(
+        device_address,
+        sunrise=sunrise,
+        sunset=sunset,
+        ramp_up_in_minutes=ramp_up_in_minutes,
+        weekdays=weekdays,
+    )
 
 
 @app.command()
 def reset_settings(device_address: str) -> None:
-    async def _reset_setting() -> None:
-        ble_dev = await BleakScanner.find_device_by_address(  # type: ignore
-            device_address, macos=dict(use_bdaddr=True)
-        )
-        if ble_dev:
-            dev = Fallback(ble_dev)
-            await dev.reset_settings()
-
-    asyncio.run(_reset_setting())
+    _run_device_func(device_address)
 
 
 @app.command()
 def enable_auto_mode(device_address: str) -> None:
-    async def _enable_auto_mode() -> None:
-        ble_dev = await BleakScanner.find_device_by_address(  # type: ignore
-            device_address, macos=dict(use_bdaddr=True)
-        )
-        if ble_dev:
-            dev = Fallback(ble_dev)
-            print("Enabling auto mode")
-            await dev.enable_auto_mode()
-
-    asyncio.run(_enable_auto_mode())
+    _run_device_func(device_address)
 
 
 if __name__ == "__main__":
