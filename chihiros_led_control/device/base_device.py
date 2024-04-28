@@ -1,4 +1,5 @@
 """Module defining a base device class."""
+
 import asyncio
 import logging
 
@@ -34,6 +35,7 @@ class BaseDevice:
 
     TODO: Make it an abstract class
     """
+
     _model: str | None = None
     _msg_id = commands.next_message_id()
     _logger: logging.Logger
@@ -41,6 +43,7 @@ class BaseDevice:
     def __init__(
         self, ble_device: BLEDevice, advertisement_data: AdvertisementData | None = None
     ) -> None:
+        """Create a new device."""
         self._ble_device = ble_device
         self._logger = logging.getLogger(ble_device.address.replace(":", "-"))
         self._advertisement_data = advertisement_data
