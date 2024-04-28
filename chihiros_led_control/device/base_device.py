@@ -1,3 +1,4 @@
+"""Module defining a base device class."""
 import asyncio
 import logging
 
@@ -29,6 +30,10 @@ class CharacteristicMissingError(Exception):
 
 
 class BaseDevice:
+    """Base device class used by device classes.
+
+    TODO: Make it an abstract class
+    """
     _model: str | None = None
     _msg_id = commands.next_message_id()
     _logger: logging.Logger
@@ -75,11 +80,6 @@ class BaseDevice:
 
     @property
     def address(self) -> str:
-        """Return the address."""
-        return self._ble_device.address
-
-    @property
-    def _address(self) -> str:
         """Return the address."""
         return self._ble_device.address
 
