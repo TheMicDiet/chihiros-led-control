@@ -37,6 +37,7 @@ class BaseDevice:
     """
 
     _model: str | None = None
+    _code: str = ""
     _msg_id = commands.next_message_id()
     _logger: logging.Logger
 
@@ -80,6 +81,11 @@ class BaseDevice:
         """Get next message id."""
         self._msg_id = commands.next_message_id(self._msg_id)
         return self._msg_id
+
+    @property
+    def code(self) -> str:
+        """Return the code."""
+        return self._code
 
     @property
     def address(self) -> str:
