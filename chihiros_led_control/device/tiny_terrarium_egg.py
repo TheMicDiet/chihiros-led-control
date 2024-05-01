@@ -1,3 +1,5 @@
+"""Tiny Terraform egg device Model."""
+
 import typer
 from typing_extensions import Annotated
 
@@ -6,6 +8,8 @@ from chihiros_led_control.device.base_device import BaseDevice
 
 
 class TinyTerrariumEgg(BaseDevice):
+    """Tiny Terraform egg device Class."""
+
     _model: str = "TinyTerrariumEgg"
     _code: str = "DYDD"
 
@@ -13,9 +17,9 @@ class TinyTerrariumEgg(BaseDevice):
         self, brightness: Annotated[tuple[int, int, int], typer.Argument()]
     ) -> None:
         """Set RGB brightness."""
-        for c, b in enumerate(brightness):
-            cmd = commands.create_manual_setting_command(self.get_next_msg_id(), c, b)
-            await self._send_command(cmd, 3)
+        # Ignore blue value
+        await self.set_red_brightness(brightness[0])
+        await self.set_green_brightness(brightness[1])
 
     async def set_red_brightness(
         self, brightness: Annotated[int, typer.Argument(min=0, max=100)]
@@ -35,9 +39,12 @@ class TinyTerrariumEgg(BaseDevice):
         )
         await self._send_command(cmd, 3)
 
+    async def turn_on(self) -> None:
+        """Turn on light."""
+        await self.set_red_brightness(100)
+        await self.set_green_brightness(100)
+
     async def turn_off(self) -> None:
         """Turn off light."""
-        cmd = commands.create_manual_setting_command(self.get_next_msg_id(), 0, 0)
-        await self._send_command(cmd, 3)
-        cmd = commands.create_manual_setting_command(self.get_next_msg_id(), 1, 0)
-        await self._send_command(cmd, 3)
+        await self.set_red_brightness(0)
+        await self.set_green_brightness(0)
