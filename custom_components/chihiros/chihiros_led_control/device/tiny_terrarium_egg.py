@@ -3,8 +3,8 @@
 import typer
 from typing_extensions import Annotated
 
-from chihiros_led_control import commands
-from chihiros_led_control.device.base_device import BaseDevice
+from .. import commands
+from .base_device import BaseDevice
 
 
 class TinyTerrariumEgg(BaseDevice):

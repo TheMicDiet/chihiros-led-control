@@ -1,22 +1,24 @@
+"""Module defining fallback device."""
+
 from datetime import datetime
 
 import typer
 from typing_extensions import Annotated
 
-from chihiros_led_control import commands
-from chihiros_led_control.device.base_device import BaseDevice
-from chihiros_led_control.weekday_encoding import (
-    WeekdaySelect,
-    encode_selected_weekdays,
-)
+from .. import commands
+from ..weekday_encoding import WeekdaySelect, encode_selected_weekdays
+from .base_device import BaseDevice
 
 
 class Fallback(BaseDevice):
+    """Fallback device used when a device is not completely supported yet."""
+
     _model = "fallback"
 
     async def set_brightness(
         self, brightness: Annotated[int, typer.Argument(min=0, max=100)]
     ) -> None:
+        """Set light brightness."""
         cmd = commands.create_manual_setting_command(
             self.get_next_msg_id(), 0, brightness
         )
@@ -25,6 +27,7 @@ class Fallback(BaseDevice):
     async def set_rgb_brightness(
         self, brightness: Annotated[tuple[int, int, int], typer.Argument()]
     ) -> None:
+        """Set RGB brightness."""
         for c, b in enumerate(brightness):
             cmd = commands.create_manual_setting_command(self.get_next_msg_id(), c, b)
             await self._send_command(cmd, 3)
@@ -39,6 +42,7 @@ class Fallback(BaseDevice):
             WeekdaySelect.everyday
         ],
     ) -> None:
+        """Add an automation setting to the light."""
         cmd = commands.create_add_auto_setting_command(
             self.get_next_msg_id(),
             sunrise.time(),
@@ -63,6 +67,7 @@ class Fallback(BaseDevice):
             WeekdaySelect.everyday
         ],
     ) -> None:
+        """Add an automation setting to the RGB light."""
         cmd = commands.create_add_auto_setting_command(
             self.get_next_msg_id(),
             sunrise.time(),
@@ -82,6 +87,7 @@ class Fallback(BaseDevice):
             WeekdaySelect.everyday
         ],
     ) -> None:
+        """Remove an automation setting from the light."""
         cmd = commands.create_delete_auto_setting_command(
             self.get_next_msg_id(),
             sunrise.time(),
@@ -92,16 +98,17 @@ class Fallback(BaseDevice):
         await self._send_command(cmd, 3)
 
     async def reset_settings(self) -> None:
+        """Remove all automation settings from the light."""
         cmd = commands.create_reset_auto_settings_command(self.get_next_msg_id())
         await self._send_command(cmd, 3)
 
     async def enable_auto_mode(self) -> None:
-        print("Enabling auto mode")
+        """Enable auto mode of the light."""
         switch_cmd = commands.create_switch_to_auto_mode_command(self.get_next_msg_id())
         time_cmd = commands.create_set_time_command(self.get_next_msg_id())
         await self._send_command(switch_cmd, 3)
         await self._send_command(time_cmd, 3)
 
     async def turn_off(self) -> None:
-        """Turn off all light."""
+        """Turn off the light."""
         await self.set_rgb_brightness((0, 0, 0))

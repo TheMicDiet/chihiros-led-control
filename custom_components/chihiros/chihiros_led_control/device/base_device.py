@@ -17,8 +17,8 @@ from bleak_retry_connector import (
     retry_bluetooth_connection_error,
 )
 
-from chihiros_led_control import commands
-from chihiros_led_control.const import UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
+from .. import commands
+from ..const import UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
 
 DEFAULT_ATTEMPTS = 3
 
