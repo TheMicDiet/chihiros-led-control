@@ -7,14 +7,17 @@ from typing import Callable
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 
+from ..exception import DeviceNotFound
+from .a_ii_a2 import AIIA2
 from .base_device import BaseDevice
 from .fallback import Fallback
 from .tiny_terrarium_egg import TinyTerrariumEgg
+from .wrgb2 import WRGBII
 
 CODE2MODEL = {}
 for name, obj in inspect.getmembers(sys.modules[__name__]):
     if inspect.isclass(obj) and issubclass(obj, BaseDevice):
-        CODE2MODEL[obj._code] = obj
+        CODE2MODEL[obj._model_code] = obj
 
 
 def get_model_class_from_name(device_name: str) -> Callable[[BLEDevice], BaseDevice]:
@@ -31,13 +34,16 @@ async def get_device_from_address(device_address: str) -> BaseDevice:
         dev: BaseDevice = model_class(ble_dev)
         return dev
 
-    raise
+    raise DeviceNotFound
 
 
 __all__ = [
     "TinyTerrariumEgg",
+    "AIIA2",
+    "WRGBII",
     "FallBack",
     "BaseDevice",
+    "RGBMode",
     "CODE2MODEL",
     "get_device_from_address",
     "get_model_class_from_name",

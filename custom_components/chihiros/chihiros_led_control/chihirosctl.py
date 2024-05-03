@@ -12,7 +12,7 @@ from rich.table import Table
 from typing_extensions import Annotated
 
 from . import commands
-from .device import get_device_from_address
+from .device import get_device_from_address, get_model_class_from_name
 from .weekday_encoding import WeekdaySelect
 
 UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
@@ -45,12 +45,37 @@ def list_devices(timeout: Annotated[int, typer.Option()] = 5) -> None:
 
     TODO: add an option to show only Chihiros devices
     """
-    table = Table("Name", "Address")
+    table = Table("Name", "Address", "Model")
     discovered_devices = asyncio.run(BleakScanner.discover(timeout=timeout))
     for device in discovered_devices:
-        table.add_row(device.name, device.address)
+        assert device.name is not None
+        model_class = get_model_class_from_name(device.name)
+        model_name = model_class.model_name if model_class.model_code else "???"  # type: ignore
+        table.add_row(device.name, device.address, model_name)
     print("Discovered the following devices:")
     print(table)
+
+
+@app.command()
+def turn_on(device_address: str) -> None:
+    """Turn on a light."""
+    _run_device_func(device_address)
+
+
+@app.command()
+def turn_off(device_address: str) -> None:
+    """Turn off a light."""
+    _run_device_func(device_address)
+
+
+@app.command()
+def set_color_brightness(
+    device_address: str,
+    color: int,
+    brightness: Annotated[int, typer.Argument(min=0, max=100)],
+) -> None:
+    """Set color brightness of a light."""
+    _run_device_func(device_address, color=color, brightness=brightness)
 
 
 @app.command()
@@ -58,7 +83,7 @@ def set_brightness(
     device_address: str, brightness: Annotated[int, typer.Argument(min=0, max=100)]
 ) -> None:
     """Set brightness of a light."""
-    _run_device_func(device_address, brightness=brightness)
+    set_color_brightness(device_address, color=0, brightness=brightness)
 
 
 @app.command()

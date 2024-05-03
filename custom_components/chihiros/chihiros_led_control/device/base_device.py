@@ -2,7 +2,10 @@
 
 import asyncio
 import logging
+from abc import ABC, ABCMeta
+from datetime import datetime
 
+import typer
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 from bleak.backends.service import BleakGATTCharacteristic  # type: ignore
@@ -16,9 +19,12 @@ from bleak_retry_connector import (
     establish_connection,
     retry_bluetooth_connection_error,
 )
+from typing_extensions import Annotated
 
 from .. import commands
 from ..const import UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
+from ..exception import CharacteristicMissingError
+from ..weekday_encoding import WeekdaySelect, encode_selected_weekdays
 
 DEFAULT_ATTEMPTS = 3
 
@@ -26,18 +32,21 @@ DISCONNECT_DELAY = 120
 BLEAK_BACKOFF_TIME = 0.25
 
 
-class CharacteristicMissingError(Exception):
-    """Raised when a characteristic is missing."""
+class _classproperty(property):
+    def __get__(self, owner_self: object, owner_cls: ABCMeta) -> str:
+        ret: str = self.fget(owner_cls)
+        return ret
 
 
-class BaseDevice:
+class BaseDevice(ABC):
     """Base device class used by device classes.
 
     TODO: Make it an abstract class
     """
 
-    _model: str | None = None
-    _code: str = ""
+    _model_name: str | None = None
+    _model_code: str = ""
+    _colors: dict[str, int] = {}
     _msg_id = commands.next_message_id()
     _logger: logging.Logger
 
@@ -56,7 +65,9 @@ class BaseDevice:
         self._connect_lock: asyncio.Lock = asyncio.Lock()
         self._expected_disconnect = False
         self.loop = asyncio.get_running_loop()
-        assert self._model is not None
+        assert self._model_name is not None
+
+    # Base methods
 
     def set_log_level(self, level: int | str) -> None:
         """Set log level."""
@@ -82,10 +93,20 @@ class BaseDevice:
         self._msg_id = commands.next_message_id(self._msg_id)
         return self._msg_id
 
+    @_classproperty
+    def model_name(self) -> str | None:
+        """Get the model of the device."""
+        return self._model_name
+
+    @_classproperty
+    def model_code(self) -> str:
+        """Return the model code."""
+        return self._model_code
+
     @property
-    def code(self) -> str:
-        """Return the code."""
-        return self._code
+    def colors(self) -> dict[str, int]:
+        """Return the colors."""
+        return self._colors
 
     @property
     def address(self) -> str:
@@ -106,14 +127,129 @@ class BaseDevice:
             return self._advertisement_data.rssi
         return None
 
-    @property
-    def model(self) -> str | None:
-        """Get the model of the device."""
-        return self._model
+    # Command methods
+
+    async def set_color_brightness(
+        self,
+        brightness: Annotated[int, typer.Argument(min=0, max=100)],
+        color: str | int = 0,
+    ) -> None:
+        """Set brightness of a color."""
+        color_id: int | None = None
+        if isinstance(color, int) and color in self._colors.values():
+            color_id = color
+        elif isinstance(color, str) and color in self._colors:
+            color_id = self._colors.get(color)
+        if color_id is None:
+            self._logger.warning("Color not supported: `%s`", color)
+            return
+            # raise NotSupportedColor
+        cmd = commands.create_manual_setting_command(
+            self.get_next_msg_id(), color_id, brightness
+        )
+        await self._send_command(cmd, 3)
+
+    async def set_brightness(
+        self, brightness: Annotated[int, typer.Argument(min=0, max=100)]
+    ) -> None:
+        """Set light brightness."""
+        await self.set_color_brightness(brightness)
+
+    async def set_rgb_brightness(
+        self, brightness: Annotated[tuple[int, int, int], typer.Argument()]
+    ) -> None:
+        """Set RGB brightness."""
+        for c, b in enumerate(brightness):
+            await self.set_color_brightness(c, b)
+
+    async def turn_on(self) -> None:
+        """Turn on light."""
+        for color_name in self._colors:
+            await self.set_color_brightness(100, color_name)
 
     async def turn_off(self) -> None:
         """Turn off light."""
-        raise NotImplementedError
+        for color_name in self._colors:
+            await self.set_color_brightness(0, color_name)
+
+    async def add_setting(
+        self,
+        sunrise: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
+        sunset: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
+        max_brightness: Annotated[int, typer.Option(max=100, min=0)] = 100,
+        ramp_up_in_minutes: Annotated[int, typer.Option(min=0, max=150)] = 0,
+        weekdays: Annotated[list[WeekdaySelect], typer.Option()] = [
+            WeekdaySelect.everyday
+        ],
+    ) -> None:
+        """Add an automation setting to the light."""
+        cmd = commands.create_add_auto_setting_command(
+            self.get_next_msg_id(),
+            sunrise.time(),
+            sunset.time(),
+            (max_brightness, 255, 255),
+            ramp_up_in_minutes,
+            encode_selected_weekdays(weekdays),
+        )
+        await self._send_command(cmd, 3)
+
+    async def add_rgb_setting(
+        self,
+        sunrise: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
+        sunset: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
+        max_brightness: Annotated[tuple[int, int, int], typer.Option()] = (
+            100,
+            100,
+            100,
+        ),
+        ramp_up_in_minutes: Annotated[int, typer.Option(min=0, max=150)] = 0,
+        weekdays: Annotated[list[WeekdaySelect], typer.Option()] = [
+            WeekdaySelect.everyday
+        ],
+    ) -> None:
+        """Add an automation setting to the RGB light."""
+        cmd = commands.create_add_auto_setting_command(
+            self.get_next_msg_id(),
+            sunrise.time(),
+            sunset.time(),
+            max_brightness,
+            ramp_up_in_minutes,
+            encode_selected_weekdays(weekdays),
+        )
+        await self._send_command(cmd, 3)
+
+    async def remove_setting(
+        self,
+        sunrise: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
+        sunset: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
+        ramp_up_in_minutes: Annotated[int, typer.Option(min=0, max=150)] = 0,
+        weekdays: Annotated[list[WeekdaySelect], typer.Option()] = [
+            WeekdaySelect.everyday
+        ],
+    ) -> None:
+        """Remove an automation setting from the light."""
+        cmd = commands.create_delete_auto_setting_command(
+            self.get_next_msg_id(),
+            sunrise.time(),
+            sunset.time(),
+            ramp_up_in_minutes,
+            encode_selected_weekdays(weekdays),
+        )
+        await self._send_command(cmd, 3)
+
+    async def reset_settings(self) -> None:
+        """Remove all automation settings from the light."""
+        cmd = commands.create_reset_auto_settings_command(self.get_next_msg_id())
+        await self._send_command(cmd, 3)
+
+    async def enable_auto_mode(self) -> None:
+        """Enable auto mode of the light."""
+        switch_cmd = commands.create_switch_to_auto_mode_command(self.get_next_msg_id())
+        time_cmd = commands.create_set_time_command(self.get_next_msg_id())
+        await self._send_command(switch_cmd, 3)
+        await self._send_command(time_cmd, 3)
+
+    # Bluetooth methods
 
     async def _send_command(
         self, commands: list[bytes] | bytes, retry: int | None = None
