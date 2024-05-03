@@ -161,7 +161,7 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
             else:
                 assert self._discovered_device is not None
                 return self.async_create_entry(
-                    title=self._discovered_device.name, data=user_input
+                    title=self._discovered_device.name, data=info
                 )
 
         return self.async_show_form(
