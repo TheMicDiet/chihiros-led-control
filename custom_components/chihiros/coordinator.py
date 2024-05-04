@@ -11,9 +11,18 @@ try:
         PassiveBluetoothDataUpdateCoordinator,
     )
     from homeassistant.core import HomeAssistant, callback
+
+    CoordinatorParent: type[PassiveBluetoothDataUpdateCoordinator | _FakeParent] = (
+        PassiveBluetoothDataUpdateCoordinator
+    )
 except ModuleNotFoundError:
     # FIXME make fake class and decorator
-    PassiveBluetoothDataUpdateCoordinator = object  # type :ignore
+    class _FakeParent:
+        """Fake aprent class to handle when HA lib is not installed."""
+
+        pass
+
+    CoordinatorParent = _FakeParent  # type :ignore
     callback = property  # type: ignore
 
 
@@ -25,7 +34,7 @@ if TYPE_CHECKING:
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 
-class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
+class ChihirosDataUpdateCoordinator(CoordinatorParent):  # type: ignore
     """Class to manage fetching data from the Chihiros.
 
     TODO: See if the _async_handle_bluetooth_event is called.

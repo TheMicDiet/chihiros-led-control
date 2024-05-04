@@ -50,4 +50,3 @@ repos:
       - typer[all]==0.9.0
       - rich==13.7.1
       - homeassistant-stubs==2024.3.3
-      - voluptuous==0.13.1

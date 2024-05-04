@@ -33,8 +33,8 @@ BLEAK_BACKOFF_TIME = 0.25
 
 
 class _classproperty(property):
-    def __get__(self, owner_self: object, owner_cls: ABCMeta) -> str:
-        ret: str = self.fget(owner_cls)
+    def __get__(self, owner_self: object, owner_cls: ABCMeta) -> str:  # type: ignore
+        ret: str = self.fget(owner_cls)  # type: ignore
         return ret
 
 

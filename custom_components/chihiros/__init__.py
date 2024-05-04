@@ -27,6 +27,8 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up chihiros from a config entry."""
+    if entry.unique_id is None:
+        raise ConfigEntryNotReady(f"Entry doesn't have any unique_id {entry.title}")
     address: str = entry.unique_id
     ble_device = bluetooth.async_ble_device_from_address(hass, address.upper(), True)
     if not ble_device:
