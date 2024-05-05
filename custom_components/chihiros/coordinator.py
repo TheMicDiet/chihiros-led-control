@@ -67,3 +67,12 @@ class ChihirosDataUpdateCoordinator(CoordinatorParent):  # type: ignore
         """Handle a Bluetooth event."""
         _LOGGER.critical("%s: CHIHIROS data: %s", self.ble_device.address, self.data)
         super()._async_handle_bluetooth_event(service_info, change)
+
+    @callback
+    def _async_handle_unavailable(
+        self, service_info: bluetooth.BluetoothServiceInfoBleak
+    ) -> None:
+        """Handle the device going unavailable."""
+        _LOGGER.critical("%s: CHIHIROS device unavailable: %s", self.ble_device.address)
+        super()._async_handle_unavailable(service_info)
+        # self._was_unavailable = True

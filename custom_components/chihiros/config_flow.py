@@ -104,7 +104,6 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         self, discovery_info: BluetoothServiceInfoBleak
     ) -> ConfigFlowResult:
         """Handle the bluetooth discovery step."""
-        print("GGG" * 88)
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
         model_class = get_model_class_from_name(discovery_info.name)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from homeassistant.components.bluetooth.passive_update_coordinator import (
@@ -22,6 +23,7 @@ from .coordinator import ChihirosDataUpdateCoordinator
 from .models import ChihirosData
 
 # from led_ble import LEDBLE
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -31,7 +33,11 @@ async def async_setup_entry(
 ) -> None:
     """Set up the light platform for LEDBLE."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
+    _LOGGER.debug("Setup chihiros entry: %s", chihiros_data.device.address)
     for color in chihiros_data.device.colors:
+        _LOGGER.debug(
+            "Setup chihiros light entity: %s - %s", chihiros_data.device.address, color
+        )
         async_add_entities(
             [
                 ChihirosLightEntity(
@@ -81,7 +87,6 @@ class ChihirosLightEntity(
             model=model_name,
             name=self._device.name,
         )
-        # self._attr_is_on = False
 
     #    @property
     #    def data(self) -> dict[str, Any]:
@@ -89,13 +94,12 @@ class ChihirosLightEntity(
     #
     #        TODO: Seems useless
     #        """
-    #        print("AAADDDDDDD" * 22)
+    #        _LOGGER.debug("Called data: %s", self.name)
     #        return self.coordinator.data
 
     async def async_added_to_hass(self) -> None:
         """Handle entity about to be added to hass event."""
-        # import ipdb;ipdb.set_trace()
-        print("async_added_to_hass")
+        _LOGGER.debug("Called async_added_to_hass: %s", self.name)
         await super().async_added_to_hass()
         if last_state := await self.async_get_last_state():
             self._attr_is_on = last_state.state == STATE_ON
@@ -113,28 +117,27 @@ class ChihirosLightEntity(
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Instruct the light to turn on."""
-        print("TURNON")
         if ATTR_BRIGHTNESS in kwargs:
             brightness = int((kwargs[ATTR_BRIGHTNESS] / 255) * 100)
-            print(f"brightness {brightness}")
+            _LOGGER.debug("Turning on: %s to %s", self.name, brightness)
             # TODO: handle error and availability False
             await self._device.set_color_brightness(brightness, self._color)
             self._attr_brightness = kwargs[ATTR_BRIGHTNESS]
-            print("EEE")
         else:
+            _LOGGER.debug("Turning on: %s", self.name)
             await self._device.turn_on()
         self._attr_is_on = True
         self._attr_available = True
         self.schedule_update_ha_state()
+        _LOGGER.debug("Turned on: %s", self.name)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Instruct the light to turn off."""
-        print("TURNOFF")
+        _LOGGER.debug("Turning off: %s", self.name)
         # TODO handle error and availability False
         await self._device.turn_off()
         self._attr_is_on = False
         self._attr_brightness = 0
-        print(self._attr_is_on)
-        print("TURNOFF2")
         self._attr_available = True
         self.schedule_update_ha_state()
+        _LOGGER.debug("Turned off: %s", self.name)
