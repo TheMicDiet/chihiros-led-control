@@ -4,6 +4,7 @@ import datetime
 
 
 def next_message_id(current_msg_id: tuple[int, int] = (0, 0)) -> tuple[int, int]:
+    """Generate bluetooth message id."""
     msg_id_higher_byte, msg_id_lower_byte = current_msg_id
     if msg_id_lower_byte == 255:
         if msg_id_higher_byte == 255:
@@ -22,6 +23,7 @@ def next_message_id(current_msg_id: tuple[int, int] = (0, 0)) -> tuple[int, int]
 
 
 def _calculate_checksum(input_bytes: bytes) -> int:
+    """Calculate message checksum."""
     assert len(input_bytes) >= 7  # commands are always at least 7 bytes long
     checksum = input_bytes[1]
     for input_byte in input_bytes[2:]:
@@ -32,6 +34,7 @@ def _calculate_checksum(input_bytes: bytes) -> int:
 def _create_command_encoding(
     cmd_id: int, cmd_mode: int, msg_id: tuple[int, int], parameters: list[int]
 ) -> bytearray:
+    """Encode command."""
     # make sure that no parameter is 90
     sanitized_params: list[int] = list(map(lambda x: x if x != 90 else 89, parameters))
 
@@ -50,11 +53,13 @@ def _create_command_encoding(
 
 
 def _encode_timestamp(ts: datetime.datetime) -> list[int]:
+    """Encode timestamp."""
     # note: day is weekday e.g. 3 for wednesday
     return [ts.year - 2000, ts.month, ts.isoweekday(), ts.hour, ts.minute, ts.second]
 
 
 def create_set_time_command(msg_id: tuple[int, int]) -> bytearray:
+    """Create current time command."""
     return _create_command_encoding(
         90, 9, msg_id, _encode_timestamp(datetime.datetime.now())
     )
@@ -111,14 +116,17 @@ def create_delete_auto_setting_command(
     ramp_up_minutes: int,
     weekdays: int,
 ) -> bytearray:
+    """Create delete auto setting command."""
     return create_add_auto_setting_command(
         msg_id, sunrise, sunset, (255, 255, 255), ramp_up_minutes, weekdays
     )
 
 
 def create_reset_auto_settings_command(msg_id: tuple[int, int]) -> bytearray:
+    """Create reset auto setting command."""
     return _create_command_encoding(90, 5, msg_id, [5, 255, 255])
 
 
 def create_switch_to_auto_mode_command(msg_id: tuple[int, int]) -> bytearray:
+    """Create switch auto setting command."""
     return _create_command_encoding(90, 5, msg_id, [18, 255, 255])
