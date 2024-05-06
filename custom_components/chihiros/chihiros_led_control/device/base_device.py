@@ -143,7 +143,6 @@ class BaseDevice(ABC):
         if color_id is None:
             self._logger.warning("Color not supported: `%s`", color)
             return
-            # raise NotSupportedColor
         cmd = commands.create_manual_setting_command(
             self.get_next_msg_id(), color_id, brightness
         )
