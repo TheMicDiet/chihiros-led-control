@@ -1,7 +1,11 @@
+"""Module helping for weeday encoding."""
+
 from enum import Enum
 
 
 class WeekdaySelect(str, Enum):
+    """Weekday list."""
+
     monday = "monday"
     tuesday = "tuesday"
     wednesday = "wednesday"
@@ -13,6 +17,7 @@ class WeekdaySelect(str, Enum):
 
 
 def encode_selected_weekdays(selection: list[WeekdaySelect]) -> int:
+    """Encode list of weekdays."""
     encoding = 0
     if WeekdaySelect.everyday in selection:
         return 127
