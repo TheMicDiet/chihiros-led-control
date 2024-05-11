@@ -29,7 +29,7 @@ Tested devices:
 
 1. Click install.
 2. In the HA UI go to "Configuration" -> "Integrations"
-3. Your SHC should be auto discovered, if not click "+" and search for "Bosch SHC".
+3. Your Chihiros LED should be auto discovered, if not click "+" and search for "Chihiros".
 
 {% endif %}
 
@@ -48,8 +48,6 @@ Tested devices:
 [chihiros_led_control]:https://github.com/TheMicDiet/chihiros-led-control
 [chihiros_icon]: https://www.chihirosaquaticstudio.com/cdn/shop/files/logo_cb46bbf4-c367-49c2-a99a-e920069e8d9c.png
 [stars-shield]: https://img.shields.io/github/stars/TheMicDiet/chihiros-led-control
-[buymecoffee]: https://www.buymeacoffee.com/??????
-[buymecoffeebadge]: https://img.shields.io/badge/buy%20me%20a%20double%20espresso-donate-yellow.svg
 [hacs]: https://github.com/custom-components/hacs
 [hacsbadge]: https://img.shields.io/badge/HACS-Default-orange.svg
 [forum-shield]: https://img.shields.io/badge/community-forum-brightgreen.svg
