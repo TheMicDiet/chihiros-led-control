@@ -1,6 +1,6 @@
 # Chihiros LED Control
 
-This repository contains an example python CLI script that can be used to control the **Chihiros LED A2** for aquariums via bluetooth without the vendor app. For this purpose, the protocol to control the LED has been reversed engineered with the help of decompiling the old *Magic App* as well as sniffing and analyzing of bluetooth packages that are sent by the new *My Chihiros App*. The new app is based on flutter and only contains a binary that can not easily be analyzed.
+This repository contains a python **CLI** script as well as a **Home Assistant integration** that can be used to control Chihiros LEDs for aquariums via bluetooth without the vendor app. For this purpose, the protocol to control the LED has been reversed engineered with the help of decompiling the old *Magic App* as well as sniffing and analyzing of bluetooth packages that are sent by the new *My Chihiros App*. The new app is based on flutter and only contains a binary that can not easily be analyzed.
 
 
 ## Supported Devices
@@ -12,6 +12,9 @@ This repository contains an example python CLI script that can be used to contro
 ## Requirements
 - a device with bluetooth LE support for sending the commands to the LED
 - [Python 3](https://www.python.org/downloads/) with pip
+
+## Using the Home Assistant integration
+TODO
 
 ## Using the CLI
 ```bash
