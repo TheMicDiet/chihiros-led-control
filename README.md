@@ -14,7 +14,17 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 - [Python 3](https://www.python.org/downloads/) with pip
 
 ## Using the Home Assistant integration
-TODO
+### Setup with HACS
+- Inside HACS add this repository as a custom repository: ```HACS -> Integrations -> 3 dots on the top right-> Custom repositories```
+- Search for ```Chihiros``` in the repositories and download it
+- Restart Home Assistant
+- Go to the integrations user interface and add the Chihiros integration
+- Supported devices should be discovered at this point
+
+### Manual Setup
+- Copy the ```directory custom_components/chihiros``` to your ```<config dir>/custom_components``` directory
+- Restart Home-Assistant
+- Add the Chihiros integration to your Home Assistant instance via the integrations user interface
 
 ## Using the CLI
 ```bash
