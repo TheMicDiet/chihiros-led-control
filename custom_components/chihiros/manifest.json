@@ -15,6 +15,10 @@
       "connectable": true
     },
     {
+      "local_name": "DYWPRO*",
+      "connectable": true
+    },
+    {
       "service_data_uuid": "6e400001-b5a3-f393-e0a9-e50e24dcca9e",
       "connectable": true
     }
@@ -27,6 +31,6 @@
   "documentation": "https://github.com/TheMicDiet/chihiros-led-control",
   "issue_tracker": "https://github.com/TheMicDiet/chihiros-led-control/issues",
   "iot_class": "assumed_state",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "requirements": []
 }

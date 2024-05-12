@@ -13,6 +13,7 @@ from .base_device import BaseDevice
 from .fallback import Fallback
 from .tiny_terrarium_egg import TinyTerrariumEgg
 from .wrgb2 import WRGBII
+from .wrgb2_pro import WRGBIIPro
 
 CODE2MODEL = {}
 for name, obj in inspect.getmembers(sys.modules[__name__]):
@@ -41,6 +42,7 @@ __all__ = [
     "TinyTerrariumEgg",
     "AIIA2",
     "WRGBII",
+    "WRGBIIPro",
     "FallBack",
     "BaseDevice",
     "RGBMode",
