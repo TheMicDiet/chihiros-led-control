@@ -22,7 +22,7 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 - Supported devices should be discovered at this point
 
 ### Manual Setup
-- Copy the ```directory custom_components/chihiros``` to your ```<config dir>/custom_components``` directory
+- Copy the directory ```custom_components/chihiros``` to your ```<config dir>/custom_components``` directory
 - Restart Home-Assistant
 - Add the Chihiros integration to your Home Assistant instance via the integrations user interface
 
