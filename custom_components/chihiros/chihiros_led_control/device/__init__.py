@@ -18,7 +18,8 @@ from .wrgb2_pro import WRGBIIPro
 CODE2MODEL = {}
 for name, obj in inspect.getmembers(sys.modules[__name__]):
     if inspect.isclass(obj) and issubclass(obj, BaseDevice):
-        CODE2MODEL[obj._model_code] = obj
+        for model_code in obj._model_codes:
+            CODE2MODEL[model_code] = obj
 
 
 def get_model_class_from_name(device_name: str) -> Callable[[BLEDevice], BaseDevice]:
