@@ -1,4 +1,4 @@
-name: Validation
+name: HA Validation
 
 on:
   push:
@@ -8,7 +8,6 @@ on:
 jobs:
   validate-hacs:
     runs-on: "ubuntu-latest"
-    continue-on-error: true
     steps:
       - name: Checkout repository
         uses: "actions/checkout@v4"
