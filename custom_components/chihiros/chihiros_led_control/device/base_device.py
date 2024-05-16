@@ -39,13 +39,10 @@ class _classproperty(property):
 
 
 class BaseDevice(ABC):
-    """Base device class used by device classes.
-
-    TODO: Make it an abstract class
-    """
+    """Base device class used by device classes."""
 
     _model_name: str | None = None
-    _model_code: str = ""
+    _model_codes: list[str] = []
     _colors: dict[str, int] = {}
     _msg_id = commands.next_message_id()
     _logger: logging.Logger
@@ -99,9 +96,9 @@ class BaseDevice(ABC):
         return self._model_name
 
     @_classproperty
-    def model_code(self) -> str:
-        """Return the model code."""
-        return self._model_code
+    def model_codes(self) -> list[str]:
+        """Return the model codes."""
+        return self._model_codes
 
     @property
     def colors(self) -> dict[str, int]:

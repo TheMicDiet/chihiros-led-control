@@ -15,6 +15,26 @@
       "connectable": true
     },
     {
+      "local_name": "DYNW30*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYNW45*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYNW60*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYNW90*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYNW120*",
+      "connectable": true
+    },
+    {
       "local_name": "DYWPRO*",
       "connectable": true
     },
@@ -31,7 +51,7 @@
   "documentation": "https://github.com/TheMicDiet/chihiros-led-control",
   "issue_tracker": "https://github.com/TheMicDiet/chihiros-led-control/issues",
   "iot_class": "assumed_state",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "requirements": [
     "bleak==0.21.1",
     "bleak_retry_connector==3.5.0",

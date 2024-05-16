@@ -7,7 +7,7 @@ class Fallback(BaseDevice):
     """Fallback device used when a device is not completely supported yet."""
 
     _model_name = "fallback"
-    _model_code = ""
+    _model_codes = []
     _colors: dict[str, int] = {
         "white": 0,
         "red": 0,
