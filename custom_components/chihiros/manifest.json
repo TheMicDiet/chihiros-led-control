@@ -56,5 +56,5 @@
     "bleak_retry_connector==3.5.0",
     "typer[all]==0.9.0"
   ],
-  "version": "0.2.0"
+  "version": "0.2.1"
 }

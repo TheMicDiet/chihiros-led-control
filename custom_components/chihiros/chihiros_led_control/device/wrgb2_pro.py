@@ -7,11 +7,17 @@ class WRGBIIPro(BaseDevice):
     """Chihiros WRGB II Pro device Class."""
 
     _model_name = "WRGB II Pro"
-    _model_codes = ["DYWPRO"]
-    # FIXME: channel for white doesn't work
+    _model_codes = [
+        "DYWPRO30",
+        "DYWPRO45",
+        "DYWPRO60",
+        "DYWPRO80",
+        "DYWPRO90",
+        "DYWPRO120",
+    ]
     _colors: dict[str, int] = {
-        "white": 0,
-        "red": 1,
-        "green": 2,
-        "blue": 3,
+        "red": 0,
+        "green": 1,
+        "blue": 2,
+        "white": 3,
     }
