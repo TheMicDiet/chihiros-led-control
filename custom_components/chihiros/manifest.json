@@ -52,8 +52,6 @@
   "iot_class": "assumed_state",
   "issue_tracker": "https://github.com/TheMicDiet/chihiros-led-control/issues",
   "requirements": [
-    "bleak==0.21.1",
-    "bleak_retry_connector==3.5.0",
     "typer[all]==0.9.0"
   ],
   "version": "0.2.1"
