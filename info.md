@@ -23,6 +23,7 @@ _Component to integrate with [Chihiros][chihiros_aquatic_studio] lights._
 
 Tested devices:
 * Tiny Terrarium Egg
+* LED A2
 
 {% if not installed %}
 ## Installation

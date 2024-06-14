@@ -88,15 +88,6 @@ class ChihirosLightEntity(
             name=self._device.name,
         )
 
-    #    @property
-    #    def data(self) -> dict[str, Any]:
-    #        """Return coordinator data for this entity.
-    #
-    #        TODO: Seems useless
-    #        """
-    #        _LOGGER.debug("Called data: %s", self.name)
-    #        return self.coordinator.data
-
     async def async_added_to_hass(self) -> None:
         """Handle entity about to be added to hass event."""
         _LOGGER.debug("Called async_added_to_hass: %s", self.name)
