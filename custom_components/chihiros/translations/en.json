@@ -18,9 +18,9 @@
             },
             "user": {
                 "data": {
-                    "password": "Password"
+                    "device": "Device"
                 },
-                "description": "Device password. Leave empty if password not set. (NOT SUPPORTED YET)"
+                "description": "Choose Chihiros device to connect to"
             }
         }
     }
