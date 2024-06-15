@@ -10,6 +10,7 @@ from bleak.backends.device import BLEDevice
 from ..exception import DeviceNotFound
 from .a2 import AII
 from .base_device import BaseDevice
+from .c2rgb import CIIRGB
 from .fallback import Fallback
 from .tiny_terrarium_egg import TinyTerrariumEgg
 from .wrgb2 import WRGBII
@@ -44,6 +45,7 @@ __all__ = [
     "AII",
     "WRGBII",
     "WRGBIIPro",
+    "CIIRGB",
     "FallBack",
     "BaseDevice",
     "RGBMode",
