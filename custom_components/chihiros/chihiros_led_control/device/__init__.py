@@ -13,6 +13,7 @@ from .base_device import BaseDevice
 from .c2rgb import CIIRGB
 from .fallback import Fallback
 from .tiny_terrarium_egg import TinyTerrariumEgg
+from .universal_wrgb import UniversalWRGB
 from .wrgb2 import WRGBII
 from .wrgb2_pro import WRGBIIPro
 
@@ -46,6 +47,7 @@ __all__ = [
     "WRGBII",
     "WRGBIIPro",
     "CIIRGB",
+    "UniversalWRGB",
     "FallBack",
     "BaseDevice",
     "RGBMode",
