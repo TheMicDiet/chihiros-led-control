@@ -31,7 +31,7 @@
       "connectable": true
     },
     {
-      "local_name": "DYNW120*",
+      "local_name": "DYNW12P*",
       "connectable": true
     },
     {
@@ -62,5 +62,5 @@
   "requirements": [
     "typer[all]==0.9.0"
   ],
-  "version": "0.4.0"
+  "version": "0.4.1"
 }
