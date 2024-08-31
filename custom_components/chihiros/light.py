@@ -22,7 +22,6 @@ from .const import DOMAIN, MANUFACTURER
 from .coordinator import ChihirosDataUpdateCoordinator
 from .models import ChihirosData
 
-# from led_ble import LEDBLE
 _LOGGER = logging.getLogger(__name__)
 
 

@@ -7,7 +7,7 @@ class CII(BaseDevice):
     """Chihiros CII device Class."""
 
     _model_name = "CII"
-    _model_code = ["DYNC2N"]
+    _model_codes = ["DYNC2N"]
     _colors: dict[str, int] = {
         "white": 0,
     }

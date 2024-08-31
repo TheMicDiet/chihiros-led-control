@@ -43,6 +43,9 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         device = model_class(discovery_info.device)
         self._discovery_info = discovery_info
         self._discovered_device = device
+        _LOGGER.debug(
+            "async_step_bluetooth - discovered device %s", discovery_info.name
+        )
         return await self.async_step_bluetooth_confirm()
 
     async def async_step_bluetooth_confirm(

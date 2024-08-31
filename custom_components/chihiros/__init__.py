@@ -49,10 +49,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ble_device,
     )
 
-    # TODO - DONE 1. Create API instance
-    # TODO 2. Validate the API connection (and authentication)
-    # TODO - DONE 3. Store an API object for your platforms to access
-    # hass.data[DOMAIN][entry.entry_id] = MyApi(...)
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = ChihirosData(
         entry.title, chihiros_device, coordinator
