@@ -4,7 +4,7 @@ from .base_device import BaseDevice
 
 
 class CIIRGB(BaseDevice):
-    """Chihiros WRGB II device Class."""
+    """Chihiros CII RGB device Class."""
 
     _model_name = "CII RGB"
     _model_code = ["DYNCRGP"]

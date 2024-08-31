@@ -9,7 +9,9 @@ from bleak.backends.device import BLEDevice
 
 from ..exception import DeviceNotFound
 from .a2 import AII
+from .backlight import Backlight
 from .base_device import BaseDevice
+from .c2 import CII
 from .c2rgb import CIIRGB
 from .fallback import Fallback
 from .tiny_terrarium_egg import TinyTerrariumEgg
@@ -44,8 +46,10 @@ async def get_device_from_address(device_address: str) -> BaseDevice:
 __all__ = [
     "TinyTerrariumEgg",
     "AII",
+    "Backlight",
     "WRGBII",
     "WRGBIIPro",
+    "CII",
     "CIIRGB",
     "UniversalWRGB",
     "FallBack",
