@@ -18,6 +18,7 @@ from .tiny_terrarium_egg import TinyTerrariumEgg
 from .universal_wrgb import UniversalWRGB
 from .wrgb2 import WRGBII
 from .wrgb2_pro import WRGBIIPro
+from .wrgb2_slim import WRGBIISlim
 
 CODE2MODEL = {}
 for name, obj in inspect.getmembers(sys.modules[__name__]):
@@ -49,6 +50,7 @@ __all__ = [
     "Backlight",
     "WRGBII",
     "WRGBIIPro",
+    "WRGBIISlim",
     "CII",
     "CIIRGB",
     "UniversalWRGB",
