@@ -9,8 +9,8 @@ class WRGBII(BaseDevice):
     _model_name = "WRGB II"
     _model_codes = ["DYNWRGB", "DYNW30", "DYNW45", "DYNW60", "DYNW90", "DYNW12P"]
     _colors: dict[str, int] = {
-        "white": 0,
-        "red": 1,
-        "green": 2,
-        "blue": 3,
+        "white": 3,
+        "red": 0,
+        "green": 1,
+        "blue": 2,
     }
