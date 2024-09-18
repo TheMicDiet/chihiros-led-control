@@ -48,8 +48,8 @@ load-plugins=
 # I0011 : *Locally disabling %s (%s)* Try to reduce that.
 # W0511 : *FIXME or XXX is detected.* Reenable when done. To link with roadmap
 # W0212 : *Access to a protected member %s of a client class*. Reenable when _id replace by uuid
-# W0201 : *Attribute %r defined outside __init__*. Because we instanciate object with properties dict
-# E0203 : *Access to member %r before its definition line %s*. Because we instanciate object with properties dict
+# W0201 : *Attribute %r defined outside __init__*. Because we instantiate object with properties dict
+# E0203 : *Access to member %r before its definition line %s*. Because we instantiate object with properties dict
 # R0801 : duplicate-code
 disable=W0201,W0212,I0011,W0511,E0203,R0801
 
