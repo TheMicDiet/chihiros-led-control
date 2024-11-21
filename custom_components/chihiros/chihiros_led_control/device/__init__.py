@@ -13,6 +13,7 @@ from .base_device import BaseDevice
 from .c2 import CII
 from .c2rgb import CIIRGB
 from .commander1 import Commander1
+from .commander4 import Commander4
 from .fallback import Fallback
 from .tiny_terrarium_egg import TinyTerrariumEgg
 from .universal_wrgb import UniversalWRGB
@@ -48,6 +49,7 @@ __all__ = [
     "TinyTerrariumEgg",
     "AII",
     "Commander1",
+    "Commander4",
     "WRGBII",
     "WRGBIIPro",
     "WRGBIISlim",
