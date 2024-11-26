@@ -13,7 +13,7 @@ class WRGBIIPro(BaseDevice):
         "DYWPRO60",
         "DYWPRO80",
         "DYWPRO90",
-        "DYWPRO120",
+        "DYWPR120",
     ]
     _colors: dict[str, int] = {
         "red": 0,
