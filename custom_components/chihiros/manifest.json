@@ -80,7 +80,7 @@
   "iot_class": "assumed_state",
   "issue_tracker": "https://github.com/TheMicDiet/chihiros-led-control/issues",
   "requirements": [
-    "typer[all]==0.9.0"
+    "typer[all]==0.15.2"
   ],
-  "version": "0.6.6"
+  "version": "0.6.7"
 }
