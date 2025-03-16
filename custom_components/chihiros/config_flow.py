@@ -5,14 +5,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import voluptuous as vol  # type: ignore
+import voluptuous as vol
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,
 )
-from homeassistant.config_entries import ConfigFlow
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS
-from homeassistant.data_entry_flow import FlowResult
 
 from .chihiros_led_control.device import BaseDevice, get_model_class_from_name
 from .const import DOMAIN
@@ -35,7 +34,7 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_bluetooth(
         self, discovery_info: BluetoothServiceInfoBleak
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the bluetooth discovery step."""
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
@@ -50,7 +49,7 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_bluetooth_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Confirm discovery."""
         assert self._discovered_device is not None
         device = self._discovered_device
@@ -58,18 +57,18 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         discovery_info = self._discovery_info
         title = device.name or discovery_info.name
         if user_input is not None:
-            return self.async_create_entry(title=title, data={})
+            return self.async_create_entry(title=title, data={})  # type: ignore
 
         self._set_confirm_only()
         placeholders = {"name": title}
         self.context["title_placeholders"] = placeholders
-        return self.async_show_form(
+        return self.async_show_form(  # type: ignore
             step_id="bluetooth_confirm", description_placeholders=placeholders
         )
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the user step to pick discovered device."""
         errors: dict[str, str] = {}
 
@@ -86,7 +85,7 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
             self._discovery_info = discovery_info
             self._discovered_device = device
             title = device.name or discovery_info.name
-            return self.async_create_entry(
+            return self.async_create_entry(  # type: ignore
                 title=title, data={CONF_ADDRESS: discovery_info.address}
             )
 
@@ -96,14 +95,14 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
             current_addresses = self._async_current_ids()
             for discovery in async_discovered_service_info(self.hass):
                 if (
-                    discovery.address in current_addresses
-                    or discovery.address in self._discovered_devices
+                    discovery is not None
+                    and discovery.address not in current_addresses
+                    and discovery.address not in self._discovered_devices
                 ):
-                    continue
-                self._discovered_devices[discovery.address] = discovery
+                    self._discovered_devices[discovery.address] = discovery
 
         if not self._discovered_devices:
-            return self.async_abort(reason="no_devices_found")
+            return self.async_abort(reason="no_devices_found")  # type: ignore
 
         data_schema = vol.Schema(
             {
@@ -117,6 +116,6 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
                 ),
             }
         )
-        return self.async_show_form(
+        return self.async_show_form(  # type: ignore
             step_id="user", data_schema=data_schema, errors=errors
         )

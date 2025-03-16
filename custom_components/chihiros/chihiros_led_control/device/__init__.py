@@ -36,7 +36,7 @@ def get_model_class_from_name(device_name: str) -> Callable[[BLEDevice], BaseDev
 async def get_device_from_address(device_address: str) -> BaseDevice:
     """Get BLEDevice object from mac address."""
     # TODO Add logger
-    ble_dev = await BleakScanner.find_device_by_address(device_address)  # type: ignore
+    ble_dev = await BleakScanner.find_device_by_address(device_address)
     if ble_dev and ble_dev.name is not None:
         model_class = get_model_class_from_name(ble_dev.name)
         dev: BaseDevice = model_class(ble_dev)
