@@ -3,6 +3,10 @@
   "name": "chihiros",
   "bluetooth": [
     {
+      "local_name": "DYSSD*",
+      "connectable": true
+    },
+    {
       "local_name": "DYDD*",
       "connectable": true
     },
@@ -82,5 +86,5 @@
   "requirements": [
     "typer[all]==0.15.2"
   ],
-  "version": "0.6.7"
+  "version": "0.7.0"
 }

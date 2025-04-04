@@ -20,6 +20,7 @@ from .universal_wrgb import UniversalWRGB
 from .wrgb2 import WRGBII
 from .wrgb2_pro import WRGBIIPro
 from .wrgb2_slim import WRGBIISlim
+from .z_light_tiny import ZLightTiny
 
 CODE2MODEL = {}
 for name, obj in inspect.getmembers(sys.modules[__name__]):
@@ -46,6 +47,7 @@ async def get_device_from_address(device_address: str) -> BaseDevice:
 
 
 __all__ = [
+    "ZLightTiny",
     "TinyTerrariumEgg",
     "AII",
     "Commander1",
