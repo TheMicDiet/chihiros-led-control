@@ -9,6 +9,7 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 - Chihiros Tiny Terrarium Egg
 - Chihiros C II (RGB, White)
 - Chihiros Universal WRGB
+- Chihiros Z Light TINY
 - other LED models might work as well but are not tested
 
 ## Requirements
