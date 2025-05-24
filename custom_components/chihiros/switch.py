@@ -1,28 +1,38 @@
 """Switch platform for Chihiros LED Control to toggle auto/manual mode."""
 
+import logging
+
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.helpers.entity import DeviceInfo
-from .const import DOMAIN, MANUFACTURER
+
 from .chihiros_led_control.device import BaseDevice
+from .const import DOMAIN, MANUFACTURER
 from .coordinator import ChihirosDataUpdateCoordinator
 from .models import ChihirosData
-import logging
 
 _LOGGER = logging.getLogger(__name__)
 
+
 async def async_setup_entry(hass, entry, async_add_entities):
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([
-        ChihirosAutoManualSwitch(
-            chihiros_data.coordinator,
-            chihiros_data.device,
-            entry
-        )
-    ])
+    async_add_entities(
+        [
+            ChihirosAutoManualSwitch(
+                chihiros_data.coordinator, chihiros_data.device, entry
+            )
+        ]
+    )
+
 
 class ChihirosAutoManualSwitch(SwitchEntity):
     """Switch to toggle between auto and manual mode."""
-    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: BaseDevice, config_entry,):
+
+    def __init__(
+        self,
+        coordinator: ChihirosDataUpdateCoordinator,
+        device: BaseDevice,
+        config_entry,
+    ):
         self._device = device
         self._coordinator = coordinator
         self._attr_name = f"{device.name} Auto Mode"
