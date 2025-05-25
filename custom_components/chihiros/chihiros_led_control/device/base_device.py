@@ -246,7 +246,7 @@ class BaseDevice(ABC):
         await self._send_command(time_cmd, 3)
 
     async def set_manual_mode(self) -> None:
-        """Switch to manual mode by sending a manual mode command (without resetting auto settings)."""
+        """Switch to manual mode by sending a manual mode command."""
         # Set brightness to last known or default value for all colors (e.g., 100)
         for color_name in self._colors:
             await self.set_color_brightness(100, color_name)
@@ -254,7 +254,7 @@ class BaseDevice(ABC):
     # Bluetooth methods
 
     async def _send_command(
-        self, commands: list[bytes] | bytes, retry: int | None = None
+        self, commands: list[bytes] | bytes | bytearray, retry: int | None = None
     ) -> None:
         """Send command to device and read response."""
         await self._ensure_connected()

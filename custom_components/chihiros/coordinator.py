@@ -31,7 +31,7 @@ from .chihiros_led_control.device.base_device import BaseDevice
 if TYPE_CHECKING:
     from bleak.backends.device import BLEDevice
 
-_LOGGER: logging.Logger = logging.getLogger(__package__)
+_LOGGER: logging.Logger = logging.getLogger(__name__)
 
 
 class ChihirosDataUpdateCoordinator(CoordinatorParent):  # type: ignore
