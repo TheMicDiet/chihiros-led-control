@@ -16,9 +16,10 @@ _Component to integrate with [Chihiros][chihiros_aquatic_studio] lights._
 
 **This component will set up the following platforms.**
 
-| Platform              |Description                |
-| --------------------- | ------------------------- |
-| `light`               | BLE Lights                |
+| Platform              |Description                          |
+| --------------------- | ----------------------------------- |
+| `light`               | BLE Lights                          |
+| `switch`              | Toggle between manual and auto mode |
 
 
 Tested devices:
