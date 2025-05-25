@@ -2,7 +2,6 @@
 
 This repository contains a python **CLI** script as well as a **Home Assistant integration** that can be used to control Chihiros LEDs for aquariums via bluetooth without the vendor app. For this purpose, the protocol to control the LED has been reversed engineered with the help of decompiling the old *Magic App* as well as sniffing and analyzing of bluetooth packages that are sent by the new *My Chihiros App*. The new app is based on flutter and only contains a binary that can not easily be analyzed.
 
-
 ## Supported Devices
 - [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
 - [Chihiros WRGB II](https://www.chihirosaquaticstudio.com/products/chihiros-wrgb-ii-led-built-in-bluetooth) (Regular, Pro, Slim)
@@ -12,11 +11,9 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 - Chihiros Z Light TINY
 - other LED models might work as well but are not tested
 
-## Requirements
-- a device with bluetooth LE support for sending the commands to the LED
-- [Python 3](https://www.python.org/downloads/) with pip
 
 ## Using the Home Assistant integration
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=themicdiet&repository=chihiros-led-control&category=Integration)
 ### Setup with HACS
 - Inside HACS add this repository as a custom repository: ```HACS -> Integrations -> 3 dots on the top right-> Custom repositories```
 - Search for ```Chihiros``` in the repositories and download it
@@ -28,6 +25,10 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 - Copy the directory ```custom_components/chihiros``` to your ```<config dir>/custom_components``` directory
 - Restart Home-Assistant
 - Add the Chihiros integration to your Home Assistant instance via the integrations user interface
+
+## Requirements
+- a device with bluetooth LE support for sending the commands to the LED
+- [Python 3](https://www.python.org/downloads/) with pip
 
 ## Using the CLI
 ```bash
