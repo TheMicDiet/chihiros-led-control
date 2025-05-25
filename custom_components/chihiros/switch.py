@@ -14,6 +14,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
+    """Set up the switch platform for Chihiros LED Control."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
@@ -33,6 +34,7 @@ class ChihirosAutoManualSwitch(SwitchEntity):
         device: BaseDevice,
         config_entry,
     ):
+        """Initialize the switch."""
         self._device = device
         self._coordinator = coordinator
         self._attr_name = f"{device.name} Auto Mode"
@@ -47,16 +49,18 @@ class ChihirosAutoManualSwitch(SwitchEntity):
 
     @property
     def is_on(self):
+        """Return True if the switch is in auto mode."""
         return self._attr_is_on
 
     async def async_turn_on(self, **kwargs):
+        """Auto mode: set brightness to auto level and enable auto mode."""
         await self._device.enable_auto_mode()
         self._attr_is_on = True
         self.async_write_ha_state()
         _LOGGER.debug("Switched to auto mode for %s", self._device.name)
 
     async def async_turn_off(self, **kwargs):
-        # Manual mode: set brightness to last known or default value
+        """Manual mode: set brightness to last known or default value."""
         await self._device.set_manual_mode()
         self._attr_is_on = False
         self.async_write_ha_state()
