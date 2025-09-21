@@ -19,6 +19,7 @@ from .chihiros_led_control.device import BaseDevice, get_model_class_from_name
 from .const import DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
 from .models import ChihirosData
+from .chihiros_doser_control import register_services as register_doser_services
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +52,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = ChihirosData(
         entry.title, chihiros_device, coordinator
     )
+
+    # Register the manual-dose service once (idempotent in the submodule)
+    await register_doser_services(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
