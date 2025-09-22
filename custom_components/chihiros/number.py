@@ -43,10 +43,11 @@ class DoserDoseAmount(NumberEntity):
         self._attr_name = f"Ch {ch} Dose Amount"
         self._attr_unique_id = f"{coord.address}-ch{ch}-dose-amount"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, self._entry.unique_id or coord.address)},
+            # Attach to the same (fallback) device created for this config entry
+            identifiers={(DOMAIN, self._entry.entry_id)},
             manufacturer="Chihiros",
             model="Doser",
-            name=getattr(coord, "name", "Chihiros Doser"),
+            name=(self._entry.title or "Chihiros Doser"),
         )
 
     @property
