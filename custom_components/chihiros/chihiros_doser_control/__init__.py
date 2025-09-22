@@ -58,21 +58,24 @@ async def register_services(hass: HomeAssistant) -> None:
 
     async def _svc_dose(call: ServiceCall):
         data = DOSE_SCHEMA(call.data)
-        addr = data.get("address")
+        # validate & copy (ServiceCall.data is ReadOnlyDict; voluptuous may mutate)
+        data = DOSE_SCHEMA(dict(call.data))
         if not addr and (did := data.get("device_id")):
             addr = await _resolve_address_from_device_id(hass, did)
         if not addr:
             raise HomeAssistantError("Provide address or a device_id linked to a BLE address")
 
         channel = int(data["channel"])
-        remaining = float(data["ml"])
+        # Work in mL; device code will convert to deci-mL. Keep a 0.1 mL grid.
+        remaining = round(float(data["ml"]), 1)
 
         # Single BLE frame carries up to 25.0 mL (250 deci-mL). Chunk larger amounts.
         async with BleakClient(addr, timeout=12.0) as client:
             while remaining > 0:
-                step = 25.0 if remaining > 25.0 else remaining
+                step = round(min(25.0, remaining), 1)
                 await dp.dose_ml(client, channel, step)
-                remaining -= step
+                # Round to avoid float drift (e.g., 1e-16)
+                remaining = round(remaining - step, 3)
                 if remaining > 0:
                     # Small pause prevents connection flaps with some BLE proxies
                     await asyncio.sleep(0.25)
