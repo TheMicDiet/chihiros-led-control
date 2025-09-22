@@ -87,12 +87,13 @@
     "@TheMicDiet"
   ],
   "config_flow": true,
-  "dependencies": ["bluetooth_adapters"],
+  "dependencies": ["bluetooth"],
+  "after_dependencies": ["bluetooth"],
   "documentation": "https://github.com/TheMicDiet/chihiros-led-control",
   "iot_class": "assumed_state",
   "issue_tracker": "https://github.com/TheMicDiet/chihiros-led-control/issues",
   "requirements": [
     "typer[all]==0.15.2"
   ],
-  "version": "0.7.1"
+  "version": "0.7.2"
 }

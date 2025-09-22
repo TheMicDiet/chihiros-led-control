@@ -70,7 +70,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     is_doser = any(k in ble_device.name.lower() for k in ("doser", "dose", "dydose"))
     coordinator.device_type = "doser" if is_doser else "led"
     coordinator.address = address
-    # Options → explicit enabled channels (subset of 1..4). Fallback to heuristic.
+    # Options → explicit enabled channels (subset of 1..4). Fallback to "all 4" for dosers.
     opt_enabled = entry.options.get("enabled_channels")
     if opt_enabled:
         try:
@@ -82,9 +82,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator.enabled_channels = enabled
         coordinator.channel_count = len(enabled)
     else:
-        guessed = _guess_channel_count(ble_device.name)
-        coordinator.enabled_channels = list(range(1, guessed + 1))
-        coordinator.channel_count = guessed
+        if is_doser:
+            coordinator.enabled_channels = [1, 2, 3, 4]
+            coordinator.channel_count = 4
+        else:
+            guessed = _guess_channel_count(ble_device.name)
+            coordinator.enabled_channels = list(range(1, guessed + 1))
+            coordinator.channel_count = guessed
 
     # Choose platforms per device type
     platforms_to_load: list[Platform] = (
