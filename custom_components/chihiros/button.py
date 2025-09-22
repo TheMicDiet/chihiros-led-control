@@ -14,8 +14,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
     if getattr(coord, "device_type", "led") != "doser":
         return
 
-    count = int(getattr(coord, "channel_count", 4))
-    entities = [DoserDoseNowButton(hass, entry, coord, ch) for ch in range(1, count + 1)]
+    # Build from explicit enabled channels (Options) or fall back to 1..channel_count
+    channels = list(getattr(coord, "enabled_channels", []))
+    if not channels:
+        count = int(getattr(coord, "channel_count", 4))
+        channels = list(range(1, count + 1))
+    entities = [DoserDoseNowButton(hass, entry, coord, ch) for ch in channels]
     async_add_entities(entities)
 
 

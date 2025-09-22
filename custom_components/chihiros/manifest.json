@@ -11,6 +11,14 @@
       "connectable": true
     },
     {
+      "local_name": "DYDOSE*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYDOSED*",
+      "connectable": true
+    },
+    {
       "local_name": "DYNA2*",
       "connectable": true
     },

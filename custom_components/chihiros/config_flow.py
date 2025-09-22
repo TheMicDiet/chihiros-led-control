@@ -10,8 +10,9 @@ from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,
 )
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow, ConfigEntry
 from homeassistant.const import CONF_ADDRESS
+from homeassistant.helpers import config_validation as cv
 
 from .chihiros_led_control.device import BaseDevice, get_model_class_from_name
 from .const import DOMAIN
@@ -119,3 +120,45 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(  # type: ignore
             step_id="user", data_schema=data_schema, errors=errors
         )
+    
+# -------------------------
+# Options Flow: select channels
+# -------------------------
+class ChihirosOptionsFlow(OptionsFlow):
+    """Options flow to select which doser channels are enabled."""
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        self._entry = entry
+
+    async def async_step_init(self, user_input: dict | None = None):
+        if user_input is not None:
+            # cv.multi_select returns string keys; sanitize → sorted list of ints 1..4
+            raw = user_input.get("enabled_channels", [])
+            enabled = sorted({int(x) for x in raw if str(x) in {"1", "2", "3", "4"}})
+            if not enabled:
+                enabled = [1]  # ensure at least one channel enabled
+            return self.async_create_entry(
+                title="",
+                data={
+                    "enabled_channels": enabled,     # store as ints
+                    "channel_count": len(enabled),   # convenience for code/UI
+                },
+            )
+
+        # Default selection: previously chosen, else all 4
+        current = self._entry.options.get("enabled_channels")
+        if not current:
+            current = [1, 2, 3, 4]
+        default = [str(x) for x in current]
+        schema = vol.Schema(
+            {
+                vol.Required("enabled_channels", default=default): cv.multi_select(
+                    {"1": "Channel 1", "2": "Channel 2", "3": "Channel 3", "4": "Channel 4"}
+                )
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)
+
+
+async def async_get_options_flow(config_entry: ConfigEntry):
+    return ChihirosOptionsFlow(config_entry)
