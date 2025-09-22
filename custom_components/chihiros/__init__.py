@@ -53,6 +53,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator.device_type = "doser" if is_doser else "led"
     coordinator.address = address
 
+
+    # Decide which platforms to load for this entry
+    platforms_to_load: list[Platform] = (
+        [Platform.BUTTON, Platform.NUMBER] if is_doser else [Platform.LIGHT, Platform.SWITCH]
+    )
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = ChihirosData(
         entry.title, chihiros_device, coordinator
@@ -61,7 +67,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register the manual-dose service once (idempotent in the submodule)
     await register_doser_services(hass)
 
+    # Only load the platforms that match the device type
+    await hass.config_entries.async_forward_entry_setups(entry, platforms_to_load)
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Unload only the platforms we loaded for this device type
+    data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    platforms_to_unload: list[Platform]
+    if data and getattr(data.coordinator, "device_type", "led") == "doser":
+        platforms_to_unload = [Platform.BUTTON, Platform.NUMBER]
+    else:
+        platforms_to_unload = [Platform.LIGHT, Platform.SWITCH]
+
+    if unload_ok := await hass.config_entries.async_unload_platforms(entry, platforms_to_unload):
 
     return True
 

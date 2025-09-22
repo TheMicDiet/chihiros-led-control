@@ -32,6 +32,9 @@ async def async_setup_entry(
 ) -> None:
     """Set up the light platform for LEDBLE."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
+    # Do not create any lights for doser devices
+    if getattr(chihiros_data.coordinator, "device_type", "led") != "led":
+        return
     _LOGGER.debug("Setup chihiros entry: %s", chihiros_data.device.address)
     for color in chihiros_data.device.colors:
         _LOGGER.debug(
