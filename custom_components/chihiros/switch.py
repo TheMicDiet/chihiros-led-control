@@ -17,7 +17,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     """Set up the switch platform for Chihiros LED Control."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
     # Do not create any switches for doser devices
-    if getattr(data.coordinator, "device_type", "led") != "led":
+    if getattr(chihiros_data.coordinator, "device_type", "led") != "led":
         return
     async_add_entities(
         [
