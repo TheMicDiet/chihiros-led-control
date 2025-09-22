@@ -12,8 +12,8 @@ from . import protocol as dp
 DOSE_SCHEMA = vol.Schema({
     vol.Exclusive("device_id", "target"): str,
     vol.Exclusive("address", "target"): str,
-    vol.Required("channel"): vol.All(int, vol.Range(min=1, max=4)),
-    vol.Required("ml"): vol.All(float, vol.Range(min=0.2, max=999.9)),
+    vol.Required("channel"): vol.All(vol.Coerce(int), vol.Range(min=1, max=4)),
+    vol.Required("ml"):      vol.All(vol.Coerce(float), vol.Range(min=0.2, max=999.9)),
 })
 
 async def _resolve_address_from_device_id(hass: HomeAssistant, did: str) -> str | None:
