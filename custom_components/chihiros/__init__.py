@@ -22,7 +22,7 @@ from .const import DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
 from .models import ChihirosData
 from .chihiros_doser_control import register_services as register_doser_services
-from .config_flow import ChihirosOptionsFlow
+# (lazy import inside async_get_options_flow to avoid any import-order issues)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -130,4 +130,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 # Expose Options Flow at the component level so HA shows “Configure”
 async def async_get_options_flow(config_entry: ConfigEntry):
+    # Lazy import avoids any circular/import-order surprises and ensures HA can always
+    # resolve this symbol when it checks for options support.
+    from .config_flow import ChihirosOptionsFlow
     return ChihirosOptionsFlow(config_entry)
