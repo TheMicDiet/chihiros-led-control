@@ -59,6 +59,8 @@ async def register_services(hass: HomeAssistant) -> None:
     async def _svc_dose(call: ServiceCall):
         # validate & copy (ServiceCall.data is ReadOnlyDict; voluptuous may mutate)
         data = DOSE_SCHEMA(dict(call.data))
+        # Prefer explicit address, else resolve from device_id
+        addr = data.get("address")
         if not addr and (did := data.get("device_id")):
             addr = await _resolve_address_from_device_id(hass, did)
         if not addr:
