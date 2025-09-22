@@ -22,6 +22,7 @@ from .const import DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
 from .models import ChihirosData
 from .chihiros_doser_control import register_services as register_doser_services
+from .config_flow import ChihirosOptionsFlow
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -122,3 +123,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options updates by reloading the entry."""
     await hass.config_entries.async_reload(entry.entry_id)
+
+# Expose Options Flow at the component level so HA shows “Configure”
+async def async_get_options_flow(config_entry: ConfigEntry):
+    return ChihirosOptionsFlow(config_entry)
