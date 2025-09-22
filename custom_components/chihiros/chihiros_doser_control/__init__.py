@@ -20,14 +20,32 @@ async def _resolve_address_from_device_id(hass: HomeAssistant, did: str) -> str 
     dev = reg.async_get(did)
     if not dev:
         return None
-    # Prefer official BT connection tuple
+
+    # 1) If HA stored a native BT connection, use it.
     for (conn_type, conn_val) in dev.connections:
         if conn_type == dr.CONNECTION_BLUETOOTH:
             return conn_val
-    # Or look through identifiers if you stash it under your DOMAIN
+
+    # 2) Check our identifiers
     for domain, ident in dev.identifiers:
-        if domain == DOMAIN and ident.startswith("ble:"):
+        if domain != DOMAIN:
+            continue
+        # a) explicit "ble:AA:BB:..." identifier
+        if ident.startswith("ble:"):
             return ident.split(":", 1)[1]
+        # b) we use (DOMAIN, <config_entry_id>) — look it up in hass.data
+        data_by_entry = hass.data.get(DOMAIN, {})
+        data = data_by_entry.get(ident)
+        if data and hasattr(data.coordinator, "address"):
+            return data.coordinator.address
+
+    # 3) Last resort: any config entries linked to this device
+    for entry_id in getattr(dev, "config_entries", set()):
+        data_by_entry = hass.data.get(DOMAIN, {})
+        data = data_by_entry.get(entry_id)
+        if data and hasattr(data.coordinator, "address"):
+            return data.coordinator.address
+
     return None
 
 async def register_services(hass: HomeAssistant) -> None:
@@ -38,7 +56,7 @@ async def register_services(hass: HomeAssistant) -> None:
     hass.data[flag_key] = True
 
     async def _svc_dose(call: ServiceCall):
-        # Validate a mutable copy (Voluptuous mutates; call.data is ReadOnlyDict)
+        # validate & copy (ServiceCall.data is ReadOnlyDict)
         data = DOSE_SCHEMA(dict(call.data))
         addr = data.get("address")
         if not addr and (did := data.get("device_id")):
