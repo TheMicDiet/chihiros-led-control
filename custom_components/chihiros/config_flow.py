@@ -158,7 +158,3 @@ class ChihirosOptionsFlow(OptionsFlow):
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)
-
-
-async def async_get_options_flow(config_entry: ConfigEntry):
-    return ChihirosOptionsFlow(config_entry)

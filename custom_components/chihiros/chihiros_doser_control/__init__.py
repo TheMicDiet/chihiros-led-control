@@ -38,7 +38,8 @@ async def register_services(hass: HomeAssistant) -> None:
     hass.data[flag_key] = True
 
     async def _svc_dose(call: ServiceCall):
-        data = DOSE_SCHEMA(call.data)
+        # Validate a mutable copy (Voluptuous mutates; call.data is ReadOnlyDict)
+        data = DOSE_SCHEMA(dict(call.data))
         addr = data.get("address")
         if not addr and (did := data.get("device_id")):
             addr = await _resolve_address_from_device_id(hass, did)
@@ -46,6 +47,6 @@ async def register_services(hass: HomeAssistant) -> None:
             raise HomeAssistantError("Provide address or a device_id linked to a BLE address")
 
         async with BleakClient(addr, timeout=12.0) as client:
-            await dp.dose_ml(client, data["channel"], data["ml"])
+            await dp.dose_ml(client, int(data["channel"]), float(data["ml"]))
 
     hass.services.async_register(DOMAIN, "dose_ml", _svc_dose, schema=DOSE_SCHEMA)
