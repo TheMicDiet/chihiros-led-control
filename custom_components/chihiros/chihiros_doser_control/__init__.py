@@ -1,6 +1,6 @@
 from __future__ import annotations
-import voluptuous as vol
 import asyncio
+import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import device_registry as dr
 from homeassistant.exceptions import HomeAssistantError
@@ -57,7 +57,6 @@ async def register_services(hass: HomeAssistant) -> None:
     hass.data[flag_key] = True
 
     async def _svc_dose(call: ServiceCall):
-        data = DOSE_SCHEMA(call.data)
         # validate & copy (ServiceCall.data is ReadOnlyDict; voluptuous may mutate)
         data = DOSE_SCHEMA(dict(call.data))
         if not addr and (did := data.get("device_id")):
@@ -66,18 +65,15 @@ async def register_services(hass: HomeAssistant) -> None:
             raise HomeAssistantError("Provide address or a device_id linked to a BLE address")
 
         channel = int(data["channel"])
-        # Work in mL; device code will convert to deci-mL. Keep a 0.1 mL grid.
-        remaining = round(float(data["ml"]), 1)
-
-        # Single BLE frame carries up to 25.0 mL (250 deci-mL). Chunk larger amounts.
+        remaining = float(data["ml"])
+        # Send doses in ≤25.0 mL chunks to match device frame limits
         async with BleakClient(addr, timeout=12.0) as client:
             while remaining > 0:
-                step = round(min(25.0, remaining), 1)
+                step = 25.0 if remaining > 25.0 else remaining
                 await dp.dose_ml(client, channel, step)
-                # Round to avoid float drift (e.g., 1e-16)
-                remaining = round(remaining - step, 3)
+                remaining -= step
                 if remaining > 0:
-                    # Small pause prevents connection flaps with some BLE proxies
+                    # brief pause helps some BLE stacks/proxies
                     await asyncio.sleep(0.25)
 
     hass.services.async_register(DOMAIN, "dose_ml", _svc_dose, schema=DOSE_SCHEMA)
