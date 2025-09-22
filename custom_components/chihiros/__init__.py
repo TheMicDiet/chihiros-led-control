@@ -52,7 +52,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     is_doser = any(k in ble_device.name.lower() for k in ("doser", "dose", "dydose"))
     coordinator.device_type = "doser" if is_doser else "led"
     coordinator.address = address
-    coordinator.name = entry.title
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = ChihirosData(
