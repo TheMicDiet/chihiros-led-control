@@ -10,15 +10,15 @@ async def async_setup_entry(hass, entry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
     coord = data.coordinator
 
-    # Only create these for doser devices
+    # Only for doser devices
     if getattr(coord, "device_type", "led") != "doser":
         return
 
-    # Per-channel stored amounts (lives on coordinator)
     if not hasattr(coord, "doser_amounts"):
         coord.doser_amounts = {}
 
-    entities = [DoserDoseAmount(entry, coord, ch) for ch in range(1, 5)]
+    count = int(getattr(coord, "channel_count", 4))
+    entities = [DoserDoseAmount(entry, coord, ch) for ch in range(1, count + 1)]
     async_add_entities(entities)
 
 
@@ -37,13 +37,12 @@ class DoserDoseAmount(NumberEntity):
         self._entry = entry
         self._coord = coord
         self._ch = ch
-        # Default dose amount per channel
         self._coord.doser_amounts.setdefault(self._ch, 1.0)
 
         self._attr_name = f"Ch {ch} Dose Amount"
         self._attr_unique_id = f"{coord.address}-ch{ch}-dose-amount"
+        # Separate device tile for the doser (distinct from the LED device tile)
         self._attr_device_info = DeviceInfo(
-            # Attach to the same (fallback) device created for this config entry
             identifiers={(DOMAIN, self._entry.entry_id)},
             manufacturer="Chihiros",
             model="Doser",
@@ -56,6 +55,5 @@ class DoserDoseAmount(NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         v = max(self._attr_native_min_value, min(float(value), self._attr_native_max_value))
-        # Round to 0.1 mL for UI neatness
         self._coord.doser_amounts[self._ch] = round(v, 1)
         self.async_write_ha_state()

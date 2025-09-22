@@ -10,11 +10,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
     coord = data.coordinator
 
-    # Only create these for doser devices
+    # Only for doser devices
     if getattr(coord, "device_type", "led") != "doser":
         return
 
-    entities = [DoserDoseNowButton(hass, entry, coord, ch) for ch in range(1, 5)]
+    count = int(getattr(coord, "channel_count", 4))
+    entities = [DoserDoseNowButton(hass, entry, coord, ch) for ch in range(1, count + 1)]
     async_add_entities(entities)
 
 
@@ -32,8 +33,8 @@ class DoserDoseNowButton(ButtonEntity):
 
         self._attr_name = f"Ch {ch} Dose Now"
         self._attr_unique_id = f"{coord.address}-ch{ch}-dose-now"
+        # Separate device tile for the doser (distinct from the LED device tile)
         self._attr_device_info = DeviceInfo(
-            # Attach to the same (fallback) device created for this config entry
             identifiers={(DOMAIN, self._entry.entry_id)},
             manufacturer="Chihiros",
             model="Doser",
@@ -41,10 +42,7 @@ class DoserDoseNowButton(ButtonEntity):
         )
 
     async def async_press(self) -> None:
-        # Pull currently set amount from the number entity / coordinator (default 1.0 mL)
         amount = getattr(self._coord, "doser_amounts", {}).get(self._ch, 1.0)
-
-        # Use address directly so we don't have to chase device_id here
         await self._hass.services.async_call(
             DOMAIN,
             "dose_ml",
