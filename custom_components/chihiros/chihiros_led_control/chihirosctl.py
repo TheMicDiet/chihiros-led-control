@@ -10,7 +10,7 @@ from bleak import BleakScanner
 from rich import print
 from rich.table import Table
 from typing_extensions import Annotated
-
+from . import dosingpump
 from . import commands
 from .device import get_device_from_address, get_model_class_from_name
 from .weekday_encoding import WeekdaySelect
@@ -33,6 +33,47 @@ def _run_device_func(device_address: str, **kwargs: Any) -> None:
 
     asyncio.run(_async_func())
 
+
+@app.command()
+ def add_setting_dosing_pump(
+     device_address: str,
+     performance_time: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
+     ch_id: Annotated[int, typer.Option(max=3, min=0)] = 0,
+     weekdays: Annotated[list[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday],
+     # 0.1 ml units (1 == 0.1 ml). Allow large totals; device code splits into buckets.
+     ch_ml: Annotated[int, typer.Option(min=0, max=9999)] = 0,
+ ) -> None:
+     _run_device_func(
+         device_address,
+         performance_time=performance_time,
+         ch_id=ch_id,
+         weekdays=weekdays,
+         ch_ml=ch_ml,
+     )
+
+ @app.command()
+ def enable_auto_mode_dosing_pump(
+     device_address: str,
+     ch_id: Annotated[int, typer.Option(max=3, min=0)] = 0,
+     ) -> None:
+     """Enable auto mode in a light."""
+     _run_device_func(
+         device_address,
+         ch_id=ch_id,
+         )
+
+ @app.command()
+ def set_dosing_pump_manuell_ml(
+     device_address: str,
+     ch_id: Annotated[int, typer.Option(max=3, min=0)] = 0,
+     # 0.1 ml units (1 == 0.1 ml). Allow large totals; device code splits into buckets.
+     ch_ml: Annotated[int, typer.Option(min=0, max=9999)] = 0,
+ ) -> None:
+     _run_device_func(
+         device_address,
+         ch_id=ch_id,
+         ch_ml=ch_ml,
+     )
 
 @app.command()
 def list_devices(timeout: Annotated[int, typer.Option()] = 5) -> None:
