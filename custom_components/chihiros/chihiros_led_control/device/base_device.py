@@ -126,6 +126,85 @@ class BaseDevice(ABC):
 
     # Command methods
 
+    def _add_minutes(self, t: datetime.time, delta_min: int) -> datetime.time:
+        """Return t + delta_min minutes (HH:MM), wrapping hours if needed."""
+        anchor = datetime(2000, 1, 1, t.hour, t.minute)
+        out = anchor + timedelta(minutes=delta_min)
+        return out.time()
+ 
+    async def add_setting_dosing_pump(
+         self,
+         performance_time: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
+         ch_id: Annotated[int, typer.Option(max=4, min=0)] = 0,
+         weekdays: Annotated[list[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday],
+        # 0.1 ml units (1 == 0.1 ml). Allow up to 9999 == 999.9 ml.
+        ch_ml: Annotated[int, typer.Option(min=0, max=9999)] = 0,
+     ) -> None:
+        # Prelude & mode/time sync (unchanged semantics)
+        set_time_cmd0 = dosingpump.create_auto_mode_dosing_pump_command_time(
+            performance_time.time(), self.get_next_msg_id(), ch_id
+        )
+         time_cmd      = commands.create_set_time_command(self.get_next_msg_id())
+         command_1_cmd = dosingpump.create_order_confirmation(self.get_next_msg_id(), 90, 4, 1)
+         command_2_cmd = dosingpump.create_order_confirmation(self.get_next_msg_id(), 165, 4, 4)
+         command_3_cmd = dosingpump.create_order_confirmation(self.get_next_msg_id(), 165, 4, 5)
+         command_4_cmd = dosingpump.create_switch_to_auto_mode_dosing_pump_command(self.get_next_msg_id(), ch_id)
+         await self._send_command(command_1_cmd, 3)
+         await self._send_command(time_cmd, 3)
+         await self._send_command(time_cmd, 3)
+         await self._send_command(command_2_cmd, 3)
+         await self._send_command(command_3_cmd, 3)
+         await self._send_command(command_4_cmd, 3)
+        # First set-time uses requested minute
+        await self._send_command(set_time_cmd0, 3)
+        # Split >25.0 ml totals into buckets; stagger each bucket by +1 minute to avoid overwrite
+        remaining = ch_ml
+        minute_offset = 0
+        while remaining > 0:
+            bucket = min(remaining, dosingpump.MAX_BUCKET_UNITS)  # <= 25.0 ml (250 units)
+            t_i = self._add_minutes(performance_time.time(), minute_offset)
+            set_time_i = dosingpump.create_auto_mode_dosing_pump_command_time(
+                t_i, self.get_next_msg_id(), ch_id
+            )
+            await self._send_command(set_time_i, 3)
+            add_i = dosingpump.create_add_auto_setting_command_dosing_pump(
+                t_i,
+                self.get_next_msg_id(),
+                ch_id,
+                encode_selected_weekdays(weekdays),
+                bucket,
+            )
+            await self._send_command(add_i, 3)
+            remaining -= bucket
+            minute_offset += 1
+ 
+    async def set_dosing_pump_manuell_ml(
+         self,
+         ch_id: Annotated[int, typer.Option(max=4, min=0)] = 0,
+        # 0.1 ml units (1 == 0.1 ml). Allow up to 9999 == 999.9 ml.
+        ch_ml: Annotated[int, typer.Option(min=0, max=9999)] = 0,
+     ) -> None:
+         """Add an automation setting to the light."""
+        remaining = ch_ml
+        while remaining > 0:
+            bucket = min(remaining, dosingpump.MAX_BUCKET_UNITS)  # <= 25.0 ml (250 units)
+            cmd = dosingpump.create_add_dosing_pump_command_manuell_ml(
+                self.get_next_msg_id(),
+                ch_id,
+                bucket,
+            )
+            await self._send_command(cmd, 3)
+            remaining -= bucket
+ 
+     async def enable_auto_mode_dosing_pump(
+         self,
+         ch_id: Annotated[int, typer.Option(max=4, min=0)] = 0,
+       ) -> None:
+         switch_cmd = dosingpump.create_switch_to_auto_mode_dosing_pump_command(self.get_next_msg_id(), ch_id)
+         time_cmd   = commands.create_set_time_command(self.get_next_msg_id())
+         await self._send_command(switch_cmd, 3)
+         await self._send_command(time_cmd, 3)
+           
     async def set_color_brightness(
         self,
         brightness: Annotated[int, typer.Argument(min=0, max=100)],
