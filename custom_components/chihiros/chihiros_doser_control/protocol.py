@@ -1,5 +1,6 @@
 from __future__ import annotations
-from typing import List, Tuple
+from typing import List, Tuple, Union
+from decimal import Decimal, ROUND_HALF_UP, ROUND_FLOOR
 
 # Nordic UART
 UART_SERVICE = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
@@ -13,66 +14,70 @@ MODE_MANUAL_DOSE = 0x1B
 _last_msg_id: Tuple[int, int] = (0, 0)
 
 def _next_msg_id() -> Tuple[int, int]:
+    """
+    Increment msg id, skipping 0x5A in either byte, and only bump 'hi' on wrap.
+    """
     hi, lo = _last_msg_id
-    if lo == 255:
-        if hi == 255:
-            new = (0, 1)
-        elif hi == 89:  # never 90
-            new = (hi + 2, 0)
-        else:
-            new = (hi + 1, 0)
-    else:
-        if lo == 89:    # never 90
-            new = (0, lo + 2)
-        else:
-            new = (0, lo + 1)
-    globals()['_last_msg_id'] = new
-    return new
+    lo = (lo + 1) & 0xFF
+    if lo == 0x5A:                # never 0x5A
+        lo = (lo + 1) & 0xFF
+    if lo == 0:                   # wrapped → bump hi
+        hi = (hi + 1) & 0xFF
+        if hi == 0x5A:            # never 0x5A
+            hi = (hi + 1) & 0xFF
+    globals()['_last_msg_id'] = (hi, lo)
+    return hi, lo
 
 def _xor_checksum(buf: bytes) -> int:
     c = buf[1]
     for b in buf[2:]:
         c ^= b
-    return c
+    return c & 0xFF
 
 def _encode(cmd: int, mode: int, params: List[int]) -> bytes:
-    # Avoid 0x5A in payload bytes
-    ps = [(p if p != 0x5A else 0x59) & 0xFF for p in params]
-    hi, lo = _next_msg_id()
-    body = bytes([cmd, 0x01, len(ps) + 5, hi, lo, mode, *ps])
-    chk = _xor_checksum(body)
-    if chk == 0x5A:  # adjust id if checksum hits 0x5A
-        _next_msg_id()
-        hi, lo = _last_msg_id
+    """
+    Build frame: [cmd, 0x01, len, msg_hi, msg_lo, mode, *params, checksum]
+    If checksum equals 0x5A, try a few different msg ids; do NOT mutate params.
+    """
+    ps = [p & 0xFF for p in params]
+    body = b""
+    chk = 0
+    for _ in range(8):
+        hi, lo = _next_msg_id()
         body = bytes([cmd, 0x01, len(ps) + 5, hi, lo, mode, *ps])
         chk = _xor_checksum(body)
+        if chk != 0x5A:
+            break
     return body + bytes([chk])
 
-# ---------- NEW: 25.6-bucket helpers ----------
+# ---------- 25.6-bucket helpers ----------
 
-def _split_ml_25_6(total_ml: float) -> tuple[int, int]:
+def _split_ml_25_6(total_ml: Union[float, int, str]) -> tuple[int, int]:
     """
     Encode ml as (hi, lo) with 25.6-mL buckets (+0.1-mL remainder).
       hi = floor(ml / 25.6)
       lo = round((ml - hi*25.6) * 10)   # 0..255 (0.1 mL)
     Normalize exact multiples so 25.6 -> (1,0) not (0,256).
+    Accepts "51,3" or "51.3"; clamps to 0.2..999.9 with 0.1 resolution.
     """
-    if total_ml < 0 or total_ml > 999.9:
-        raise ValueError("ml must be within 0..999.9")
-    q = round(total_ml, 1)          # device resolution is 0.1 mL
-    hi = int(q // 25.6)
-    rem = round(q - hi * 25.6, 1)
-    lo = int(round(rem * 10))
-    if lo == 256:
+    q = Decimal(str(total_ml)).replace(",", ".") if isinstance(total_ml, str) else Decimal(str(total_ml))
+    q = q.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+
+    if q < Decimal("0.2") or q > Decimal("999.9"):
+        raise ValueError("ml must be within 0.2..999.9")
+
+    hi = int((q / Decimal("25.6")).to_integral_value(rounding=ROUND_FLOOR))
+    rem = (q - Decimal(hi) * Decimal("25.6")).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    lo  = int((rem * 10).to_integral_value(rounding=ROUND_HALF_UP))
+
+    if lo == 256:  # normalize exact multiples (e.g., 25.6 → (1,0))
         hi += 1
-        lo = 0
-    if not (0 <= lo <= 255):
-        raise ValueError("remainder out of range")
-    return hi, lo
+        lo  = 0
+    return hi & 0xFF, lo & 0xFF
 
 # ---------- PUBLIC API ----------
 
-async def dose_ml(client, channel_1based: int, ml: float) -> None:
+async def dose_ml(client, channel_1based: int, ml: Union[float, int, str]) -> None:
     """
     Immediate, one-shot dose on the selected channel.
 
@@ -80,7 +85,7 @@ async def dose_ml(client, channel_1based: int, ml: float) -> None:
       params = [channel(0..3), 0x00, 0x00, ml_hi, ml_lo]
       where:
         ml_hi = floor(ml / 25.6)
-        ml_lo = round((ml - ml_hi*25.6) * 10)    # 0.1 mL remainder
+        ml_lo = round((ml - ml_hi*25.6) * 10)  # 0.1 mL remainder
 
     Examples:
       11.3  -> (0,113)
@@ -89,8 +94,6 @@ async def dose_ml(client, channel_1based: int, ml: float) -> None:
       29.0  -> (1,34)
     """
     ch = max(1, min(int(channel_1based), 4)) - 1  # 0-based on wire
-    ml = round(max(0.2, min(float(ml), 999.9)), 1)
-
     ml_hi, ml_lo = _split_ml_25_6(ml)
     pkt = _encode(CMD_MANUAL_DOSE, MODE_MANUAL_DOSE, [ch, 0x00, 0x00, ml_hi, ml_lo])
     await client.write_gatt_char(UART_RX, pkt, response=True)
