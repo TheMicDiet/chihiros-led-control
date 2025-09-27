@@ -21,10 +21,11 @@ from bleak_retry_connector import (
 
 from .const import DOMAIN
 from .chihiros_doser_control.protocol import UART_TX  # notify UUID
+from .chihiros_doser_control import protocol as dp    # NEW: to build a query frame
 
 _LOGGER = logging.getLogger(__name__)
 
-SCAN_TIMEOUT = 3.0            # seconds to wait for one notify
+SCAN_TIMEOUT = 5.0            # seconds to wait for one notify (bumped to 5)
 UPDATE_EVERY = timedelta(minutes=15)
 
 
@@ -35,18 +36,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     coordinator = DoserTotalsCoordinator(hass, address, entry)
 
-    # Do NOT block platform setup on BLE; schedule a refresh instead
+    # Non-blocking initial refresh
     hass.async_create_task(coordinator.async_request_refresh())
 
-    # Listen for “Dose Now” to force an immediate refresh — thread-safe scheduling
+    # Thread-safe dispatcher: refresh immediately after "Dose Now"
     signal = f"{DOMAIN}_{entry.entry_id}_refresh_totals"
-
     def _signal_refresh() -> None:
-        # This is safe even if dispatcher fires off-thread
-        asyncio.run_coroutine_threadsafe(
-            coordinator.async_request_refresh(), hass.loop
-        )
-
+        asyncio.run_coroutine_threadsafe(coordinator.async_request_refresh(), hass.loop)
     unsub = async_dispatcher_connect(hass, signal, _signal_refresh)
     entry.async_on_unload(unsub)
 
@@ -84,12 +80,8 @@ class DoserTotalsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     cmd = payload[0]
                     mode = payload[5] if len(payload) >= 6 else None
                     params = list(payload[6:-1]) if len(payload) >= 8 else []
-                    _LOGGER.debug(
-                        "sensor: notify cmd=0x%02X mode=%s params=%s",
-                        cmd,
-                        f"0x{mode:02X}" if isinstance(mode, int) else None,
-                        params,
-                    )
+                    _LOGGER.debug("sensor: notify cmd=0x%02X mode=%s params=%s",
+                                  cmd, f"0x{mode:02X}" if isinstance(mode, int) else None, params)
                     # Expect 8 params: (hi0,lo0, hi1,lo1, hi2,lo2, hi3,lo3)
                     if cmd in (0x5B, 91) and mode == 0x22 and len(params) == 8:
                         pairs = list(zip(params[0::2], params[1::2]))
@@ -106,6 +98,15 @@ class DoserTotalsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     BleakClientWithServiceCache, ble_dev, f"{DOMAIN}-totals"
                 )
                 await client.start_notify(UART_TX, _cb)
+
+                # NEW: actively request totals (A5 / mode 0x22) — many firmwares only respond on request
+                try:
+                    query = dp._encode(dp.CMD_MANUAL_DOSE, 0x22, [])  # params empty
+                    await client.write_gatt_char(dp.UART_RX, query, response=True)
+                except Exception:
+                    # harmless if the firmware ignores unknown/empty queries
+                    _LOGGER.debug("sensor: totals query write failed/ignored", exc_info=True)
+
                 try:
                     res = await asyncio.wait_for(fut, timeout=SCAN_TIMEOUT)
                     self._last = res
