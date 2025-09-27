@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio  # NEW: brief pause before triggering sensor refresh
 from homeassistant.components.button import ButtonEntity
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.dispatcher import async_dispatcher_send  # NEW: notify sensors to refresh
 
 from .const import DOMAIN
 
@@ -24,7 +26,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class DoserDoseNowButton(ButtonEntity):
-    """Per-channel 'Dose now' button that calls the chihiros.dose_ml service."""
+    """Per-channel 'Dose now' button that calls the chihiros.dose_ml service
+    and then requests an immediate totals refresh from the sensor platform.
+    """
 
     _attr_has_entity_name = True
     _attr_icon = "mdi:play-circle"
@@ -47,9 +51,18 @@ class DoserDoseNowButton(ButtonEntity):
 
     async def async_press(self) -> None:
         amount = getattr(self._coord, "doser_amounts", {}).get(self._ch, 1.0)
+
+        # Send the dose via the integration's service
         await self._hass.services.async_call(
             DOMAIN,
             "dose_ml",
             {"address": self._coord.address, "channel": self._ch, "ml": float(amount)},
             blocking=True,
         )
+
+        # NEW: Give the firmware a brief moment to update its internal totals,
+        # then ask the sensor coordinator to refresh immediately via dispatcher.
+        # The matching listener is set up in sensor.py and will call
+        # coordinator.async_request_refresh() when it receives this signal.
+        await asyncio.sleep(0.3)
+        async_dispatcher_send(self._hass, f"{DOMAIN}_{self._entry.entry_id}_refresh_totals")
