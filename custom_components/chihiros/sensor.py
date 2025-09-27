@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, CoordinatorEntity
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from bleak_retry_connector import (
     BleakClientWithServiceCache,
@@ -33,10 +34,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     _LOGGER.debug("chihiros.sensor: setup entry=%s addr=%s", entry.entry_id, address)
 
     coordinator = DoserTotalsCoordinator(hass, address, entry)
-    await coordinator.async_config_entry_first_refresh()
+
+    # Do NOT block platform setup on BLE; schedule a refresh instead
+    hass.async_create_task(coordinator.async_request_refresh())
+
+    # Listen for “Dose Now” to force an immediate refresh
+    signal = f"{DOMAIN}_{entry.entry_id}_refresh_totals"
+    unsub = async_dispatcher_connect(
+        hass,
+        signal,
+        lambda: hass.async_create_task(coordinator.async_request_refresh()),
+    )
+    entry.async_on_unload(unsub)
 
     sensors = [ChDoserDailyTotalSensor(coordinator, entry, ch) for ch in range(4)]
-    async_add_entities(sensors, update_before_add=True)
+    async_add_entities(sensors, update_before_add=False)
 
 
 class DoserTotalsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -77,7 +89,7 @@ class DoserTotalsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         ml = [round(h * 25.6 + l / 10.0, 1) for h, l in pairs]
                         if not fut.done():
                             fut.set_result({"ml": ml, "raw": bytes(payload)})
-                except Exception:  # never let exceptions bubble out of callbacks
+                except Exception:
                     _LOGGER.exception("sensor: notify parse error")
 
             client = None
