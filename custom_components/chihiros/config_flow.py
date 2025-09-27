@@ -11,9 +11,12 @@ from homeassistant.components.bluetooth import (
     async_discovered_service_info,
 )
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
-from homeassistant.const import CONF_ADDRESS
+from homeassistant.const import CONF_ADDRESS, CONF_NAME
 
 from .chihiros_led_control.device import BaseDevice, get_model_class_from_name
+from .chihiros_led_control.device.commander1 import Commander1
+from .chihiros_led_control.device.commander4 import Commander4
+from .chihiros_led_control.device.fallback import Fallback
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,6 +48,14 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         _LOGGER.debug(
             "async_step_bluetooth - discovered device %s", discovery_info.name
         )
+        # If we don't know the exact device model (fallback), ask for extra info
+        model_class = get_model_class_from_name(discovery_info.name)
+        if model_class in (Fallback, Commander1, Commander4):
+            # Fallback detected - move to fallback config step
+            self._discovery_info = discovery_info
+            self._discovered_device = model_class(discovery_info.device)
+            return await self.async_step_fallback_config()
+
         return await self.async_step_bluetooth_confirm()
 
     async def async_step_bluetooth_confirm(
@@ -57,13 +68,50 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         discovery_info = self._discovery_info
         title = device.name or discovery_info.name
         if user_input is not None:
-            return self.async_create_entry(title=title, data={})  # type: ignore
+            return self.async_create_entry(title=title, data={CONF_ADDRESS: discovery_info.address})  # type: ignore
 
         self._set_confirm_only()
         placeholders = {"name": title}
         self.context["title_placeholders"] = placeholders
         return self.async_show_form(  # type: ignore
             step_id="bluetooth_confirm", description_placeholders=placeholders
+        )
+
+    async def async_step_fallback_config(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask user for device details when fallback device is detected."""
+        assert self._discovered_device is not None
+        assert self._discovery_info is not None
+        discovery_info = self._discovery_info
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            # Create config entry including the address, chosen name and device type
+            title = (
+                user_input.get(CONF_NAME)
+                or self._discovered_device.name
+                or discovery_info.name
+            )
+            data = {
+                CONF_ADDRESS: discovery_info.address,
+                CONF_NAME: user_input.get(CONF_NAME, title),
+                "device_type": user_input["device_type"],
+            }
+            return self.async_create_entry(title=title, data=data)  # type: ignore
+
+        # Default name to discovered name
+        default_name = self._discovered_device.name or discovery_info.name
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_NAME, default=default_name): str,
+                vol.Required("device_type", default="white"): vol.In(
+                    ["white", "rgb", "wrgb"]
+                ),
+            }
+        )
+        return self.async_show_form(
+            step_id="fallback_config", data_schema=data_schema, errors=errors
         )
 
     async def async_step_user(
@@ -84,6 +132,11 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
 
             self._discovery_info = discovery_info
             self._discovered_device = device
+            model_class = get_model_class_from_name(discovery_info.name)
+            # If fallback detected, ask for device details
+            if model_class in (Fallback, Commander1, Commander4):
+                return await self.async_step_fallback_config()
+
             title = device.name or discovery_info.name
             return self.async_create_entry(  # type: ignore
                 title=title, data={CONF_ADDRESS: discovery_info.address}

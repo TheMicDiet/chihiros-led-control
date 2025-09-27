@@ -15,6 +15,9 @@ from .c2rgb import CIIRGB
 from .commander1 import Commander1
 from .commander4 import Commander4
 from .fallback import Fallback
+from .generic_rgb import GenericRGB
+from .generic_white import GenericWhite
+from .generic_wrgb import GenericWRGB
 from .tiny_terrarium_egg import TinyTerrariumEgg
 from .universal_wrgb import UniversalWRGB
 from .wrgb2 import WRGBII
@@ -64,4 +67,7 @@ __all__ = [
     "CODE2MODEL",
     "get_device_from_address",
     "get_model_class_from_name",
+    "GenericRGB",
+    "GenericWhite",
+    "GenericWRGB",
 ]
