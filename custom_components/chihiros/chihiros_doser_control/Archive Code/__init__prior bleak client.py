@@ -4,14 +4,7 @@ import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import device_registry as dr
 from homeassistant.exceptions import HomeAssistantError
-
-# NEW: use HA’s bluetooth helper + bleak-retry-connector (slot-aware, proxy-friendly)
-from homeassistant.components import bluetooth
-from bleak_retry_connector import (
-    BleakClientWithServiceCache,
-    BLEAK_RETRY_EXCEPTIONS as BLEAK_EXC,
-    establish_connection,
-)
+from bleak import BleakClient
 
 from ..const import DOMAIN  # integration domain
 from . import protocol as dp  # provides dose_ml(client, channel, ml)
@@ -23,7 +16,6 @@ DOSE_SCHEMA = vol.Schema({
     vol.Required("channel"): vol.All(vol.Coerce(int), vol.Range(min=1, max=4)),
     vol.Required("ml"):      vol.All(vol.Coerce(float), vol.Range(min=0.2, max=999.9)),
 })
-
 
 async def _resolve_address_from_device_id(hass: HomeAssistant, did: str) -> str | None:
     reg = dr.async_get(hass)
@@ -58,7 +50,6 @@ async def _resolve_address_from_device_id(hass: HomeAssistant, did: str) -> str 
 
     return None
 
-
 async def register_services(hass: HomeAssistant) -> None:
     # Avoid duplicate registration on reloads
     flag_key = f"{DOMAIN}_doser_services_registered"
@@ -87,27 +78,7 @@ async def register_services(hass: HomeAssistant) -> None:
         # Examples: 11.3 → (0,113), 25.6 → (1,0), 51.2 → (2,0).
         # Do NOT split by 25.0 mL here. dp.dose_ml() handles the 25.6+0.1 scheme.
 
-        # NEW: use HA’s bluetooth device lookup + bleak-retry-connector for reliable, slot-aware connections
-        ble_dev = bluetooth.async_ble_device_from_address(hass, addr, True)
-        if not ble_dev:
-            raise HomeAssistantError(f"Could not find BLE device for address {addr}")
-
-        client = None
-        try:
-            # The name helps HA’s bluetooth stack track/reuse a slot
-            client = await establish_connection(BleakClientWithServiceCache, ble_dev, f"{DOMAIN}-dose")
-            # Writes via protocol helper (uses client.write_gatt_char on UART_RX)
+        async with BleakClient(addr, timeout=12.0) as client:
             await dp.dose_ml(client, channel, ml)
-        except BLEAK_EXC as e:
-            # Connection slot / transient BLE issues get normalized into a user error
-            raise HomeAssistantError(f"BLE temporarily unavailable: {e}") from e
-        except Exception as e:
-            raise HomeAssistantError(f"Dose failed: {e}") from e
-        finally:
-            if client:
-                try:
-                    await client.disconnect()
-                except Exception:
-                    pass
 
     hass.services.async_register(DOMAIN, "dose_ml", _svc_dose, schema=DOSE_SCHEMA)
