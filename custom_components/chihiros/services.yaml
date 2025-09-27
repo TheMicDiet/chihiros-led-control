@@ -30,3 +30,39 @@ read_daily_totals:
       name: BLE address
       description: (Optional) Use if you don’t select a device
       example: "AA:BB:CC:DD:EE:FF"
+set_24h_dose:
+  name: Configure 24-hour dosing
+  description: Set daily total and 24-hour interval dosing for a channel.
+  fields:
+    device_id:
+      name: Device
+      description: (Optional) Pick the doser device (resolves BLE address)
+      selector: { device: {} }
+    address:
+      name: BLE address
+      description: (Optional) Use if you don’t select a device
+      example: "AA:BB:CC:DD:EE:FF"
+    channel:
+      name: Channel
+      required: true
+      selector: { number: { min: 1, max: 4, step: 1 } }
+    daily_ml:
+      name: Daily dose (mL)
+      required: true
+      selector: { number: { min: 0.2, max: 999.9, step: 0.1, mode: box } }
+    minutes:
+      name: Interval (minutes)
+      description: Minutes only (01–59). For example 16 → dose every 16 minutes.
+      required: true
+      selector: { number: { min: 1, max: 59, step: 1 } }
+    catch_up:
+      name: Catch up missed doses
+      required: false
+      default: false
+      selector: { boolean: {} }
+    weekday_mask:
+      name: Days bitmask
+      description: 127 for Any day (default). Advanced users only.
+      required: false
+      default: 127
+      selector: { number: { min: 0, max: 127, mode: box } }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import device_registry as dr
@@ -21,7 +22,6 @@ from ..const import DOMAIN  # integration domain
 from . import protocol as dp  # provides dose_ml(client, channel, ml)
 from .protocol import UART_TX  # NEW: notify UUID for totals frames
 
-import logging
 _LOGGER = logging.getLogger(__name__)
 
 # Accepts "2" or 2, "10.0" or 10.0 via Coerce; ranges match device limits.
@@ -36,6 +36,18 @@ DOSE_SCHEMA = vol.Schema({
 READ_TOTALS_SCHEMA = vol.Schema({
     vol.Exclusive("device_id", "target"): str,
     vol.Exclusive("address", "target"): str,
+})
+
+# NEW: schema to configure 24h automatic dosing
+SET_24H_SCHEMA = vol.Schema({
+    vol.Exclusive("device_id", "target"): str,
+    vol.Exclusive("address", "target"): str,
+    vol.Required("channel"):   vol.All(vol.Coerce(int), vol.Range(min=1, max=4)),
+    vol.Required("daily_ml"):  vol.All(vol.Coerce(float), vol.Range(min=0.2, max=999.9)),
+    vol.Required("minutes"):   vol.All(vol.Coerce(int), vol.Range(min=1, max=59)),  # Minutes only: 00..59
+    vol.Optional("catch_up", default=False): vol.Boolean(),  # Make up for missed doses
+    # For now we default to Any day (0x7F). If you want per-day later, we can add a list→bitmask mapper.
+    vol.Optional("weekday_mask", default=0x7F): vol.All(vol.Coerce(int), vol.Range(min=0, max=0x7F)),
 })
 
 
@@ -108,6 +120,9 @@ async def register_services(hass: HomeAssistant) -> None:
         return
     hass.data[flag_key] = True
 
+    # ────────────────────────────────────────────────────────────────
+    # Existing: one-shot manual dose
+    # ────────────────────────────────────────────────────────────────
     async def _svc_dose(call: ServiceCall):
         # Copy to allow voluptuous to coerce values
         data = DOSE_SCHEMA(dict(call.data))
@@ -198,7 +213,7 @@ async def register_services(hass: HomeAssistant) -> None:
                 pass
 
             # NEW: regardless of push success, also nudge sensors to refresh via BLE.
-            # Sensor listens on entry-id–scoped signal: f"{DOMAIN}_{entry.entry_id}_refresh_totals"
+            # Sensor listens on entry-id–scoped signal: f"{DOMAIN}_{entry_id}_refresh_totals"
             if (entry_id := _find_entry_id_for_address(hass, addr_u)):
                 async_dispatcher_send(hass, f"{DOMAIN}_{entry_id}_refresh_totals")
 
@@ -314,3 +329,92 @@ async def register_services(hass: HomeAssistant) -> None:
                     pass
 
     hass.services.async_register(DOMAIN, "read_daily_totals", _svc_read_totals, schema=READ_TOTALS_SCHEMA)
+
+    # ────────────────────────────────────────────────────────────────
+    # NEW: configure 24-hour automatic dosing program
+    # ────────────────────────────────────────────────────────────────
+    async def _svc_set_24h(call: ServiceCall):
+        data = SET_24H_SCHEMA(dict(call.data))
+
+        # Resolve address
+        addr = data.get("address")
+        if not addr and (did := data.get("device_id")):
+            addr = await _resolve_address_from_device_id(hass, did)
+        if not addr:
+            raise HomeAssistantError("Provide address or a device_id linked to a BLE address")
+
+        addr_u = addr.upper()
+        channel = int(data["channel"])
+        minutes = int(data["minutes"])              # 1..59
+        daily_ml = float(data["daily_ml"])
+        catch_up = bool(data["catch_up"])
+        weekday_mask = int(data["weekday_mask"])    # default 0x7F (“Any day”)
+
+        # Bounds already validated by schema, but clamp defensively
+        minutes = max(1, min(minutes, 59))
+
+        # Wire channel is 0-based on this protocol (manual dose uses 0-based too)
+        wire_ch = max(1, min(channel, 4)) - 1
+
+        # Split daily mL into (hi, lo) using the same 25.6 + 0.1 method
+        # hi = floor(ml/25.6); lo = round((ml - hi*25.6)*10)
+        hi = int(daily_ml // 25.6)
+        lo = int(round((daily_ml - hi * 25.6) * 10))
+        if lo == 256:  # normalize exact multiple
+            hi += 1
+            lo = 0
+        hi &= 0xFF
+        lo &= 0xFF
+
+        # Frames (decimal samples you posted map to these modes):
+        #   0x15 → [ch, 1 /* 24h */, 0 /*hour*/, minutes, 0, 0]
+        #   0x1B → [ch, weekday_mask, 1 /*?*/, 0 /*completed today?*/, hi, lo]
+        #   0x20 → [ch, 0 /*?*/, 1 if catch_up else 0]
+        f_schedule  = dp._encode(dp.CMD_MANUAL_DOSE, 0x15, [wire_ch, 1, 0, minutes, 0, 0])
+        f_daily_ml  = dp._encode(dp.CMD_MANUAL_DOSE, 0x1B, [wire_ch, weekday_mask, 1, 0, hi, lo])
+        f_catchup   = dp._encode(dp.CMD_MANUAL_DOSE, 0x20, [wire_ch, 0, 1 if catch_up else 0])
+
+        # Connect and apply
+        ble_dev = bluetooth.async_ble_device_from_address(hass, addr_u, True)
+        if not ble_dev:
+            raise HomeAssistantError(f"Could not find BLE device for address {addr_u}")
+
+        client = None
+        try:
+            client = await establish_connection(BleakClientWithServiceCache, ble_dev, f"{DOMAIN}-set-24h")
+            # Send in a stable order, small pacing between writes
+            for frame in (f_schedule, f_daily_ml, f_catchup):
+                await client.write_gatt_char(dp.UART_RX, frame, response=True)
+                await asyncio.sleep(0.1)
+
+            # Notify user via persistent_notification
+            msg = (
+                f"Configured 24-hour dosing for {addr_u}:\n"
+                f"  Channel: {channel}\n"
+                f"  Daily total: {daily_ml:.1f} mL\n"
+                f"  Interval: every {minutes} min\n"
+                f"  Days: 0x{weekday_mask:02X} (127=Any)\n"
+                f"  Catch-up: {'on' if catch_up else 'off'}"
+            )
+            await hass.services.async_call(
+                "persistent_notification", "create",
+                {"title": "Chihiros Doser — 24h program set", "message": msg},
+                blocking=False,
+            )
+
+            # Ask sensors to refresh (pull a totals snapshot if available)
+            if (entry_id := _find_entry_id_for_address(hass, addr_u)):
+                async_dispatcher_send(hass, f"{DOMAIN}_{entry_id}_refresh_totals")
+
+        except BLEAK_EXC as e:
+            raise HomeAssistantError(f"BLE temporarily unavailable: {e}") from e
+        except Exception as e:
+            raise HomeAssistantError(f"Failed to set 24-hour dosing: {e}") from e
+        finally:
+            if client:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+
+    hass.services.async_register(DOMAIN, "set_24h_dose", _svc_set_24h, schema=SET_24H_SCHEMA)
