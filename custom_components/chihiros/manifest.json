@@ -47,6 +47,10 @@
       "connectable": true
     },
     {
+      "local_name": "DYNCRGB*",
+      "connectable": true
+    },
+    {
       "local_name": "DYU*",
       "connectable": true
     },
@@ -60,6 +64,10 @@
     },
     {
       "local_name": "DYSILN*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYSL*",
       "connectable": true
     },
     {
@@ -86,5 +94,5 @@
   "requirements": [
     "typer[all]==0.15.2"
   ],
-  "version": "0.7.1"
+  "version": "0.8.0"
 }
