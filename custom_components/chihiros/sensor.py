@@ -25,7 +25,7 @@ from .chihiros_doser_control import protocol as dp    # NEW: to build a query fr
 
 _LOGGER = logging.getLogger(__name__)
 
-SCAN_TIMEOUT = 5.0            # seconds to wait for one notify (bumped to 5)
+SCAN_TIMEOUT = 8.0            # seconds to wait for one notify (slightly longer)
 UPDATE_EVERY = timedelta(minutes=15)
 
 
@@ -39,19 +39,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # Non-blocking initial refresh
     hass.async_create_task(coordinator.async_request_refresh())
 
-    # Thread-safe dispatcher: refresh immediately after "Dose Now"
+    # Thread-safe dispatcher: refresh immediately after "Dose Now" (per-entry)
     signal = f"{DOMAIN}_{entry.entry_id}_refresh_totals"
-    def _signal_refresh() -> None:
+    def _signal_refresh_entry() -> None:
         asyncio.run_coroutine_threadsafe(coordinator.async_request_refresh(), hass.loop)
-    unsub = async_dispatcher_connect(hass, signal, _signal_refresh)
+    unsub = async_dispatcher_connect(hass, signal, _signal_refresh_entry)
     entry.async_on_unload(unsub)
 
-    # NEW: push path — the dose service emits decoded totals keyed by BLE address.
-    # When we receive them, update the coordinator in-place (no BLE scan needed).
+    # NEW: also listen for per-address refresh requests
+    if address:
+        sig_addr = f"{DOMAIN}_refresh_totals_{address.lower()}"
+        def _signal_refresh_addr() -> None:
+            asyncio.run_coroutine_threadsafe(coordinator.async_request_refresh(), hass.loop)
+        unsub2 = async_dispatcher_connect(hass, sig_addr, _signal_refresh_addr)
+        entry.async_on_unload(unsub2)
+
+    # NEW: push path — when the dose service emits decoded totals, adopt them
     if address:
         push_sig = f"{DOMAIN}_push_totals_{address.lower()}"
         def _on_push(data: dict[str, Any]) -> None:
-            # Expect shape: {"ml": [x,x,x,x], "raw": bytes/bytearray}
+            # Expect {"ml":[...], "raw": bytes/bytearray}
             coordinator.async_set_updated_data(data)
         unsub_push = async_dispatcher_connect(hass, push_sig, _on_push)
         entry.async_on_unload(unsub_push)
@@ -76,7 +83,8 @@ class DoserTotalsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.debug("sensor: no BLE address; keeping last values")
                 return self._last
 
-            ble_dev = bluetooth.async_ble_device_from_address(self.hass, self.address, True)
+            # IMPORTANT: HA stores addresses uppercase
+            ble_dev = bluetooth.async_ble_device_from_address(self.hass, self.address.upper(), True)
             if not ble_dev:
                 _LOGGER.debug("sensor: no BLEDevice for %s; keeping last", self.address)
                 return self._last
@@ -90,11 +98,16 @@ class DoserTotalsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     cmd = payload[0]
                     mode = payload[5] if len(payload) >= 6 else None
                     params = list(payload[6:-1]) if len(payload) >= 8 else []
-                    _LOGGER.debug("sensor: notify cmd=0x%02X mode=%s params=%s",
-                                  cmd, f"0x{mode:02X}" if isinstance(mode, int) else None, params)
-                    # Expect 8 params: (hi0,lo0, hi1,lo1, hi2,lo2, hi3,lo3)
-                    if cmd in (0x5B, 91) and mode == 0x22 and len(params) == 8:
-                        pairs = list(zip(params[0::2], params[1::2]))
+
+                    _LOGGER.debug(
+                        "sensor: notify cmd=0x%02X mode=%s len(params)=%d",
+                        cmd, f"0x{mode:02X}" if isinstance(mode, int) else None, len(params)
+                    )
+
+                    # Be tolerant: accept >=8 params; use first 8 = 4×(hi,lo)
+                    if cmd in (0x5B, 91) and mode == 0x22 and len(params) >= 8:
+                        first8 = params[:8]
+                        pairs = list(zip(first8[0::2], first8[1::2]))
                         ml = [round(h * 25.6 + l / 10.0, 1) for h, l in pairs]
                         if not fut.done():
                             fut.set_result({"ml": ml, "raw": bytes(payload)})
@@ -109,7 +122,7 @@ class DoserTotalsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 await client.start_notify(UART_TX, _cb)
 
-                # Actively request totals via 5B/0x22
+                # Actively request totals via 5B/0x22 (requires dp.encode_5b)
                 try:
                     query = dp.encode_5b(0x22, [])
                     await client.write_gatt_char(dp.UART_RX, query, response=True)

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Tuple, Union
+from typing import List, Tuple, Union, Optional
 from decimal import Decimal, ROUND_HALF_UP, ROUND_FLOOR
 
 # Nordic UART
@@ -11,7 +11,7 @@ UART_TX      = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  # notify
 CMD_MANUAL_DOSE  = 0xA5
 MODE_MANUAL_DOSE = 0x1B
 
-# NEW: LED-style (0x5B) command used for totals-query frames (mode 0x22)
+# LED-style (0x5B) command used for totals-query frames (mode 0x22)
 CMD_LED_QUERY = 0x5B  # 91
 
 _last_msg_id: Tuple[int, int] = (0, 0)
@@ -50,9 +50,9 @@ def _sanitize_params(params: List[int]) -> List[int]:
 
 def _encode(cmd: int, mode: int, params: List[int]) -> bytes:
     """
-    Build frame: [cmd, 0x01, len, msg_hi, msg_lo, mode, *params, checksum]
+    A5-style frame:
+      [cmd, 0x01, len(params)+5, msg_hi, msg_lo, mode, *params, checksum]
     If checksum equals 0x5A, try a few different msg ids; do NOT mutate params.
-    (This is the A5-style encoder with length = len(params) + 5.)
     """
     ps = _sanitize_params(params)
     body = b""
@@ -65,10 +65,10 @@ def _encode(cmd: int, mode: int, params: List[int]) -> bytes:
             break
     return body + bytes([chk])
 
-# NEW: 0x5B LED-style encoder (length = len(params) + 2)
+# 0x5B LED-style encoder (length = len(params) + 2)
 def encode_5b(mode: int, params: List[int]) -> bytes:
     """
-    Build a 0x5B (LED-style) frame used by the doser for 'totals' queries:
+    0x5B (LED-style) frame used by the doser for 'totals' queries:
       [0x5B, 0x01, len(params)+2, msg_hi, msg_lo, mode, *params, checksum]
     Same checksum/byte-avoid rules as A5.
     """
@@ -93,7 +93,6 @@ def _split_ml_25_6(total_ml: Union[float, int, str]) -> tuple[int, int]:
     Normalize exact multiples so 25.6 -> (1,0) not (0,256).
     Accepts "51,3" or "51.3"; clamps to 0.2..999.9 with 0.1 resolution.
     """
-    # FIX: normalize string first; Decimal("...").replace(...) is not valid.
     if isinstance(total_ml, str):
         s = total_ml.replace(",", ".")
     else:
@@ -108,7 +107,7 @@ def _split_ml_25_6(total_ml: Union[float, int, str]) -> tuple[int, int]:
     rem = (q - Decimal(hi) * Decimal("25.6")).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
     lo  = int((rem * 10).to_integral_value(rounding=ROUND_HALF_UP))
 
-    if lo == 256:  # normalize exact multiples (e.g., 25.6 → (1,0))
+    if lo == 256:  # normalize exact multiples (e.g., 25.6 → (1,0)) — defensive
         hi += 1
         lo  = 0
     return hi & 0xFF, lo & 0xFF
@@ -135,3 +134,30 @@ async def dose_ml(client, channel_1based: int, ml: Union[float, int, str]) -> No
     ml_hi, ml_lo = _split_ml_25_6(ml)
     pkt = _encode(CMD_MANUAL_DOSE, MODE_MANUAL_DOSE, [ch, 0x00, 0x00, ml_hi, ml_lo])
     await client.write_gatt_char(UART_RX, pkt, response=True)
+
+# ---------- Convenience helpers for sensors/services ----------
+
+def build_totals_query() -> bytes:
+    """
+    Prefer a 0x5B/0x22 totals request; fall back to A5/0x22 if needed.
+    """
+    try:
+        return encode_5b(0x22, [])
+    except Exception:
+        # Shouldn't normally fail, but keep a fallback consistent with your callers.
+        return _encode(CMD_MANUAL_DOSE, 0x22, [])
+
+def parse_totals_frame(payload: bytes | bytearray) -> Optional[list[float]]:
+    """
+    If 'payload' looks like a totals frame (0x5B, mode 0x22, 8 params),
+    return [ml0, ml1, ml2, ml3] using the 25.6 + 0.1 scheme, else None.
+    """
+    if not isinstance(payload, (bytes, bytearray)) or len(payload) < 8:
+        return None
+    cmd = payload[0]
+    mode = payload[5] if len(payload) >= 6 else None
+    params = list(payload[6:-1]) if len(payload) >= 8 else []
+    if cmd in (CMD_LED_QUERY, 0x5B) and mode == 0x22 and len(params) == 8:
+        pairs = list(zip(params[0::2], params[1::2]))
+        return [round(h * 25.6 + l / 10.0, 1) for h, l in pairs]
+    return None

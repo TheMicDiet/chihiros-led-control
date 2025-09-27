@@ -126,12 +126,20 @@ async def register_services(hass: HomeAssistant) -> None:
             # Writes via protocol helper (uses client.write_gatt_char on UART_RX)
             await dp.dose_ml(client, channel, ml)
 
-            # OPTIONAL: some firmwares only reply on request — send a 5B/0x22 query
+            # OPTIONAL: some firmwares only reply on request — send a totals query
+            # Prefer 5B/0x22; if helper not present or it fails, fall back to A5/0x22.
             try:
-                query = dp.encode_5b(0x22, [])  # LED-style totals request
+                if hasattr(dp, "encode_5b"):
+                    query = dp.encode_5b(0x22, [])
+                else:
+                    raise AttributeError("encode_5b missing")
                 await client.write_gatt_char(dp.UART_RX, query, response=True)
             except Exception:
-                pass
+                try:
+                    query = dp._encode(dp.CMD_MANUAL_DOSE, 0x22, [])
+                    await client.write_gatt_char(dp.UART_RX, query, response=True)
+                except Exception:
+                    pass  # harmless if ignored
 
             # Wait briefly for a totals frame and broadcast to sensors if received
             try:
@@ -152,6 +160,9 @@ async def register_services(hass: HomeAssistant) -> None:
                     await client.stop_notify(UART_TX)
                 except Exception:
                     pass
+
+            # NEW: regardless of push success, also nudge sensors to refresh via BLE.
+            async_dispatcher_send(hass, f"{DOMAIN}_refresh_totals_{addr.lower()}")
 
         except BLEAK_EXC as e:
             # Connection slot / transient BLE issues get normalized into a user error

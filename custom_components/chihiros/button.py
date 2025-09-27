@@ -66,3 +66,8 @@ class DoserDoseNowButton(ButtonEntity):
         # coordinator.async_request_refresh() when it receives this signal.
         await asyncio.sleep(0.3)
         async_dispatcher_send(self._hass, f"{DOMAIN}_{self._entry.entry_id}_refresh_totals")
+
+        # NEW: also send a per-address refresh signal (sensor.py subscribes to this too)
+        addr = getattr(self._coord, "address", None)
+        if addr:
+            async_dispatcher_send(self._hass, f"{DOMAIN}_refresh_totals_{addr.lower()}")
