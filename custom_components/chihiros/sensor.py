@@ -46,6 +46,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     unsub = async_dispatcher_connect(hass, signal, _signal_refresh)
     entry.async_on_unload(unsub)
 
+    # NEW: push path — the dose service emits decoded totals keyed by BLE address.
+    # When we receive them, update the coordinator in-place (no BLE scan needed).
+    if address:
+        push_sig = f"{DOMAIN}_push_totals_{address.lower()}"
+        def _on_push(data: dict[str, Any]) -> None:
+            # Expect shape: {"ml": [x,x,x,x], "raw": bytes/bytearray}
+            coordinator.async_set_updated_data(data)
+        unsub_push = async_dispatcher_connect(hass, push_sig, _on_push)
+        entry.async_on_unload(unsub_push)
+
     sensors = [ChDoserDailyTotalSensor(coordinator, entry, ch) for ch in range(4)]
     async_add_entities(sensors, update_before_add=False)
 

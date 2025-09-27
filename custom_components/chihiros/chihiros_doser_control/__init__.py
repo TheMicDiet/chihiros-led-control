@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import device_registry as dr
 from homeassistant.exceptions import HomeAssistantError
+
+# NEW: push updated totals straight to the sensors after a dose
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 # NEW: use HA’s bluetooth helper + bleak-retry-connector (slot-aware, proxy-friendly)
 from homeassistant.components import bluetooth
@@ -15,6 +19,7 @@ from bleak_retry_connector import (
 
 from ..const import DOMAIN  # integration domain
 from . import protocol as dp  # provides dose_ml(client, channel, ml)
+from .protocol import UART_TX  # NEW: notify UUID for totals frames
 
 # Accepts "2" or 2, "10.0" or 10.0 via Coerce; ranges match device limits.
 DOSE_SCHEMA = vol.Schema({
@@ -92,12 +97,63 @@ async def register_services(hass: HomeAssistant) -> None:
         if not ble_dev:
             raise HomeAssistantError(f"Could not find BLE device for address {addr}")
 
+        # NEW: in the same BLE session as the dose, listen briefly for a totals frame
+        # (5B/0x22 with 8 params). If we get one, decode and push it to sensors immediately.
+        got: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
+
+        def _on_notify(_char, payload: bytearray) -> None:
+            try:
+                if len(payload) < 8:
+                    return
+                cmd = payload[0]
+                mode = payload[5] if len(payload) >= 6 else None
+                params = list(payload[6:-1]) if len(payload) >= 8 else []
+                if cmd in (0x5B, 91) and mode == 0x22 and len(params) == 8:
+                    if not got.done():
+                        got.set_result(bytes(payload))
+            except Exception:
+                # never raise from callback
+                pass
+
         client = None
         try:
             # The name helps HA’s bluetooth stack track/reuse a slot
             client = await establish_connection(BleakClientWithServiceCache, ble_dev, f"{DOMAIN}-dose")
+
+            # Start notify *before* dosing so we don’t miss a quick totals push
+            await client.start_notify(UART_TX, _on_notify)
+
             # Writes via protocol helper (uses client.write_gatt_char on UART_RX)
             await dp.dose_ml(client, channel, ml)
+
+            # OPTIONAL: some firmwares only reply on request — poke once.
+            try:
+                query = dp._encode(dp.CMD_MANUAL_DOSE, 0x22, [])  # params empty
+                await client.write_gatt_char(dp.UART_RX, query, response=True)
+            except Exception:
+                # harmless if ignored
+                pass
+
+            # Wait briefly for a totals frame and broadcast to sensors if received
+            try:
+                payload = await asyncio.wait_for(got, timeout=2.5)
+                params = list(payload[6:-1])
+                pairs = list(zip(params[0::2], params[1::2]))
+                mls = [round(h * 25.6 + l / 10.0, 1) for h, l in pairs]
+                async_dispatcher_send(
+                    hass,
+                    f"{DOMAIN}_push_totals_{addr.lower()}",
+                    {"ml": mls, "raw": payload},
+                )
+            except asyncio.TimeoutError:
+                # No immediate totals — sensors can still poll later
+                pass
+            finally:
+                try:
+                    await client.stop_notify(UART_TX)
+                except Exception:
+                    pass
+
         except BLEAK_EXC as e:
             # Connection slot / transient BLE issues get normalized into a user error
             raise HomeAssistantError(f"BLE temporarily unavailable: {e}") from e
