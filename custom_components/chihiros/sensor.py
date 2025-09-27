@@ -38,13 +38,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # Do NOT block platform setup on BLE; schedule a refresh instead
     hass.async_create_task(coordinator.async_request_refresh())
 
-    # Listen for “Dose Now” to force an immediate refresh
+    # Listen for “Dose Now” to force an immediate refresh — thread-safe scheduling
     signal = f"{DOMAIN}_{entry.entry_id}_refresh_totals"
-    unsub = async_dispatcher_connect(
-        hass,
-        signal,
-        lambda: hass.async_create_task(coordinator.async_request_refresh()),
-    )
+
+    def _signal_refresh() -> None:
+        # This is safe even if dispatcher fires off-thread
+        asyncio.run_coroutine_threadsafe(
+            coordinator.async_request_refresh(), hass.loop
+        )
+
+    unsub = async_dispatcher_connect(hass, signal, _signal_refresh)
     entry.async_on_unload(unsub)
 
     sensors = [ChDoserDailyTotalSensor(coordinator, entry, ch) for ch in range(4)]
@@ -81,8 +84,12 @@ class DoserTotalsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     cmd = payload[0]
                     mode = payload[5] if len(payload) >= 6 else None
                     params = list(payload[6:-1]) if len(payload) >= 8 else []
-                    _LOGGER.debug("sensor: notify cmd=0x%02X mode=%s params=%s",
-                                  cmd, f"0x{mode:02X}" if isinstance(mode, int) else None, params)
+                    _LOGGER.debug(
+                        "sensor: notify cmd=0x%02X mode=%s params=%s",
+                        cmd,
+                        f"0x{mode:02X}" if isinstance(mode, int) else None,
+                        params,
+                    )
                     # Expect 8 params: (hi0,lo0, hi1,lo1, hi2,lo2, hi3,lo3)
                     if cmd in (0x5B, 91) and mode == 0x22 and len(params) == 8:
                         pairs = list(zip(params[0::2], params[1::2]))
