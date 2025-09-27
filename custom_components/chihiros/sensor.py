@@ -109,12 +109,11 @@ class DoserTotalsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 await client.start_notify(UART_TX, _cb)
 
-                # NEW: actively request totals (A5 / mode 0x22) — many firmwares only respond on request
+                # Actively request totals via 5B/0x22
                 try:
-                    query = dp._encode(dp.CMD_MANUAL_DOSE, 0x22, [])  # params empty
+                    query = dp.encode_5b(0x22, [])
                     await client.write_gatt_char(dp.UART_RX, query, response=True)
                 except Exception:
-                    # harmless if the firmware ignores unknown/empty queries
                     _LOGGER.debug("sensor: totals query write failed/ignored", exc_info=True)
 
                 try:

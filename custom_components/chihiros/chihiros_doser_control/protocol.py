@@ -11,6 +11,9 @@ UART_TX      = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  # notify
 CMD_MANUAL_DOSE  = 0xA5
 MODE_MANUAL_DOSE = 0x1B
 
+# NEW: LED-style (0x5B) command used for totals-query frames (mode 0x22)
+CMD_LED_QUERY = 0x5B  # 91
+
 _last_msg_id: Tuple[int, int] = (0, 0)
 
 def _next_msg_id() -> Tuple[int, int]:
@@ -34,17 +37,47 @@ def _xor_checksum(buf: bytes) -> int:
         c ^= b
     return c & 0xFF
 
+def _sanitize_params(params: List[int]) -> List[int]:
+    """
+    Some firmwares avoid 0x5A in payload bytes; map to 0x59.
+    (Consistent with the rest of the project’s dosing helpers.)
+    """
+    out: List[int] = []
+    for p in params:
+        b = p & 0xFF
+        out.append(0x59 if b == 0x5A else b)
+    return out
+
 def _encode(cmd: int, mode: int, params: List[int]) -> bytes:
     """
     Build frame: [cmd, 0x01, len, msg_hi, msg_lo, mode, *params, checksum]
     If checksum equals 0x5A, try a few different msg ids; do NOT mutate params.
+    (This is the A5-style encoder with length = len(params) + 5.)
     """
-    ps = [p & 0xFF for p in params]
+    ps = _sanitize_params(params)
     body = b""
     chk = 0
     for _ in range(8):
         hi, lo = _next_msg_id()
         body = bytes([cmd, 0x01, len(ps) + 5, hi, lo, mode, *ps])
+        chk = _xor_checksum(body)
+        if chk != 0x5A:
+            break
+    return body + bytes([chk])
+
+# NEW: 0x5B LED-style encoder (length = len(params) + 2)
+def encode_5b(mode: int, params: List[int]) -> bytes:
+    """
+    Build a 0x5B (LED-style) frame used by the doser for 'totals' queries:
+      [0x5B, 0x01, len(params)+2, msg_hi, msg_lo, mode, *params, checksum]
+    Same checksum/byte-avoid rules as A5.
+    """
+    ps = _sanitize_params(params)
+    body = b""
+    chk = 0
+    for _ in range(8):
+        hi, lo = _next_msg_id()
+        body = bytes([CMD_LED_QUERY, 0x01, len(ps) + 2, hi, lo, mode, *ps])
         chk = _xor_checksum(body)
         if chk != 0x5A:
             break
@@ -60,8 +93,13 @@ def _split_ml_25_6(total_ml: Union[float, int, str]) -> tuple[int, int]:
     Normalize exact multiples so 25.6 -> (1,0) not (0,256).
     Accepts "51,3" or "51.3"; clamps to 0.2..999.9 with 0.1 resolution.
     """
-    q = Decimal(str(total_ml)).replace(",", ".") if isinstance(total_ml, str) else Decimal(str(total_ml))
-    q = q.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    # FIX: normalize string first; Decimal("...").replace(...) is not valid.
+    if isinstance(total_ml, str):
+        s = total_ml.replace(",", ".")
+    else:
+        s = str(total_ml)
+
+    q = Decimal(s).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
 
     if q < Decimal("0.2") or q > Decimal("999.9"):
         raise ValueError("ml must be within 0.2..999.9")

@@ -126,17 +126,16 @@ async def register_services(hass: HomeAssistant) -> None:
             # Writes via protocol helper (uses client.write_gatt_char on UART_RX)
             await dp.dose_ml(client, channel, ml)
 
-            # OPTIONAL: some firmwares only reply on request — poke once.
+            # OPTIONAL: some firmwares only reply on request — send a 5B/0x22 query
             try:
-                query = dp._encode(dp.CMD_MANUAL_DOSE, 0x22, [])  # params empty
+                query = dp.encode_5b(0x22, [])  # LED-style totals request
                 await client.write_gatt_char(dp.UART_RX, query, response=True)
             except Exception:
-                # harmless if ignored
                 pass
 
             # Wait briefly for a totals frame and broadcast to sensors if received
             try:
-                payload = await asyncio.wait_for(got, timeout=2.5)
+                payload = await asyncio.wait_for(got, timeout=5.0)
                 params = list(payload[6:-1])
                 pairs = list(zip(params[0::2], params[1::2]))
                 mls = [round(h * 25.6 + l / 10.0, 1) for h, l in pairs]
