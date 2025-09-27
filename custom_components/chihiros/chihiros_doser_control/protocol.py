@@ -11,7 +11,7 @@ UART_TX      = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  # notify
 CMD_MANUAL_DOSE  = 0xA5
 MODE_MANUAL_DOSE = 0x1B
 
-# LED-style (0x5B) command used for totals-query frames (mode 0x22)
+# LED-style (0x5B) command used for totals-query frames (modes 0x22, 0x1E seen)
 CMD_LED_QUERY = 0x5B  # 91
 
 _last_msg_id: Tuple[int, int] = (0, 0)
@@ -137,27 +137,55 @@ async def dose_ml(client, channel_1based: int, ml: Union[float, int, str]) -> No
 
 # ---------- Convenience helpers for sensors/services ----------
 
+def build_totals_probes() -> list[bytes]:
+    """
+    Return a small set of frames different firmwares respond to for 'daily totals'.
+    Order matters; we try LED-style (0x5B) first, then A5 fallbacks.
+    """
+    frames: list[bytes] = []
+    try:
+        # 0x5B (LED-style) in two observed modes
+        frames.append(encode_5b(0x22, []))
+        frames.append(encode_5b(0x1E, []))
+    except Exception:
+        pass
+    try:
+        # A5-style fallbacks (some firmwares echo totals after these)
+        frames.append(_encode(CMD_MANUAL_DOSE, 0x22, []))
+        frames.append(_encode(CMD_MANUAL_DOSE, 0x1E, []))
+    except Exception:
+        pass
+    # de-dup while preserving order
+    seen, uniq = set(), []
+    for f in frames:
+        b = bytes(f)
+        if b not in seen:
+            seen.add(b)
+            uniq.append(f)
+    return uniq
+
 def build_totals_query() -> bytes:
     """
-    Prefer a 0x5B/0x22 totals request; fall back to A5/0x22 if needed.
+    Backwards-compatible helper: prefer a 0x5B/0x22 totals request;
+    keep A5/0x22 as a fallback if needed.
     """
     try:
         return encode_5b(0x22, [])
     except Exception:
-        # Shouldn't normally fail, but keep a fallback consistent with your callers.
         return _encode(CMD_MANUAL_DOSE, 0x22, [])
 
 def parse_totals_frame(payload: bytes | bytearray) -> Optional[list[float]]:
     """
-    If 'payload' looks like a totals frame (0x5B, mode 0x22, 8 params),
-    return [ml0, ml1, ml2, ml3] using the 25.6 + 0.1 scheme, else None.
+    Tolerant decoder:
+    If 'payload' looks like a totals frame (cmd 0x5B with exactly 8 params),
+    return [ml0, ml1, ml2, ml3] using the 25.6 + 0.1 scheme; else None.
+    (Observed modes include 0x22 and 0x1E; we do not require a specific mode.)
     """
-    if not isinstance(payload, (bytes, bytearray)) or len(payload) < 8:
+    if not isinstance(payload, (bytes, bytearray)) or len(payload) < 15:
         return None
     cmd = payload[0]
-    mode = payload[5] if len(payload) >= 6 else None
-    params = list(payload[6:-1]) if len(payload) >= 8 else []
-    if cmd in (CMD_LED_QUERY, 0x5B) and mode == 0x22 and len(params) == 8:
+    params = list(payload[6:-1])  # everything after 'mode' up to checksum
+    if cmd == CMD_LED_QUERY and len(params) == 8:
         pairs = list(zip(params[0::2], params[1::2]))
         return [round(h * 25.6 + l / 10.0, 1) for h, l in pairs]
     return None

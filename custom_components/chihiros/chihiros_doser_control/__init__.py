@@ -111,17 +111,27 @@ async def register_services(hass: HomeAssistant) -> None:
         # Do NOT split by 25.0 mL here. dp.dose_ml() handles the 25.6+0.1 scheme.
 
         # NEW: use HA’s bluetooth device lookup + bleak-retry-connector for reliable, slot-aware connections
-        ble_dev = bluetooth.async_ble_device_from_address(hass, addr, True)
+        ble_dev = bluetooth.async_ble_device_from_address(hass, addr.upper(), True)
         if not ble_dev:
             raise HomeAssistantError(f"Could not find BLE device for address {addr}")
 
-        # NEW: in the same BLE session as the dose, listen briefly for a totals frame
-        # (5B/0x22 with 8 params). If we get one, decode and push it to sensors immediately.
+        # NEW: in the same BLE session as the dose, listen briefly for a totals frame.
         got: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
 
         def _on_notify(_char, payload: bytearray) -> None:
             try:
-                vals = dp.parse_totals_frame(payload)
+                # Prefer tolerant helper (accept any 0x5B totals w/ 8 params)
+                vals = None
+                if hasattr(dp, "parse_totals_frame"):
+                    vals = dp.parse_totals_frame(payload)
+                else:
+                    # Fallback: accept 0x5B with at least 8 params (first 8 → 4×(hi,lo))
+                    if len(payload) >= 8 and payload[0] in (0x5B, 91):
+                        params = list(payload[6:-1])
+                        if len(params) >= 8:
+                            p8 = params[:8]
+                            pairs = list(zip(p8[0::2], p8[1::2]))
+                            vals = [round(h * 25.6 + l / 10.0, 1) for h, l in pairs]
                 if vals and not got.done():
                     got.set_result(bytes(payload))
             except Exception:
@@ -139,23 +149,50 @@ async def register_services(hass: HomeAssistant) -> None:
             # Writes via protocol helper (uses client.write_gatt_char on UART_RX)
             await dp.dose_ml(client, channel, ml)
 
-            # OPTIONAL: some firmwares only reply on request — send a totals query
-            # Prefer 5B/0x22; if helper not present or it fails, fall back to A5/0x22.
+            # NEW: actively try a small set of probe frames to trigger totals push
+            frames: list[bytes] = []
             try:
-                if hasattr(dp, "build_totals_query"):
-                    query = dp.build_totals_query()
-                elif hasattr(dp, "encode_5b"):
-                    query = dp.encode_5b(0x22, [])
-                else:
-                    query = dp._encode(dp.CMD_MANUAL_DOSE, 0x22, [])
-                await client.write_gatt_char(dp.UART_RX, query, response=True)
+                if hasattr(dp, "build_totals_probes"):
+                    frames = list(dp.build_totals_probes())  # preferred helper
             except Exception:
-                pass  # harmless if ignored
+                frames = []
+
+            if not frames:
+                # Fallback set: 5B/0x22, 5B/0x1E, A5/0x22, A5/0x1E
+                try:
+                    if hasattr(dp, "encode_5b"):
+                        frames.extend([dp.encode_5b(0x22, []), dp.encode_5b(0x1E, [])])
+                except Exception:
+                    pass
+                try:
+                    frames.extend([
+                        dp._encode(dp.CMD_MANUAL_DOSE, 0x22, []),
+                        dp._encode(dp.CMD_MANUAL_DOSE, 0x1E, []),
+                    ])
+                except Exception:
+                    pass
+
+            for idx, frame in enumerate(frames):
+                try:
+                    await client.write_gatt_char(dp.UART_RX, frame, response=True)
+                except Exception:
+                    # harmless if a particular probe is ignored
+                    pass
+                await asyncio.sleep(0.08)  # tiny spacing; keeps us under overall timeout
 
             # Wait briefly for a totals frame and broadcast to sensors if received
             try:
                 payload = await asyncio.wait_for(got, timeout=5.0)
-                vals = dp.parse_totals_frame(payload) or []
+                vals = None
+                if hasattr(dp, "parse_totals_frame"):
+                    vals = dp.parse_totals_frame(payload)
+                if vals is None:
+                    params = list(payload[6:-1])
+                    p8 = params[:8] if len(params) >= 8 else []
+                    pairs = list(zip(p8[0::2], p8[1::2]))
+                    vals = [round(h * 25.6 + l / 10.0, 1) for h, l in pairs] if pairs else []
+
+                # Push to sensors immediately (per-address)
                 async_dispatcher_send(
                     hass,
                     f"{DOMAIN}_push_totals_{addr.lower()}",
@@ -202,7 +239,7 @@ async def register_services(hass: HomeAssistant) -> None:
             raise HomeAssistantError("Provide address or a device_id linked to a BLE address")
 
         # Use HA bluetooth + bleak-retry-connector for a slot-aware connection
-        ble_dev = bluetooth.async_ble_device_from_address(hass, addr, True)
+        ble_dev = bluetooth.async_ble_device_from_address(hass, addr.upper(), True)
         if not ble_dev:
             raise HomeAssistantError(f"Could not find BLE device for address {addr}")
 
@@ -210,7 +247,16 @@ async def register_services(hass: HomeAssistant) -> None:
 
         def _on_notify(_char, payload: bytearray) -> None:
             try:
-                vals = dp.parse_totals_frame(payload)
+                vals = None
+                if hasattr(dp, "parse_totals_frame"):
+                    vals = dp.parse_totals_frame(payload)
+                else:
+                    if len(payload) >= 8 and payload[0] in (0x5B, 91):
+                        params = list(payload[6:-1])
+                        if len(params) >= 8:
+                            p8 = params[:8]
+                            pairs = list(zip(p8[0::2], p8[1::2]))
+                            vals = [round(h * 25.6 + l / 10.0, 1) for h, l in pairs]
                 if vals and not got.done():
                     got.set_result(bytes(payload))
             except Exception:
@@ -221,21 +267,46 @@ async def register_services(hass: HomeAssistant) -> None:
             client = await establish_connection(BleakClientWithServiceCache, ble_dev, f"{DOMAIN}-read-totals")
             await client.start_notify(UART_TX, _on_notify)
 
-            # Send a totals query (0x5B/0x22 preferred)
+            # NEW: multi-probe totals requests (prefer helper; else fallback set)
+            frames: list[bytes] = []
             try:
-                if hasattr(dp, "build_totals_query"):
-                    query = dp.build_totals_query()
-                elif hasattr(dp, "encode_5b"):
-                    query = dp.encode_5b(0x22, [])
-                else:
-                    query = dp._encode(dp.CMD_MANUAL_DOSE, 0x22, [])
-                await client.write_gatt_char(dp.UART_RX, query, response=True)
+                if hasattr(dp, "build_totals_probes"):
+                    frames = list(dp.build_totals_probes())
             except Exception:
-                pass
+                frames = []
+
+            if not frames:
+                try:
+                    if hasattr(dp, "encode_5b"):
+                        frames.extend([dp.encode_5b(0x22, []), dp.encode_5b(0x1E, [])])
+                except Exception:
+                    pass
+                try:
+                    frames.extend([
+                        dp._encode(dp.CMD_MANUAL_DOSE, 0x22, []),
+                        dp._encode(dp.CMD_MANUAL_DOSE, 0x1E, []),
+                    ])
+                except Exception:
+                    pass
+
+            for idx, frame in enumerate(frames):
+                try:
+                    await client.write_gatt_char(dp.UART_RX, frame, response=True)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.08)
 
             try:
                 payload = await asyncio.wait_for(got, timeout=5.0)
-                vals = dp.parse_totals_frame(payload) or [None, None, None, None]
+                vals = None
+                if hasattr(dp, "parse_totals_frame"):
+                    vals = dp.parse_totals_frame(payload)
+                if vals is None:
+                    params = list(payload[6:-1])
+                    p8 = params[:8] if len(params) >= 8 else []
+                    pairs = list(zip(p8[0::2], p8[1::2]))
+                    vals = [round(h * 25.6 + l / 10.0, 1) for h, l in pairs] if pairs else [None]*4
+
                 # Print via persistent_notification (visible in UI)
                 msg = (
                     f"Daily totals for {addr}:\n"

@@ -68,7 +68,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 
 class DoserTotalsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Listen briefly for the 0x5B/0x22 totals notify and decode hi/lo pairs."""
+    """Listen briefly for the 0x5B totals notify and decode hi/lo pairs (modes vary)."""
 
     def __init__(self, hass: HomeAssistant, address: Optional[str], entry: ConfigEntry):
         super().__init__(hass, logger=_LOGGER, name=f"{DOMAIN}-doser-totals", update_interval=UPDATE_EVERY)
@@ -95,22 +95,27 @@ class DoserTotalsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 try:
                     if len(payload) < 8:
                         return
-                    cmd = payload[0]
-                    mode = payload[5] if len(payload) >= 6 else None
-                    params = list(payload[6:-1]) if len(payload) >= 8 else []
 
-                    _LOGGER.debug(
-                        "sensor: notify cmd=0x%02X mode=%s len(params)=%d",
-                        cmd, f"0x{mode:02X}" if isinstance(mode, int) else None, len(params)
-                    )
+                    # NEW: use tolerant decoder if available; else fallback logic
+                    values: Optional[list[float]] = None
+                    if hasattr(dp, "parse_totals_frame"):
+                        try:
+                            values = dp.parse_totals_frame(payload)  # tolerant (any 0x5B mode, 8 params)
+                        except Exception:
+                            values = None
 
-                    # Be tolerant: accept >=8 params; use first 8 = 4×(hi,lo)
-                    if cmd in (0x5B, 91) and mode == 0x22 and len(params) >= 8:
-                        first8 = params[:8]
-                        pairs = list(zip(first8[0::2], first8[1::2]))
-                        ml = [round(h * 25.6 + l / 10.0, 1) for h, l in pairs]
-                        if not fut.done():
-                            fut.set_result({"ml": ml, "raw": bytes(payload)})
+                    if values is None:
+                        # Fallback: accept cmd=0x5B and at least 8 params after mode; use first 8
+                        cmd = payload[0]
+                        params = list(payload[6:-1]) if len(payload) >= 8 else []
+                        if cmd in (0x5B, 91) and len(params) >= 8:
+                            p8 = params[:8]
+                            pairs = list(zip(p8[0::2], p8[1::2]))
+                            values = [round(h * 25.6 + l / 10.0, 1) for h, l in pairs]
+
+                    if values is not None and not fut.done():
+                        fut.set_result({"ml": values, "raw": bytes(payload)})
+
                 except Exception:
                     _LOGGER.exception("sensor: notify parse error")
 
@@ -122,12 +127,35 @@ class DoserTotalsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 await client.start_notify(UART_TX, _cb)
 
-                # Actively request totals via 5B/0x22 (requires dp.encode_5b)
+                # NEW: actively try a small set of probe frames to trigger totals push
+                frames: list[bytes] = []
                 try:
-                    query = dp.encode_5b(0x22, [])
-                    await client.write_gatt_char(dp.UART_RX, query, response=True)
+                    # Prefer helper from protocol.py if present
+                    if hasattr(dp, "build_totals_probes"):
+                        frames = list(dp.build_totals_probes())
                 except Exception:
-                    _LOGGER.debug("sensor: totals query write failed/ignored", exc_info=True)
+                    frames = []
+
+                if not frames:
+                    # Fallback set: 5B/0x22, 5B/0x1E, A5/0x22, A5/0x1E
+                    try:
+                        frames.extend([dp.encode_5b(0x22, []), dp.encode_5b(0x1E, [])])
+                    except Exception:
+                        pass
+                    try:
+                        frames.extend([dp._encode(dp.CMD_MANUAL_DOSE, 0x22, []),
+                                       dp._encode(dp.CMD_MANUAL_DOSE, 0x1E, [])])
+                    except Exception:
+                        pass
+
+                # Send probes (lightly spaced) then wait for a notify
+                for idx, frame in enumerate(frames):
+                    try:
+                        await client.write_gatt_char(dp.UART_RX, frame, response=True)
+                        _LOGGER.debug("sensor: sent totals probe %d/%d (len=%d)", idx + 1, len(frames), len(frame))
+                    except Exception:
+                        _LOGGER.debug("sensor: probe write failed (idx=%d)", idx, exc_info=True)
+                    await asyncio.sleep(0.08)  # small gap; keep under SCAN_TIMEOUT budget
 
                 try:
                     res = await asyncio.wait_for(fut, timeout=SCAN_TIMEOUT)
