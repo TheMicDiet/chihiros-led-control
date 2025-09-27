@@ -29,6 +29,12 @@ DOSE_SCHEMA = vol.Schema({
     vol.Required("ml"):      vol.All(vol.Coerce(float), vol.Range(min=0.2, max=999.9)),
 })
 
+# NEW: schema for read_daily_totals (either device_id or address)
+READ_TOTALS_SCHEMA = vol.Schema({
+    vol.Exclusive("device_id", "target"): str,
+    vol.Exclusive("address", "target"): str,
+})
+
 
 async def _resolve_address_from_device_id(hass: HomeAssistant, did: str) -> str | None:
     reg = dr.async_get(hass)
@@ -61,6 +67,18 @@ async def _resolve_address_from_device_id(hass: HomeAssistant, did: str) -> str 
         if data and hasattr(data.coordinator, "address"):
             return data.coordinator.address
 
+    return None
+
+# NEW: find the config_entry_id for a given BLE address so we can emit the
+# entry-id–scoped refresh signal that sensor.py listens for.
+def _find_entry_id_for_address(hass: HomeAssistant, addr: str) -> str | None:
+    data_by_entry = hass.data.get(DOMAIN, {})
+    addr_l = (addr or "").lower()
+    for entry_id, data in data_by_entry.items():
+        coord = getattr(data, "coordinator", None)
+        c_addr = getattr(coord, "address", None)
+        if isinstance(c_addr, str) and c_addr.lower() == addr_l:
+            return entry_id
     return None
 
 
@@ -103,14 +121,9 @@ async def register_services(hass: HomeAssistant) -> None:
 
         def _on_notify(_char, payload: bytearray) -> None:
             try:
-                if len(payload) < 8:
-                    return
-                cmd = payload[0]
-                mode = payload[5] if len(payload) >= 6 else None
-                params = list(payload[6:-1]) if len(payload) >= 8 else []
-                if cmd in (0x5B, 91) and mode == 0x22 and len(params) == 8:
-                    if not got.done():
-                        got.set_result(bytes(payload))
+                vals = dp.parse_totals_frame(payload)
+                if vals and not got.done():
+                    got.set_result(bytes(payload))
             except Exception:
                 # never raise from callback
                 pass
@@ -129,28 +142,24 @@ async def register_services(hass: HomeAssistant) -> None:
             # OPTIONAL: some firmwares only reply on request — send a totals query
             # Prefer 5B/0x22; if helper not present or it fails, fall back to A5/0x22.
             try:
-                if hasattr(dp, "encode_5b"):
+                if hasattr(dp, "build_totals_query"):
+                    query = dp.build_totals_query()
+                elif hasattr(dp, "encode_5b"):
                     query = dp.encode_5b(0x22, [])
                 else:
-                    raise AttributeError("encode_5b missing")
+                    query = dp._encode(dp.CMD_MANUAL_DOSE, 0x22, [])
                 await client.write_gatt_char(dp.UART_RX, query, response=True)
             except Exception:
-                try:
-                    query = dp._encode(dp.CMD_MANUAL_DOSE, 0x22, [])
-                    await client.write_gatt_char(dp.UART_RX, query, response=True)
-                except Exception:
-                    pass  # harmless if ignored
+                pass  # harmless if ignored
 
             # Wait briefly for a totals frame and broadcast to sensors if received
             try:
                 payload = await asyncio.wait_for(got, timeout=5.0)
-                params = list(payload[6:-1])
-                pairs = list(zip(params[0::2], params[1::2]))
-                mls = [round(h * 25.6 + l / 10.0, 1) for h, l in pairs]
+                vals = dp.parse_totals_frame(payload) or []
                 async_dispatcher_send(
                     hass,
                     f"{DOMAIN}_push_totals_{addr.lower()}",
-                    {"ml": mls, "raw": payload},
+                    {"ml": vals, "raw": payload},
                 )
             except asyncio.TimeoutError:
                 # No immediate totals — sensors can still poll later
@@ -162,7 +171,9 @@ async def register_services(hass: HomeAssistant) -> None:
                     pass
 
             # NEW: regardless of push success, also nudge sensors to refresh via BLE.
-            async_dispatcher_send(hass, f"{DOMAIN}_refresh_totals_{addr.lower()}")
+            # Sensor listens on entry-id–scoped signal: f"{DOMAIN}_{entry.entry_id}_refresh_totals"
+            if (entry_id := _find_entry_id_for_address(hass, addr)):
+                async_dispatcher_send(hass, f"{DOMAIN}_{entry_id}_refresh_totals")
 
         except BLEAK_EXC as e:
             # Connection slot / transient BLE issues get normalized into a user error
@@ -177,3 +188,97 @@ async def register_services(hass: HomeAssistant) -> None:
                     pass
 
     hass.services.async_register(DOMAIN, "dose_ml", _svc_dose, schema=DOSE_SCHEMA)
+
+    # ────────────────────────────────────────────────────────────────
+    # NEW: read & print daily totals service
+    # ────────────────────────────────────────────────────────────────
+    async def _svc_read_totals(call: ServiceCall):
+        data = READ_TOTALS_SCHEMA(dict(call.data))
+
+        addr = data.get("address")
+        if not addr and (did := data.get("device_id")):
+            addr = await _resolve_address_from_device_id(hass, did)
+        if not addr:
+            raise HomeAssistantError("Provide address or a device_id linked to a BLE address")
+
+        # Use HA bluetooth + bleak-retry-connector for a slot-aware connection
+        ble_dev = bluetooth.async_ble_device_from_address(hass, addr, True)
+        if not ble_dev:
+            raise HomeAssistantError(f"Could not find BLE device for address {addr}")
+
+        got: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
+
+        def _on_notify(_char, payload: bytearray) -> None:
+            try:
+                vals = dp.parse_totals_frame(payload)
+                if vals and not got.done():
+                    got.set_result(bytes(payload))
+            except Exception:
+                pass
+
+        client = None
+        try:
+            client = await establish_connection(BleakClientWithServiceCache, ble_dev, f"{DOMAIN}-read-totals")
+            await client.start_notify(UART_TX, _on_notify)
+
+            # Send a totals query (0x5B/0x22 preferred)
+            try:
+                if hasattr(dp, "build_totals_query"):
+                    query = dp.build_totals_query()
+                elif hasattr(dp, "encode_5b"):
+                    query = dp.encode_5b(0x22, [])
+                else:
+                    query = dp._encode(dp.CMD_MANUAL_DOSE, 0x22, [])
+                await client.write_gatt_char(dp.UART_RX, query, response=True)
+            except Exception:
+                pass
+
+            try:
+                payload = await asyncio.wait_for(got, timeout=5.0)
+                vals = dp.parse_totals_frame(payload) or [None, None, None, None]
+                # Print via persistent_notification (visible in UI)
+                msg = (
+                    f"Daily totals for {addr}:\n"
+                    f"  Ch1: {vals[0]} mL\n"
+                    f"  Ch2: {vals[1]} mL\n"
+                    f"  Ch3: {vals[2]} mL\n"
+                    f"  Ch4: {vals[3]} mL"
+                )
+                await hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {"title": "Chihiros Doser — Daily totals", "message": msg},
+                    blocking=False,
+                )
+
+                # Push to sensors immediately
+                async_dispatcher_send(
+                    hass,
+                    f"{DOMAIN}_push_totals_{addr.lower()}",
+                    {"ml": vals, "raw": payload},
+                )
+
+                # Also nudge the entry-id refresh path (if any)
+                if (entry_id := _find_entry_id_for_address(hass, addr)):
+                    async_dispatcher_send(hass, f"{DOMAIN}_{entry_id}_refresh_totals")
+
+            except asyncio.TimeoutError:
+                raise HomeAssistantError("No totals frame received (timeout). Try again.")
+            finally:
+                try:
+                    await client.stop_notify(UART_TX)
+                except Exception:
+                    pass
+
+        except BLEAK_EXC as e:
+            raise HomeAssistantError(f"BLE temporarily unavailable: {e}") from e
+        except Exception as e:
+            raise HomeAssistantError(f"Totals read failed: {e}") from e
+        finally:
+            if client:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+
+    hass.services.async_register(DOMAIN, "read_daily_totals", _svc_read_totals, schema=READ_TOTALS_SCHEMA)

@@ -18,3 +18,15 @@ dose_ml:
       name: Millilitres
       required: true
       selector: { number: { min: 0.2, max: 999.9, step: 0.1, mode: box } }
+read_daily_totals:
+  name: Read daily totals (mL)
+  description: Query the doser for today's per-channel totals and print the result.
+  fields:
+    device_id:
+      name: Device
+      description: (Optional) Pick the doser device (resolves BLE address)
+      selector: { device: {} }
+    address:
+      name: BLE address
+      description: (Optional) Use if you don’t select a device
+      example: "AA:BB:CC:DD:EE:FF"
