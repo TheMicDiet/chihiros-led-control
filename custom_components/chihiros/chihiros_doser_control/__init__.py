@@ -44,7 +44,8 @@ SET_24H_SCHEMA = vol.Schema({
     vol.Exclusive("address", "target"): str,
     vol.Required("channel"):   vol.All(vol.Coerce(int), vol.Range(min=1, max=4)),
     vol.Required("daily_ml"):  vol.All(vol.Coerce(float), vol.Range(min=0.2, max=999.9)),
-    vol.Required("minutes"):   vol.All(vol.Coerce(int), vol.Range(min=1, max=59)),  # Minutes only: 00..59
+    # Minutes only: 00..59 (allow 0)
+    vol.Required("minutes"):   vol.All(vol.Coerce(int), vol.Range(min=0, max=59)),
     vol.Optional("catch_up", default=False): vol.Boolean(),  # Make up for missed doses
     # For now we default to Any day (0x7F). If you want per-day later, we can add a list→bitmask mapper.
     vol.Optional("weekday_mask", default=0x7F): vol.All(vol.Coerce(int), vol.Range(min=0, max=0x7F)),
@@ -112,6 +113,14 @@ def _build_totals_probes() -> list[bytes]:
         pass
     return frames
 
+# NEW: small “prelude” frames observed in captures to stabilize programming
+def _build_prelude_frames() -> list[bytes]:
+    return [
+        dp._encode(90, 4, [1]),   # 90/4 [1]
+        dp._encode(165, 4, [4]),  # 165/4 [4]
+        dp._encode(165, 4, [5]),  # 165/4 [5]
+    ]
+
 
 async def register_services(hass: HomeAssistant) -> None:
     # Avoid duplicate registration on reloads
@@ -136,6 +145,7 @@ async def register_services(hass: HomeAssistant) -> None:
 
         # IMPORTANT — normalize address to uppercase for HA’s bluetooth registry
         addr_u = addr.upper()
+        addr_l = addr_u.lower()
 
         channel = int(data["channel"])
         ml = round(float(data["ml"]), 1)  # protocol is 0.1-mL resolution
@@ -199,7 +209,7 @@ async def register_services(hass: HomeAssistant) -> None:
                 vals = dp.parse_totals_frame(payload) or []
                 async_dispatcher_send(
                     hass,
-                    f"{DOMAIN}_push_totals_{addr.lower()}",
+                    f"{DOMAIN}_push_totals_{addr_l}",
                     {"ml": vals, "raw": payload},
                 )
             except asyncio.TimeoutError:
@@ -244,6 +254,7 @@ async def register_services(hass: HomeAssistant) -> None:
             raise HomeAssistantError("Provide address or a device_id linked to a BLE address")
 
         addr_u = addr.upper()
+        addr_l = addr_u.lower()
 
         # Use HA bluetooth + bleak-retry-connector for a slot-aware connection
         ble_dev = bluetooth.async_ble_device_from_address(hass, addr_u, True)
@@ -301,7 +312,7 @@ async def register_services(hass: HomeAssistant) -> None:
                 # Push to sensors immediately
                 async_dispatcher_send(
                     hass,
-                    f"{DOMAIN}_push_totals_{addr.lower()}",
+                    f"{DOMAIN}_push_totals_{addr_l}",
                     {"ml": vals, "raw": payload},
                 )
 
@@ -344,14 +355,15 @@ async def register_services(hass: HomeAssistant) -> None:
             raise HomeAssistantError("Provide address or a device_id linked to a BLE address")
 
         addr_u = addr.upper()
+        addr_l = addr_u.lower()
         channel = int(data["channel"])
-        minutes = int(data["minutes"])              # 1..59
+        minutes = int(data["minutes"])              # 0..59
         daily_ml = float(data["daily_ml"])
         catch_up = bool(data["catch_up"])
         weekday_mask = int(data["weekday_mask"])    # default 0x7F (“Any day”)
 
-        # Bounds already validated by schema, but clamp defensively
-        minutes = max(1, min(minutes, 59))
+        # Clamp defensively
+        minutes = max(0, min(minutes, 59))
 
         # Wire channel is 0-based on this protocol (manual dose uses 0-based too)
         wire_ch = max(1, min(channel, 4)) - 1
@@ -370,9 +382,10 @@ async def register_services(hass: HomeAssistant) -> None:
         #   0x15 → [ch, 1 /* 24h */, 0 /*hour*/, minutes, 0, 0]
         #   0x1B → [ch, weekday_mask, 1 /*?*/, 0 /*completed today?*/, hi, lo]
         #   0x20 → [ch, 0 /*?*/, 1 if catch_up else 0]
-        f_schedule  = dp._encode(dp.CMD_MANUAL_DOSE, 0x15, [wire_ch, 1, 0, minutes, 0, 0])
-        f_daily_ml  = dp._encode(dp.CMD_MANUAL_DOSE, 0x1B, [wire_ch, weekday_mask, 1, 0, hi, lo])
-        f_catchup   = dp._encode(dp.CMD_MANUAL_DOSE, 0x20, [wire_ch, 0, 1 if catch_up else 0])
+        f_prelude  = _build_prelude_frames()
+        f_schedule = dp._encode(dp.CMD_MANUAL_DOSE, 0x15, [wire_ch, 1, 0, minutes, 0, 0])
+        f_daily_ml = dp._encode(dp.CMD_MANUAL_DOSE, 0x1B, [wire_ch, weekday_mask, 1, 0, hi, lo])
+        f_catchup  = dp._encode(dp.CMD_MANUAL_DOSE, 0x20, [wire_ch, 0, 1 if catch_up else 0])
 
         # Connect and apply
         ble_dev = bluetooth.async_ble_device_from_address(hass, addr_u, True)
@@ -382,10 +395,19 @@ async def register_services(hass: HomeAssistant) -> None:
         client = None
         try:
             client = await establish_connection(BleakClientWithServiceCache, ble_dev, f"{DOMAIN}-set-24h")
-            # Send in a stable order, small pacing between writes
+
+            # Send small prelude (stabilizes programming on some firmwares)
+            for frame in f_prelude:
+                try:
+                    await client.write_gatt_char(dp.UART_RX, frame, response=True)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.08)
+
+            # Then the actual 24h configuration
             for frame in (f_schedule, f_daily_ml, f_catchup):
                 await client.write_gatt_char(dp.UART_RX, frame, response=True)
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.10)
 
             # Notify user via persistent_notification
             msg = (
@@ -405,6 +427,7 @@ async def register_services(hass: HomeAssistant) -> None:
             # Ask sensors to refresh (pull a totals snapshot if available)
             if (entry_id := _find_entry_id_for_address(hass, addr_u)):
                 async_dispatcher_send(hass, f"{DOMAIN}_{entry_id}_refresh_totals")
+            async_dispatcher_send(hass, f"{DOMAIN}_refresh_totals_{addr_l}")
 
         except BLEAK_EXC as e:
             raise HomeAssistantError(f"BLE temporarily unavailable: {e}") from e
