@@ -22,9 +22,18 @@ from ..const import DOMAIN  # integration domain
 from . import protocol as dp  # provides dose_ml(client, channel, ml)
 from .protocol import UART_TX  # NEW: notify UUID for totals frames
 
+# NEW: human-friendly weekday handling using your existing encoding helper
+from ..chihiros_led_control.weekday_encoding import (
+    WeekdaySelect,
+    encode_selected_weekdays,
+)
+
 _LOGGER = logging.getLogger(__name__)
 
-# Accepts "2" or 2, "10.0" or 10.0 via Coerce; ranges match device limits.
+# ────────────────────────────────────────────────────────────────
+# Schemas
+# ────────────────────────────────────────────────────────────────
+
 DOSE_SCHEMA = vol.Schema({
     vol.Exclusive("device_id", "target"): str,
     vol.Exclusive("address", "target"): str,
@@ -32,25 +41,91 @@ DOSE_SCHEMA = vol.Schema({
     vol.Required("ml"):      vol.All(vol.Coerce(float), vol.Range(min=0.2, max=999.9)),
 })
 
-# NEW: schema for read_daily_totals (either device_id or address)
 READ_TOTALS_SCHEMA = vol.Schema({
     vol.Exclusive("device_id", "target"): str,
     vol.Exclusive("address", "target"): str,
 })
 
-# NEW: schema to configure 24h automatic dosing
+# NEW: 24h config now accepts a real time-of-day and human-readable weekdays
 SET_24H_SCHEMA = vol.Schema({
     vol.Exclusive("device_id", "target"): str,
     vol.Exclusive("address", "target"): str,
+
     vol.Required("channel"):   vol.All(vol.Coerce(int), vol.Range(min=1, max=4)),
     vol.Required("daily_ml"):  vol.All(vol.Coerce(float), vol.Range(min=0.2, max=999.9)),
-    # Minutes only: 00..59 (allow 0)
-    vol.Required("minutes"):   vol.All(vol.Coerce(int), vol.Range(min=0, max=59)),
+
+    # Time-of-day (24h) — either provide "time": "HH:MM" OR hour+minute
+    vol.Optional("time"): str,
+    vol.Optional("hour", default=None): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=0, max=23))),
+    vol.Optional("minutes", default=None): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=0, max=59))),
+
+    # Days — either a numeric mask or human strings ("Mon,Wed", ["Mon","Thu"], "everyday")
+    vol.Optional("weekday_mask", default=None): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=0, max=0x7F))),
+    vol.Optional("weekdays", default=None): vol.Any(str, [str]),
+
     vol.Optional("catch_up", default=False): vol.Boolean(),  # Make up for missed doses
-    # For now we default to Any day (0x7F). If you want per-day later, we can add a list→bitmask mapper.
-    vol.Optional("weekday_mask", default=0x7F): vol.All(vol.Coerce(int), vol.Range(min=0, max=0x7F)),
 })
 
+
+# ────────────────────────────────────────────────────────────────
+# Weekday helpers (English ⇄ mask) using your encoding
+# ────────────────────────────────────────────────────────────────
+
+_WEEKDAY_ALIAS = {
+    "mon": WeekdaySelect.monday, "monday": WeekdaySelect.monday,
+    "tue": WeekdaySelect.tuesday, "tues": WeekdaySelect.tuesday, "tuesday": WeekdaySelect.tuesday,
+    "wed": WeekdaySelect.wednesday, "wednesday": WeekdaySelect.wednesday,
+    "thu": WeekdaySelect.thursday, "thur": WeekdaySelect.thursday, "thurs": WeekdaySelect.thursday, "thursday": WeekdaySelect.thursday,
+    "fri": WeekdaySelect.friday, "friday": WeekdaySelect.friday,
+    "sat": WeekdaySelect.saturday, "saturday": WeekdaySelect.saturday,
+    "sun": WeekdaySelect.sunday, "sunday": WeekdaySelect.sunday,
+    "everyday": "ALL", "every day": "ALL", "any": "ALL", "all": "ALL",
+}
+
+def _parse_weekdays_to_mask(value, fallback_mask: int = 0x7F) -> int:
+    """Accept int mask, string 'Mon,Wed,Fri', or list of day strings; return 0..127 mask."""
+    if value is None:
+        return fallback_mask & 0x7F
+    if isinstance(value, int):
+        return value & 0x7F
+    if isinstance(value, str):
+        tokens = [t.strip() for t in value.replace("/", ",").split(",") if t.strip()]
+    else:
+        try:
+            tokens = [str(t).strip() for t in value]
+        except Exception:
+            return fallback_mask & 0x7F
+
+    if any(_WEEKDAY_ALIAS.get(t.lower()) == "ALL" for t in tokens):
+        return 127
+
+    sels: list[WeekdaySelect] = []
+    for t in tokens:
+        sel = _WEEKDAY_ALIAS.get(t.lower())
+        if isinstance(sel, WeekdaySelect):
+            sels.append(sel)
+    return encode_selected_weekdays(sels) if sels else (fallback_mask & 0x7F)
+
+def _weekdays_mask_to_english(mask: int) -> str:
+    """Render mask (Mon=64 … Sun=1) as 'Mon, Tue, …' or 'Every day'."""
+    try:
+        m = int(mask) & 0x7F
+    except Exception:
+        return "Unknown"
+    parts = []
+    if m & 64: parts.append("Mon")
+    if m & 32: parts.append("Tue")
+    if m & 16: parts.append("Wed")
+    if m & 8:  parts.append("Thu")
+    if m & 4:  parts.append("Fri")
+    if m & 2:  parts.append("Sat")
+    if m & 1:  parts.append("Sun")
+    return "Every day" if len(parts) == 7 else (", ".join(parts) if parts else "None")
+
+
+# ────────────────────────────────────────────────────────────────
+# Address / entry helpers
+# ────────────────────────────────────────────────────────────────
 
 async def _resolve_address_from_device_id(hass: HomeAssistant, did: str) -> str | None:
     reg = dr.async_get(hass)
@@ -85,9 +160,8 @@ async def _resolve_address_from_device_id(hass: HomeAssistant, did: str) -> str 
 
     return None
 
-# NEW: find the config_entry_id for a given BLE address so we can emit the
-# entry-id–scoped refresh signal that sensor.py listens for.
 def _find_entry_id_for_address(hass: HomeAssistant, addr: str) -> str | None:
+    """Find the config_entry_id for a BLE address (case-insensitive)."""
     data_by_entry = hass.data.get(DOMAIN, {})
     addr_l = (addr or "").lower()
     for entry_id, data in data_by_entry.items():
@@ -97,8 +171,13 @@ def _find_entry_id_for_address(hass: HomeAssistant, addr: str) -> str | None:
             return entry_id
     return None
 
-# NEW: helper to build probe frames (try 0x1E then 0x22, 0x5B first then A5)
+
+# ────────────────────────────────────────────────────────────────
+# Probe / prelude helpers
+# ────────────────────────────────────────────────────────────────
+
 def _build_totals_probes() -> list[bytes]:
+    """Try 0x1E then 0x22, 0x5B-style first then A5-style as fallback."""
     frames: list[bytes] = []
     try:
         if hasattr(dp, "encode_5b"):
@@ -113,14 +192,18 @@ def _build_totals_probes() -> list[bytes]:
         pass
     return frames
 
-# NEW: small “prelude” frames observed in captures to stabilize programming
 def _build_prelude_frames() -> list[bytes]:
+    """Small ‘wake up / confirm’ sequence seen in captures."""
     return [
         dp._encode(90, 4, [1]),   # 90/4 [1]
         dp._encode(165, 4, [4]),  # 165/4 [4]
         dp._encode(165, 4, [5]),  # 165/4 [5]
     ]
 
+
+# ────────────────────────────────────────────────────────────────
+# Service registration
+# ────────────────────────────────────────────────────────────────
 
 async def register_services(hass: HomeAssistant) -> None:
     # Avoid duplicate registration on reloads
@@ -129,11 +212,10 @@ async def register_services(hass: HomeAssistant) -> None:
         return
     hass.data[flag_key] = True
 
-    # ────────────────────────────────────────────────────────────────
-    # Existing: one-shot manual dose
-    # ────────────────────────────────────────────────────────────────
+    # -------------------------
+    # Manual one-shot dose
+    # -------------------------
     async def _svc_dose(call: ServiceCall):
-        # Copy to allow voluptuous to coerce values
         data = DOSE_SCHEMA(dict(call.data))
 
         # Resolve address
@@ -143,32 +225,20 @@ async def register_services(hass: HomeAssistant) -> None:
         if not addr:
             raise HomeAssistantError("Provide address or a device_id linked to a BLE address")
 
-        # IMPORTANT — normalize address to uppercase for HA’s bluetooth registry
         addr_u = addr.upper()
         addr_l = addr_u.lower()
 
         channel = int(data["channel"])
         ml = round(float(data["ml"]), 1)  # protocol is 0.1-mL resolution
 
-        # IMPORTANT — protocol encoding reminder (documented for future edits):
-        # The device encodes millilitres as two fields (hi, lo):
-        #   hi = floor(ml / 25.6)                # 25.6-mL "bucket"
-        #   lo = round((ml - hi*25.6) * 10)      # 0.1-mL remainder, 0..255
-        # Examples: 11.3 → (0,113), 25.6 → (1,0), 51.2 → (2,0).
-        # Do NOT split by 25.0 mL here. dp.dose_ml() handles the 25.6+0.1 scheme.
-
-        # NEW: use HA’s bluetooth device lookup + bleak-retry-connector for reliable, slot-aware connections
         ble_dev = bluetooth.async_ble_device_from_address(hass, addr_u, True)
         if not ble_dev:
             raise HomeAssistantError(f"Could not find BLE device for address {addr_u}")
 
-        # NEW: in the same BLE session as the dose, listen briefly for a totals frame
-        # (5B/0x22 or 5B/0x1E with 8+ params). If we get one, decode and push it to sensors immediately.
         got: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
 
         def _on_notify(_char, payload: bytearray) -> None:
             try:
-                # Log any 0x5B frames for debugging
                 if isinstance(payload, (bytes, bytearray)) and len(payload) >= 6 and payload[0] in (0x5B, 91):
                     _LOGGER.debug("dose: notify 0x5B mode=0x%02X raw=%s",
                                   payload[5], bytes(payload).hex(" ").upper())
@@ -176,25 +246,18 @@ async def register_services(hass: HomeAssistant) -> None:
                 if vals and not got.done():
                     got.set_result(bytes(payload))
             except Exception:
-                # never raise from callback
                 pass
 
         client = None
         try:
-            # The name helps HA’s bluetooth stack track/reuse a slot
             client = await establish_connection(BleakClientWithServiceCache, ble_dev, f"{DOMAIN}-dose")
-
-            # Start notify *before* dosing so we don’t miss a quick totals push
             await client.start_notify(UART_TX, _on_notify)
 
-            # Writes via protocol helper (uses client.write_gatt_char on UART_RX)
             await dp.dose_ml(client, channel, ml)
 
-            # OPTIONAL: some firmwares only reply on request — send totals probes (0x1E & 0x22)
-            probes = _build_totals_probes()
-            for frame in probes:
+            # Totals probes (0x1E & 0x22; 0x5B first; then A5)
+            for frame in _build_totals_probes():
                 try:
-                    # Prefer RX; if that errors, try TX as a fallback (some stacks mislabel)
                     try:
                         await client.write_gatt_char(dp.UART_RX, frame, response=True)
                     except Exception:
@@ -203,32 +266,22 @@ async def register_services(hass: HomeAssistant) -> None:
                     pass
                 await asyncio.sleep(0.08)
 
-            # Wait briefly for a totals frame and broadcast to sensors if received
             try:
                 payload = await asyncio.wait_for(got, timeout=8.0)
                 vals = dp.parse_totals_frame(payload) or []
-                async_dispatcher_send(
-                    hass,
-                    f"{DOMAIN}_push_totals_{addr_l}",
-                    {"ml": vals, "raw": payload},
-                )
+                async_dispatcher_send(hass, f"{DOMAIN}_push_totals_{addr_l}", {"ml": vals, "raw": payload})
             except asyncio.TimeoutError:
-                # No immediate totals — sensors can still poll later
                 _LOGGER.debug("dose: no totals frame received within timeout")
 
-            # Stop notify
             try:
                 await client.stop_notify(UART_TX)
             except Exception:
                 pass
 
-            # NEW: regardless of push success, also nudge sensors to refresh via BLE.
-            # Sensor listens on entry-id–scoped signal: f"{DOMAIN}_{entry_id}_refresh_totals"
             if (entry_id := _find_entry_id_for_address(hass, addr_u)):
                 async_dispatcher_send(hass, f"{DOMAIN}_{entry_id}_refresh_totals")
 
         except BLEAK_EXC as e:
-            # Connection slot / transient BLE issues get normalized into a user error
             raise HomeAssistantError(f"BLE temporarily unavailable: {e}") from e
         except Exception as e:
             raise HomeAssistantError(f"Dose failed: {e}") from e
@@ -241,9 +294,9 @@ async def register_services(hass: HomeAssistant) -> None:
 
     hass.services.async_register(DOMAIN, "dose_ml", _svc_dose, schema=DOSE_SCHEMA)
 
-    # ────────────────────────────────────────────────────────────────
-    # NEW: read & print daily totals service
-    # ────────────────────────────────────────────────────────────────
+    # -------------------------
+    # Read & print daily totals
+    # -------------------------
     async def _svc_read_totals(call: ServiceCall):
         data = READ_TOTALS_SCHEMA(dict(call.data))
 
@@ -256,7 +309,6 @@ async def register_services(hass: HomeAssistant) -> None:
         addr_u = addr.upper()
         addr_l = addr_u.lower()
 
-        # Use HA bluetooth + bleak-retry-connector for a slot-aware connection
         ble_dev = bluetooth.async_ble_device_from_address(hass, addr_u, True)
         if not ble_dev:
             raise HomeAssistantError(f"Could not find BLE device for address {addr_u}")
@@ -279,9 +331,7 @@ async def register_services(hass: HomeAssistant) -> None:
             client = await establish_connection(BleakClientWithServiceCache, ble_dev, f"{DOMAIN}-read-totals")
             await client.start_notify(UART_TX, _on_notify)
 
-            # Send totals probes (0x1E & 0x22; 0x5B first then A5)
-            probes = _build_totals_probes()
-            for frame in probes:
+            for frame in _build_totals_probes():
                 try:
                     try:
                         await client.write_gatt_char(dp.UART_RX, frame, response=True)
@@ -294,7 +344,6 @@ async def register_services(hass: HomeAssistant) -> None:
             try:
                 payload = await asyncio.wait_for(got, timeout=8.0)
                 vals = dp.parse_totals_frame(payload) or [None, None, None, None]
-                # Print via persistent_notification (visible in UI)
                 msg = (
                     f"Daily totals for {addr_u}:\n"
                     f"  Ch1: {vals[0]} mL\n"
@@ -303,20 +352,13 @@ async def register_services(hass: HomeAssistant) -> None:
                     f"  Ch4: {vals[3]} mL"
                 )
                 await hass.services.async_call(
-                    "persistent_notification",
-                    "create",
+                    "persistent_notification", "create",
                     {"title": "Chihiros Doser — Daily totals", "message": msg},
                     blocking=False,
                 )
 
-                # Push to sensors immediately
-                async_dispatcher_send(
-                    hass,
-                    f"{DOMAIN}_push_totals_{addr_l}",
-                    {"ml": vals, "raw": payload},
-                )
+                async_dispatcher_send(hass, f"{DOMAIN}_push_totals_{addr_l}", {"ml": vals, "raw": payload})
 
-                # Also nudge the entry-id refresh path (if any)
                 if (entry_id := _find_entry_id_for_address(hass, addr_u)):
                     async_dispatcher_send(hass, f"{DOMAIN}_{entry_id}_refresh_totals")
 
@@ -341,9 +383,9 @@ async def register_services(hass: HomeAssistant) -> None:
 
     hass.services.async_register(DOMAIN, "read_daily_totals", _svc_read_totals, schema=READ_TOTALS_SCHEMA)
 
-    # ────────────────────────────────────────────────────────────────
-    # NEW: configure 24-hour automatic dosing program
-    # ────────────────────────────────────────────────────────────────
+    # -------------------------
+    # Configure 24-hour dosing
+    # -------------------------
     async def _svc_set_24h(call: ServiceCall):
         data = SET_24H_SCHEMA(dict(call.data))
 
@@ -356,34 +398,58 @@ async def register_services(hass: HomeAssistant) -> None:
 
         addr_u = addr.upper()
         addr_l = addr_u.lower()
+
         channel = int(data["channel"])
-        minutes = int(data["minutes"])              # 0..59
         daily_ml = float(data["daily_ml"])
         catch_up = bool(data["catch_up"])
-        weekday_mask = int(data["weekday_mask"])    # default 0x7F (“Any day”)
 
-        # Clamp defensively
-        minutes = max(0, min(minutes, 59))
+        # Parse time-of-day: prefer "time": "HH:MM", else hour+minutes
+        hour: int | None = None
+        minute: int | None = None
+        if data.get("time"):
+            try:
+                parts = str(data["time"]).strip().split(":")
+                hour = int(parts[0]); minute = int(parts[1])
+            except Exception as e:
+                raise HomeAssistantError(f"Invalid time format (expected HH:MM): {data['time']}") from e
+        else:
+            hour = data.get("hour")
+            minute = data.get("minutes")
 
-        # Wire channel is 0-based on this protocol (manual dose uses 0-based too)
+        if hour is None or minute is None:
+            raise HomeAssistantError("Provide either 'time': 'HH:MM' or both 'hour' and 'minutes'.")
+
+        if not (0 <= int(hour) <= 23 and 0 <= int(minute) <= 59):
+            raise HomeAssistantError("Time out of range: hour 0..23, minutes 0..59.")
+
+        hour = int(hour)
+        minute = int(minute)
+
+        # Build weekday bitmask from human string/list or numeric mask
+        weekday_mask = _parse_weekdays_to_mask(
+            data.get("weekdays"),
+            fallback_mask=(data.get("weekday_mask", 0x7F) if data.get("weekday_mask") is not None else 0x7F),
+        )
+        days_str = _weekdays_mask_to_english(weekday_mask)
+
+        # Wire channel is 0-based in these frames
         wire_ch = max(1, min(channel, 4)) - 1
 
         # Split daily mL into (hi, lo) using the same 25.6 + 0.1 method
-        # hi = floor(ml/25.6); lo = round((ml - hi*25.6)*10)
         hi = int(daily_ml // 25.6)
         lo = int(round((daily_ml - hi * 25.6) * 10))
-        if lo == 256:  # normalize exact multiple
+        if lo == 256:
             hi += 1
             lo = 0
         hi &= 0xFF
         lo &= 0xFF
 
-        # Frames (decimal samples you posted map to these modes):
-        #   0x15 → [ch, 1 /* 24h */, 0 /*hour*/, minutes, 0, 0]
+        # Frames (per your captures):
+        #   0x15 → [ch, 1 /* 24h */, hour, minutes, 0, 0]
         #   0x1B → [ch, weekday_mask, 1 /*?*/, 0 /*completed today?*/, hi, lo]
         #   0x20 → [ch, 0 /*?*/, 1 if catch_up else 0]
         f_prelude  = _build_prelude_frames()
-        f_schedule = dp._encode(dp.CMD_MANUAL_DOSE, 0x15, [wire_ch, 1, 0, minutes, 0, 0])
+        f_schedule = dp._encode(dp.CMD_MANUAL_DOSE, 0x15, [wire_ch, 1, hour, minute, 0, 0])
         f_daily_ml = dp._encode(dp.CMD_MANUAL_DOSE, 0x1B, [wire_ch, weekday_mask, 1, 0, hi, lo])
         f_catchup  = dp._encode(dp.CMD_MANUAL_DOSE, 0x20, [wire_ch, 0, 1 if catch_up else 0])
 
@@ -409,13 +475,13 @@ async def register_services(hass: HomeAssistant) -> None:
                 await client.write_gatt_char(dp.UART_RX, frame, response=True)
                 await asyncio.sleep(0.10)
 
-            # Notify user via persistent_notification
+            # Notify user via persistent_notification (now shows time and English days)
             msg = (
                 f"Configured 24-hour dosing for {addr_u}:\n"
                 f"  Channel: {channel}\n"
                 f"  Daily total: {daily_ml:.1f} mL\n"
-                f"  Interval: every {minutes} min\n"
-                f"  Days: 0x{weekday_mask:02X} (127=Any)\n"
+                f"  Time: {hour:02d}:{minute:02d}\n"
+                f"  Days: {days_str} (mask=0x{weekday_mask:02X})\n"
                 f"  Catch-up: {'on' if catch_up else 'off'}"
             )
             await hass.services.async_call(
@@ -424,7 +490,7 @@ async def register_services(hass: HomeAssistant) -> None:
                 blocking=False,
             )
 
-            # Ask sensors to refresh (pull a totals snapshot if available)
+            # Ask sensors to refresh
             if (entry_id := _find_entry_id_for_address(hass, addr_u)):
                 async_dispatcher_send(hass, f"{DOMAIN}_{entry_id}_refresh_totals")
             async_dispatcher_send(hass, f"{DOMAIN}_refresh_totals_{addr_l}")

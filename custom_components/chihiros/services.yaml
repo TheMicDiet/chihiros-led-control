@@ -5,7 +5,8 @@ dose_ml:
     device_id:
       name: Device
       description: (Optional) Pick the doser device (resolves BLE address)
-      selector: { device: {} }
+      selector:
+        device: {}
     address:
       name: BLE address
       description: (Optional) Use if you don’t select a device
@@ -13,11 +14,21 @@ dose_ml:
     channel:
       name: Channel
       required: true
-      selector: { number: { min: 1, max: 4, step: 1 } }
+      selector:
+        number:
+          min: 1
+          max: 4
+          step: 1
     ml:
       name: Millilitres
       required: true
-      selector: { number: { min: 0.2, max: 999.9, step: 0.1, mode: box } }
+      selector:
+        number:
+          min: 0.2
+          max: 999.9
+          step: 0.1
+          mode: box
+
 read_daily_totals:
   name: Read daily totals (mL)
   description: Query the doser for today's per-channel totals and print the result.
@@ -25,19 +36,22 @@ read_daily_totals:
     device_id:
       name: Device
       description: (Optional) Pick the doser device (resolves BLE address)
-      selector: { device: {} }
+      selector:
+        device: {}
     address:
       name: BLE address
       description: (Optional) Use if you don’t select a device
       example: "AA:BB:CC:DD:EE:FF"
+
 set_24h_dose:
   name: Configure 24-hour dosing
-  description: Set daily total and 24-hour interval dosing for a channel.
+  description: Set a daily total with a time-of-day and which days it should run.
   fields:
     device_id:
       name: Device
       description: (Optional) Pick the doser device (resolves BLE address)
-      selector: { device: {} }
+      selector:
+        device: {}
     address:
       name: BLE address
       description: (Optional) Use if you don’t select a device
@@ -45,24 +59,75 @@ set_24h_dose:
     channel:
       name: Channel
       required: true
-      selector: { number: { min: 1, max: 4, step: 1 } }
+      selector:
+        number:
+          min: 1
+          max: 4
+          step: 1
     daily_ml:
       name: Daily dose (mL)
       required: true
-      selector: { number: { min: 0.2, max: 999.9, step: 0.1, mode: box } }
-    minutes:
-      name: Interval (minutes)
-      description: Minutes only (01–59). For example 16 → dose every 16 minutes.
+      selector:
+        number:
+          min: 0.2
+          max: 999.9
+          step: 0.1
+          mode: box
+    time:
+      name: Time of day
+      description: Start time for the daily dosing schedule (HH:MM, 24h).
       required: true
-      selector: { number: { min: 1, max: 59, step: 1 } }
+      selector:
+        time: {}
+    weekdays:
+      name: Days (English)
+      description: Choose the days the schedule runs. Pick "everyday" or select multiple days.
+      required: false
+      selector:
+        select:
+          multiple: true
+          mode: list
+          options:
+            - everyday
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
     catch_up:
       name: Catch up missed doses
       required: false
       default: false
-      selector: { boolean: {} }
+      selector:
+        boolean: {}
     weekday_mask:
-      name: Days bitmask
-      description: 127 for Any day (default). Advanced users only.
+      name: Days bitmask (advanced)
+      description: Alternative to the list above. 127 = Every day. If both are provided, the list of days is used.
       required: false
       default: 127
-      selector: { number: { min: 0, max: 127, mode: box } }
+      selector:
+        number:
+          min: 0
+          max: 127
+          mode: box
+    # Optional fallback if you prefer hour/minutes instead of the time field:
+    hour:
+      name: Hour (advanced)
+      description: Use only if you omit the Time of day field (0–23).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 23
+          step: 1
+    minutes:
+      name: Minutes (advanced)
+      description: Use only if you omit the Time of day field (0–59).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 59
+          step: 1
