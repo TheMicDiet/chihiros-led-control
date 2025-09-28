@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import timedelta
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 from homeassistant.components import bluetooth
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
@@ -13,15 +13,20 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, CoordinatorEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from bleak_retry_connector import (
-    BleakClientWithServiceCache,
-    BLEAK_RETRY_EXCEPTIONS as BLEAK_EXC,
-    establish_connection,
-)
+# --- Kill-switch: keep file details but stop functionality entirely ---
+DISABLE_DOSER_TOTAL_SENSORS: bool = True
+
+# Keep type hints without importing heavy deps at runtime when disabled
+if TYPE_CHECKING:
+    from bleak_retry_connector import (
+        BleakClientWithServiceCache,
+        BLEAK_RETRY_EXCEPTIONS as BLEAK_EXC,
+        establish_connection,
+    )
+    from .chihiros_doser_control.protocol import UART_TX  # notify UUID
+    from .chihiros_doser_control import protocol as dp    # to build a query frame
 
 from .const import DOMAIN
-from .chihiros_doser_control.protocol import UART_TX  # notify UUID
-from .chihiros_doser_control import protocol as dp    # NEW: to build a query frame
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +35,12 @@ UPDATE_EVERY = timedelta(minutes=15)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
+    """Platform entry point — intentionally inert when disabled."""
+    if DISABLE_DOSER_TOTAL_SENSORS:
+        _LOGGER.info("chihiros.sensor: totals sensors are DISABLED; skipping setup for %s", entry.entry_id)
+        return
+
+    # --- Original setup code preserved below (will not run while disabled) ---
     data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     address: Optional[str] = getattr(getattr(data, "coordinator", None), "address", None)
     _LOGGER.debug("chihiros.sensor: setup entry=%s addr=%s", entry.entry_id, address)
@@ -41,25 +52,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     # Thread-safe dispatcher: refresh immediately after "Dose Now" (per-entry)
     signal = f"{DOMAIN}_{entry.entry_id}_refresh_totals"
+
     def _signal_refresh_entry() -> None:
         asyncio.run_coroutine_threadsafe(coordinator.async_request_refresh(), hass.loop)
+
     unsub = async_dispatcher_connect(hass, signal, _signal_refresh_entry)
     entry.async_on_unload(unsub)
 
     # NEW: also listen for per-address refresh requests
     if address:
         sig_addr = f"{DOMAIN}_refresh_totals_{address.lower()}"
+
         def _signal_refresh_addr() -> None:
             asyncio.run_coroutine_threadsafe(coordinator.async_request_refresh(), hass.loop)
+
         unsub2 = async_dispatcher_connect(hass, sig_addr, _signal_refresh_addr)
         entry.async_on_unload(unsub2)
 
     # NEW: push path — when the dose service emits decoded totals, adopt them
     if address:
         push_sig = f"{DOMAIN}_push_totals_{address.lower()}"
+
         def _on_push(data: dict[str, Any]) -> None:
             # Expect {"ml":[...], "raw": bytes/bytearray}
             coordinator.async_set_updated_data(data)
+
         unsub_push = async_dispatcher_connect(hass, push_sig, _on_push)
         entry.async_on_unload(unsub_push)
 
@@ -78,6 +95,20 @@ class DoserTotalsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._lock = asyncio.Lock()  # avoid overlapping BLE connects
 
     async def _async_update_data(self) -> dict[str, Any]:
+        # Stay inert even if somehow called while disabled
+        if DISABLE_DOSER_TOTAL_SENSORS:
+            _LOGGER.debug("sensor: coordinator update skipped (disabled)")
+            return self._last
+
+        # Lazy-import runtime-only deps so the module can live without them when disabled
+        from bleak_retry_connector import (
+            BleakClientWithServiceCache,
+            BLEAK_RETRY_EXCEPTIONS as BLEAK_EXC,
+            establish_connection,
+        )
+        from .chihiros_doser_control.protocol import UART_TX  # notify UUID
+        from .chihiros_doser_control import protocol as dp    # to build a query frame
+
         async with self._lock:
             if not self.address:
                 _LOGGER.debug("sensor: no BLE address; keeping last values")
@@ -143,8 +174,10 @@ class DoserTotalsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     except Exception:
                         pass
                     try:
-                        frames.extend([dp._encode(dp.CMD_MANUAL_DOSE, 0x22, []),
-                                       dp._encode(dp.CMD_MANUAL_DOSE, 0x1E, [])])
+                        frames.extend([
+                            dp._encode(dp.CMD_MANUAL_DOSE, 0x22, []),
+                            dp._encode(dp.CMD_MANUAL_DOSE, 0x1E, []),
+                        ])
                     except Exception:
                         pass
 

@@ -12,7 +12,7 @@ try:
     from homeassistant.exceptions import ConfigEntryNotReady
 
     # Keep the full list here; we’ll choose dynamically at runtime
-    PLATFORMS: list[Platform] = [Platform.LIGHT, Platform.SWITCH, Platform.BUTTON, Platform.NUMBER, Platform.SENSOR]
+    PLATFORMS: list[Platform] = [Platform.LIGHT, Platform.SWITCH, Platform.BUTTON, Platform.NUMBER]
 except ModuleNotFoundError:
     # Allows static analysis outside HA
     pass
@@ -92,7 +92,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Choose platforms per device type
     platforms_to_load: list[Platform] = (
-        [Platform.BUTTON, Platform.NUMBER, Platform.SENSOR] if is_doser else [Platform.LIGHT, Platform.SWITCH]
+        [Platform.BUTTON, Platform.NUMBER] if is_doser else [Platform.LIGHT, Platform.SWITCH]
     )
 
     hass.data.setdefault(DOMAIN, {})
@@ -114,7 +114,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     data: ChihirosData | None = hass.data.get(DOMAIN, {}).get(entry.entry_id)  # type: ignore[assignment]
     if data and getattr(data.coordinator, "device_type", "led") == "doser":
-        platforms_to_unload = [Platform.BUTTON, Platform.NUMBER, Platform.SENSOR]
+        platforms_to_unload = [Platform.BUTTON, Platform.NUMBER]
     else:
         platforms_to_unload = [Platform.LIGHT, Platform.SWITCH]
 
