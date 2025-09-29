@@ -2,26 +2,36 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, time, timedelta
-from typing import List
+from typing import List, Optional
 
 import typer
 from typing_extensions import Annotated
+from bleak.backends.device import BLEDevice  # NEW
 
 from ..chihiros_led_control.device.base_device import BaseDevice
 from ..chihiros_led_control import commands as led_cmds  # set_time
 from ..chihiros_led_control.weekday_encoding import WeekdaySelect, encode_selected_weekdays
 from . import dosingpump
-from .protocol import _split_ml_25_6, UART_TX
+from .protocol import _split_ml_25_6
 
 app = typer.Typer(help="Chihiros doser control")
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Device class (no Typer annotations here)
+# Device class
 # ─────────────────────────────────────────────────────────────────────
 
 class DoserDevice(BaseDevice):
     """Doser-specific commands mixed onto the common BLE BaseDevice."""
+
+    # Accept either a BLEDevice or a MAC string for convenience
+    def __init__(self, device_or_addr: BLEDevice | str) -> None:  # NEW
+        if isinstance(device_or_addr, BLEDevice):
+            ble = device_or_addr
+        else:
+            # minimal BLEDevice works with bleak-retry-connector
+            ble = BLEDevice(address=device_or_addr, name=device_or_addr, details=None, rssi=0)
+        super().__init__(ble)
 
     @staticmethod
     def _add_minutes(t: time, delta_min: int) -> time:
@@ -32,7 +42,7 @@ class DoserDevice(BaseDevice):
         self,
         cmd_id: int,
         mode: int,
-        params: List[int] | None = None,
+        params: Optional[List[int]] = None,
         repeats: int = 3,
     ) -> None:
         """Send a raw A5 frame (165/…) with checksum and msg-id handled."""
@@ -99,7 +109,7 @@ class DoserDevice(BaseDevice):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Typer CLI wrappers (these are what `chihirosctl` calls)
+# Typer CLI wrappers (create device INSIDE the event loop)
 # ─────────────────────────────────────────────────────────────────────
 
 @app.command("set-dosing-pump-manuell-ml")
@@ -109,8 +119,13 @@ def cli_set_dosing_pump_manuell_ml(
     ch_ml: Annotated[float, typer.Option("--ch-ml", help="Dose (mL)", min=0.2, max=999.9)],
 ):
     """Immediate one-shot dose."""
-    dd = DoserDevice(device_address)
-    asyncio.run(dd.set_dosing_pump_manuell_ml(ch_id, ch_ml))
+    async def run():
+        dd = DoserDevice(device_address)
+        try:
+            await dd.set_dosing_pump_manuell_ml(ch_id, ch_ml)
+        finally:
+            await dd.disconnect()
+    asyncio.run(run())
 
 
 @app.command("add-setting-dosing-pump")
@@ -118,18 +133,23 @@ def cli_add_setting_dosing_pump(
     device_address: Annotated[str, typer.Argument(help="BLE MAC")],
     performance_time: Annotated[datetime, typer.Argument(formats=["%H:%M"], help="HH:MM")],
     ch_id: Annotated[int, typer.Option("--ch-id", help="Channel 0..3", min=0, max=3)],
+    ch_ml: Annotated[float, typer.Option("--ch-ml", help="Daily dose mL", min=0.2, max=999.9)],
     weekdays: Annotated[List[WeekdaySelect], typer.Option(
         "--weekdays", "-w",
         help="Repeat days; can be passed multiple times",
         case_sensitive=False
     )] = [WeekdaySelect.everyday],
-    ch_ml: Annotated[float, typer.Option("--ch-ml", help="Daily dose mL", min=0.2, max=999.9)],
 ):
     """Add a 24h schedule entry at time with amount, on selected weekdays."""
-    dd = DoserDevice(device_address)
-    mask = encode_selected_weekdays(weekdays)
-    tenths = int(round(ch_ml * 10))
-    asyncio.run(dd.add_setting_dosing_pump(performance_time.time(), ch_id, mask, tenths))
+    async def run():
+        dd = DoserDevice(device_address)
+        try:
+            mask = encode_selected_weekdays(weekdays)
+            tenths = int(round(ch_ml * 10))
+            await dd.add_setting_dosing_pump(performance_time.time(), ch_id, mask, tenths)
+        finally:
+            await dd.disconnect()
+    asyncio.run(run())
 
 
 @app.command("raw-dosing-pump")
@@ -141,8 +161,13 @@ def cli_raw_dosing_pump(
     params: Annotated[List[int], typer.Argument(help="Parameter list, e.g. 0 0 14 2 0 0")] = typer.Argument(...),
 ):
     """Send a raw A5 frame: [cmd, 1, len, msg_hi, msg_lo, mode, *params, checksum]."""
-    dd = DoserDevice(device_address)
-    asyncio.run(dd.raw_dosing_pump(cmd_id, mode, params, repeats))
+    async def run():
+        dd = DoserDevice(device_address)
+        try:
+            await dd.raw_dosing_pump(cmd_id, mode, params, repeats)
+        finally:
+            await dd.disconnect()
+    asyncio.run(run())
 
 
 if __name__ == "__main__":
