@@ -1,5 +1,7 @@
 """Chihiros led control CLI entrypoint."""
 
+from __future__ import annotations
+
 import asyncio
 import inspect
 from datetime import datetime
@@ -15,11 +17,12 @@ from . import commands
 from .device import get_device_from_address, get_model_class_from_name
 from .weekday_encoding import WeekdaySelect
 
-# NEW: import the doser Typer app
-from ..chihiros_doser_control.doser_device import app as doser_app  # NEW
+# Mount the doser Typer app under "doser"
+# (use the thin shim so the import path stays stable)
+from ..chihiros_doser_control.chihirosdoserctl import app as doser_app
 
 app = typer.Typer()
-app.add_typer(doser_app, name="doser")
+app.add_typer(doser_app, name="doser", help="Chihiros doser control")
 
 msg_id = commands.next_message_id()
 
@@ -47,12 +50,13 @@ def list_devices(timeout: Annotated[int, typer.Option()] = 5) -> None:
     table = Table("Name", "Address", "Model")
     discovered_devices = asyncio.run(BleakScanner.discover(timeout=timeout))
     for device in discovered_devices:
+        name = device.name or ""
         model_name = "???"
-        if device.name is not None:
-            model_class = get_model_class_from_name(device.name)
-            if model_class.model_code:  # type: ignore
-                model_name = model_class.model_name  # type: ignore
-        table.add_row(device.name, device.address, model_name)
+        if name:
+            model_class = get_model_class_from_name(name)
+            # Use safe getattr so we don't assume any class attributes exist
+            model_name = getattr(model_class, "model_name", "???") or "???"
+        table.add_row(name or "(unknown)", device.address, model_name)
     print("Discovered the following devices:")
     print(table)
 
@@ -163,10 +167,6 @@ def reset_settings(device_address: str) -> None:
 def enable_auto_mode(device_address: str) -> None:
     """Enable auto mode in a light."""
     _run_device_func(device_address)
-
-
-# NEW: mount the doser commands at `chihirosctl doser ...`
-app.add_typer(doser_app, name="doser")  # NEW
 
 
 if __name__ == "__main__":

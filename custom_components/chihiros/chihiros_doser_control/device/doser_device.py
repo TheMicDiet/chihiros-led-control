@@ -6,16 +6,21 @@ from typing import List, Optional
 
 import typer
 from typing_extensions import Annotated
-from bleak.backends.device import BLEDevice  # NEW
+from bleak.backends.device import BLEDevice
 
-from ..chihiros_led_control.device.base_device import BaseDevice
-from ..chihiros_led_control import commands as led_cmds  # set_time
-from ..chihiros_led_control.weekday_encoding import WeekdaySelect, encode_selected_weekdays
-from . import dosingpump
-from .protocol import _split_ml_25_6
+# 👈 go up to the common LED package (shared BaseDevice, time sync, weekday utils)
+from ...chihiros_led_control.device.base_device import BaseDevice
+from ...chihiros_led_control import commands as led_cmds
+from ...chihiros_led_control.weekday_encoding import (
+    WeekdaySelect,
+    encode_selected_weekdays,
+)
+
+# 👇 these two live in the doser package root (one level up from /device)
+from .. import dosingpump
+from ..protocol import _split_ml_25_6
 
 app = typer.Typer(help="Chihiros doser control")
-
 
 # ─────────────────────────────────────────────────────────────────────
 # Device class
@@ -24,21 +29,18 @@ app = typer.Typer(help="Chihiros doser control")
 class DoserDevice(BaseDevice):
     """Doser-specific commands mixed onto the common BLE BaseDevice."""
 
-    # REQUIRED by BaseDevice.__init__ (avoids the assert)
+    # Keep BaseDevice.__init__ happy even when constructed directly by CLI
     _model_name = "Doser"
-    _model_codes = ["DYDOSED"]
-    _colors: dict[str, int] = {}  # doser has no color channels
+    _model_codes = ["DYDOSED", "DYDOSE", "DOSER"]
+    _colors: dict[str, int] = {}
 
     # Accept either a BLEDevice or a MAC string for convenience
-    def __init__(self, device_or_addr: BLEDevice | str) -> None:  # NEW
+    def __init__(self, device_or_addr: BLEDevice | str) -> None:
         if isinstance(device_or_addr, BLEDevice):
             ble = device_or_addr
         else:
-            # Give it a DYDOSED-like name so logs & any model heuristics look sane
-            mac_nocolon = device_or_addr.replace(":", "").upper()
-            guessed_name = f"DYDOSED{mac_nocolon}"
             # minimal BLEDevice works with bleak-retry-connector
-            ble = BLEDevice(address=device_or_addr, name=guessed_name, details=None, rssi=0)
+            ble = BLEDevice(address=device_or_addr, name=device_or_addr, details=None, rssi=0)
         super().__init__(ble)
 
     @staticmethod
@@ -115,7 +117,6 @@ class DoserDevice(BaseDevice):
     async def read_dosing_container_status(self, ch_id: int | None = None, timeout_s: float = 2.0) -> None:
         typer.echo("read_dosing_container_status: query/parse not implemented yet.")
 
-
 # ─────────────────────────────────────────────────────────────────────
 # Typer CLI wrappers (create device INSIDE the event loop)
 # ─────────────────────────────────────────────────────────────────────
@@ -135,7 +136,6 @@ def cli_set_dosing_pump_manuell_ml(
             await dd.disconnect()
     asyncio.run(run())
 
-
 @app.command("add-setting-dosing-pump")
 def cli_add_setting_dosing_pump(
     device_address: Annotated[str, typer.Argument(help="BLE MAC")],
@@ -143,9 +143,7 @@ def cli_add_setting_dosing_pump(
     ch_id: Annotated[int, typer.Option("--ch-id", help="Channel 0..3", min=0, max=3)],
     ch_ml: Annotated[float, typer.Option("--ch-ml", help="Daily dose mL", min=0.2, max=999.9)],
     weekdays: Annotated[List[WeekdaySelect], typer.Option(
-        "--weekdays", "-w",
-        help="Repeat days; can be passed multiple times",
-        case_sensitive=False
+        "--weekdays", "-w", help="Repeat days; can be passed multiple times", case_sensitive=False
     )] = [WeekdaySelect.everyday],
 ):
     """Add a 24h schedule entry at time with amount, on selected weekdays."""
@@ -159,20 +157,13 @@ def cli_add_setting_dosing_pump(
             await dd.disconnect()
     asyncio.run(run())
 
-
 @app.command("raw-dosing-pump")
 def cli_raw_dosing_pump(
     device_address: Annotated[str, typer.Argument(help="BLE MAC")],
     cmd_id: Annotated[int, typer.Option("--cmd-id", help="Command (e.g. 165)")],
     mode: Annotated[int, typer.Option("--mode", help="Mode (e.g. 27)")],
-    # required positional (no default) must come before any defaulted args
-    params: Annotated[List[int], typer.Argument(
-        help="Parameter list, e.g. 0 0 14 2 0 0"
-    )],
-    # defaulted option after
-    repeats: Annotated[int, typer.Option(
-        "--repeats", help="Send frame N times", min=1
-    )] = 3,
+    params: Annotated[List[int], typer.Argument(help="Parameter list, e.g. 0 0 14 2 0 0")],
+    repeats: Annotated[int, typer.Option("--repeats", help="Send frame N times", min=1)] = 3,
 ):
     """Send a raw A5 frame: [cmd, 1, len, msg_hi, msg_lo, mode, *params, checksum]."""
     async def run():
@@ -182,7 +173,3 @@ def cli_raw_dosing_pump(
         finally:
             await dd.disconnect()
     asyncio.run(run())
-
-
-if __name__ == "__main__":
-    app()
