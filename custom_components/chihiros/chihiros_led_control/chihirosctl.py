@@ -19,6 +19,7 @@ from .weekday_encoding import WeekdaySelect
 from ..chihiros_doser_control.doser_device import app as doser_app  # NEW
 
 app = typer.Typer()
+app.add_typer(doser_app, name="doser")
 
 msg_id = commands.next_message_id()
 
