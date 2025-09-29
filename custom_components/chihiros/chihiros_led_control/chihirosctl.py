@@ -15,6 +15,9 @@ from . import commands
 from .device import get_device_from_address, get_model_class_from_name
 from .weekday_encoding import WeekdaySelect
 
+# NEW: import the doser Typer app
+from ..chihiros_doser_control.doser_device import app as doser_app  # NEW
+
 app = typer.Typer()
 
 msg_id = commands.next_message_id()
@@ -159,6 +162,10 @@ def reset_settings(device_address: str) -> None:
 def enable_auto_mode(device_address: str) -> None:
     """Enable auto mode in a light."""
     _run_device_func(device_address)
+
+
+# NEW: mount the doser commands at `chihirosctl doser ...`
+app.add_typer(doser_app, name="doser")  # NEW
 
 
 if __name__ == "__main__":
