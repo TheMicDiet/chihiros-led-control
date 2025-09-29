@@ -157,8 +157,14 @@ def cli_raw_dosing_pump(
     device_address: Annotated[str, typer.Argument(help="BLE MAC")],
     cmd_id: Annotated[int, typer.Option("--cmd-id", help="Command (e.g. 165)")],
     mode: Annotated[int, typer.Option("--mode", help="Mode (e.g. 27)")],
-    repeats: Annotated[int, typer.Option("--repeats", help="Send frame N times", min=1)] = 3,
-    params: Annotated[List[int], typer.Argument(help="Parameter list, e.g. 0 0 14 2 0 0")] = typer.Argument(...),
+    # required positional argument (no default) must come before any defaulted args
+    params: Annotated[List[int], typer.Argument(
+        help="Parameter list, e.g. 0 0 14 2 0 0"
+    )],
+    # defaulted option comes after
+    repeats: Annotated[int, typer.Option(
+        "--repeats", help="Send frame N times", min=1
+    )] = 3,
 ):
     """Send a raw A5 frame: [cmd, 1, len, msg_hi, msg_lo, mode, *params, checksum]."""
     async def run():
