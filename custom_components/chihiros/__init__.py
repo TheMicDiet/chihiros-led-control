@@ -1,28 +1,16 @@
 """Chihiros HA integration root module."""
-
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
-try:
-    from homeassistant.components import bluetooth
-    from homeassistant.config_entries import ConfigEntry
-    from homeassistant.const import Platform
-    from homeassistant.core import HomeAssistant
-    from homeassistant.exceptions import ConfigEntryNotReady
-
-    # Keep the full list here; we’ll choose dynamically at runtime
-    PLATFORMS: list[Platform] = [Platform.LIGHT, Platform.SWITCH, Platform.BUTTON, Platform.NUMBER]
-except ModuleNotFoundError:
-    # Allows static analysis outside HA
-    pass
-
-from .chihiros_led_control.device import BaseDevice, get_model_class_from_name
+# Keep this import minimal; if your const.py is simple, it’s fine to do at top level.
 from .const import DOMAIN
-from .coordinator import ChihirosDataUpdateCoordinator
-from .models import ChihirosData
-from .chihiros_doser_control import register_services as register_doser_services
-# (lazy import inside async_get_options_flow to avoid any import-order issues)
+
+# Only import typing names for static analysis; no runtime HA deps here.
+if TYPE_CHECKING:  # pragma: no cover
+    from homeassistant.core import HomeAssistant
+    from homeassistant.config_entries import ConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,7 +18,6 @@ _LOGGER = logging.getLogger(__name__)
 def _guess_channel_count(name: str | None) -> int:
     """Best-effort channel count from BLE name."""
     s = (name or "").lower()
-    # Common patterns: DYDOSED2..., 2CH, etc.
     if "d1" in s or "1ch" in s or "1-channel" in s:
         return 1
     if "d2" in s or "2ch" in s or "2-channel" in s:
@@ -42,8 +29,20 @@ def _guess_channel_count(name: str | None) -> int:
     return 4  # sensible default
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:
     """Set up chihiros from a config entry."""
+    # ── Import HA + integration internals lazily so the module can be imported by the CLI ──
+    from homeassistant.components import bluetooth
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.const import Platform
+    from homeassistant.exceptions import ConfigEntryNotReady
+
+    from .chihiros_led_control.device import BaseDevice, get_model_class_from_name
+    from .coordinator import ChihirosDataUpdateCoordinator
+    from .models import ChihirosData
+    # IMPORTANT: import doser services here (not at module import time)
+    from .chihiros_doser_control import register_services as register_doser_services
+
     if entry.unique_id is None:
         raise ConfigEntryNotReady(f"Entry doesn't have any unique_id {entry.title}")
 
@@ -57,8 +56,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     model_class = get_model_class_from_name(ble_device.name)
-    # TODO: add password support
-    chihiros_device: BaseDevice = model_class(ble_device)
+    chihiros_device: BaseDevice = model_class(ble_device)  # type: ignore[call-arg]
 
     coordinator = ChihirosDataUpdateCoordinator(
         hass,
@@ -70,7 +68,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     is_doser = any(k in ble_device.name.lower() for k in ("doser", "dose", "dydose"))
     coordinator.device_type = "doser" if is_doser else "led"
     coordinator.address = address
-    # Options → explicit enabled channels (subset of 1..4). Fallback to "all 4" for dosers.
+
+    # Options → explicit enabled channels (subset of 1..4). Fallback to “all 4” for dosers.
     opt_enabled = entry.options.get("enabled_channels")
     if opt_enabled:
         try:
@@ -98,20 +97,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = ChihirosData(entry.title, chihiros_device, coordinator)
 
-    # Register manual-dose service (idempotent in submodule)
+    # Register doser services (idempotent inside the submodule)
     await register_doser_services(hass)
 
-    # Reload entry when options change (e.g., channels updated)
+    # Reload entry when options change
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     # Only load matching platforms
     await hass.config_entries.async_forward_entry_setups(entry, platforms_to_load)
-
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:
     """Unload a config entry."""
+    # Lazy import here too to avoid HA imports at module import time
+    from homeassistant.const import Platform
+    from .models import ChihirosData
+
     data: ChihirosData | None = hass.data.get(DOMAIN, {}).get(entry.entry_id)  # type: ignore[assignment]
     if data and getattr(data.coordinator, "device_type", "led") == "doser":
         platforms_to_unload = [Platform.BUTTON, Platform.NUMBER]
@@ -120,17 +122,17 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, platforms_to_unload)
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
+        hass.data[DOMAIN].pop(entry.entry_id, None)
     return unload_ok
 
 
-async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def _async_update_listener(hass: "HomeAssistant", entry: "ConfigEntry") -> None:
     """Handle options updates by reloading the entry."""
     await hass.config_entries.async_reload(entry.entry_id)
 
+
 # Expose Options Flow at the component level so HA shows “Configure”
-async def async_get_options_flow(config_entry: ConfigEntry):
-    # Lazy import avoids any circular/import-order surprises and ensures HA can always
-    # resolve this symbol when it checks for options support.
+async def async_get_options_flow(config_entry: "ConfigEntry"):
+    # Lazy import avoids circular/import-order issues
     from .config_flow import ChihirosOptionsFlow
     return ChihirosOptionsFlow(config_entry)
