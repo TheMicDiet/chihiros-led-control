@@ -6,6 +6,7 @@ from typing import List, Optional
 
 import typer
 from typing_extensions import Annotated
+from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 
 # 👈 go up to the common LED package (shared BaseDevice, time sync, weekday utils)
@@ -26,7 +27,6 @@ app = typer.Typer(help="Chihiros doser control")
 # ─────────────────────────────────────────────────────────────────────
 # Device class
 # ─────────────────────────────────────────────────────────────────────
-
 class DoserDevice(BaseDevice):
     """Doser-specific commands mixed onto the common BLE BaseDevice."""
 
@@ -37,7 +37,7 @@ class DoserDevice(BaseDevice):
 
     # Accept either a BLEDevice or a MAC string for convenience
     def __init__(self, device_or_addr: BLEDevice | str) -> None:
-        # Pass through directly; BaseDevice handles str vs BLEDevice correctly (incl. WinRT)
+        # Pass through directly; BaseDevice handles str vs BLEDevice in its init
         super().__init__(device_or_addr)
 
     @staticmethod
@@ -116,8 +116,14 @@ class DoserDevice(BaseDevice):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Typer CLI wrappers (create device INSIDE the event loop)
+# Typer CLI wrappers (scan for device, then operate)
 # ─────────────────────────────────────────────────────────────────────
+async def _resolve_ble_or_fail(device_address: str) -> BLEDevice:
+    ble = await BleakScanner.find_device_by_address(device_address, timeout=10.0)
+    if not ble:
+        raise typer.BadParameter(f"Device {device_address} not found (scan timed out).")
+    return ble
+
 
 @app.command("set-dosing-pump-manuell-ml")
 def cli_set_dosing_pump_manuell_ml(
@@ -127,9 +133,26 @@ def cli_set_dosing_pump_manuell_ml(
 ):
     """Immediate one-shot dose."""
     async def run():
-        dd = DoserDevice(device_address)
+        ble = await _resolve_ble_or_fail(device_address)
+        dd = DoserDevice(ble)
         try:
             await dd.set_dosing_pump_manuell_ml(ch_id, ch_ml)
+        finally:
+            await dd.disconnect()
+    asyncio.run(run())
+
+
+@app.command("enable-auto-mode-dosing-pump")
+def cli_enable_auto_mode_dosing_pump(
+    device_address: Annotated[str, typer.Argument(help="BLE MAC")],
+    ch_id: Annotated[int, typer.Option("--ch-id", help="Channel 0..3", min=0, max=3)] = 0,
+):
+    """Explicitly switch the doser channel to auto mode and sync time."""
+    async def run():
+        ble = await _resolve_ble_or_fail(device_address)
+        dd = DoserDevice(ble)
+        try:
+            await dd.enable_auto_mode_dosing_pump(ch_id)
         finally:
             await dd.disconnect()
     asyncio.run(run())
@@ -147,7 +170,8 @@ def cli_add_setting_dosing_pump(
 ):
     """Add a 24h schedule entry at time with amount, on selected weekdays."""
     async def run():
-        dd = DoserDevice(device_address)
+        ble = await _resolve_ble_or_fail(device_address)
+        dd = DoserDevice(ble)
         try:
             mask = encode_selected_weekdays(weekdays)
             tenths = int(round(ch_ml * 10))
@@ -162,12 +186,14 @@ def cli_raw_dosing_pump(
     device_address: Annotated[str, typer.Argument(help="BLE MAC")],
     cmd_id: Annotated[int, typer.Option("--cmd-id", help="Command (e.g. 165)")],
     mode: Annotated[int, typer.Option("--mode", help="Mode (e.g. 27)")],
+    # positional params come before any defaulted option to avoid Typer errors
     params: Annotated[List[int], typer.Argument(help="Parameter list, e.g. 0 0 14 2 0 0")],
     repeats: Annotated[int, typer.Option("--repeats", help="Send frame N times", min=1)] = 3,
 ):
     """Send a raw A5 frame: [cmd, 1, len, msg_hi, msg_lo, mode, *params, checksum]."""
     async def run():
-        dd = DoserDevice(device_address)
+        ble = await _resolve_ble_or_fail(device_address)
+        dd = DoserDevice(ble)
         try:
             await dd.raw_dosing_pump(cmd_id, mode, params, repeats)
         finally:
