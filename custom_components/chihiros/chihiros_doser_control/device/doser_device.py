@@ -8,6 +8,7 @@ import typer
 from typing_extensions import Annotated
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
+from bleak.exc import BleakDeviceNotFoundError, BleakError
 
 # 👈 go up to the common LED package (shared BaseDevice, time sync, weekday utils)
 from ...chihiros_led_control.device.base_device import BaseDevice
@@ -30,14 +31,12 @@ app = typer.Typer(help="Chihiros doser control")
 class DoserDevice(BaseDevice):
     """Doser-specific commands mixed onto the common BLE BaseDevice."""
 
-    # Keep BaseDevice.__init__ happy even when constructed directly by CLI
     _model_name = "Doser"
     _model_codes = ["DYDOSED", "DYDOSE", "DOSER"]
     _colors: dict[str, int] = {}
 
-    # Accept either a BLEDevice or a MAC string for convenience
     def __init__(self, device_or_addr: BLEDevice | str) -> None:
-        # Pass through directly; BaseDevice handles str vs BLEDevice in its init
+        # BaseDevice handles BLEDevice vs string internally
         super().__init__(device_or_addr)
 
     @staticmethod
@@ -118,11 +117,30 @@ class DoserDevice(BaseDevice):
 # ─────────────────────────────────────────────────────────────────────
 # Typer CLI wrappers (scan for device, then operate)
 # ─────────────────────────────────────────────────────────────────────
+NOT_FOUND_MSG = "Device Not Found, Unreachable or Failed to Connect, ensure Chihiro's App is not connected"
+
+
 async def _resolve_ble_or_fail(device_address: str) -> BLEDevice:
     ble = await BleakScanner.find_device_by_address(device_address, timeout=10.0)
     if not ble:
-        raise typer.BadParameter(f"Device {device_address} not found (scan timed out).")
+        typer.echo(NOT_FOUND_MSG)
+        raise typer.Exit(1)
     return ble
+
+
+def _handle_connect_errors(ex: Exception) -> None:
+    # Normalize all "not found / unreachable" style errors to the user-friendly message
+    msg = str(ex).lower()
+    if (
+        isinstance(ex, BleakDeviceNotFoundError)
+        or "not found" in msg
+        or "unreachable" in msg
+        or "failed to connect" in msg
+    ):
+        typer.echo(NOT_FOUND_MSG)
+        raise typer.Exit(1)
+    # Otherwise re-raise to show the real error
+    raise ex
 
 
 @app.command("set-dosing-pump-manuell-ml")
@@ -133,12 +151,16 @@ def cli_set_dosing_pump_manuell_ml(
 ):
     """Immediate one-shot dose."""
     async def run():
-        ble = await _resolve_ble_or_fail(device_address)
-        dd = DoserDevice(ble)
+        dd: DoserDevice | None = None
         try:
+            ble = await _resolve_ble_or_fail(device_address)
+            dd = DoserDevice(ble)
             await dd.set_dosing_pump_manuell_ml(ch_id, ch_ml)
+        except (BleakDeviceNotFoundError, BleakError, OSError) as ex:
+            _handle_connect_errors(ex)
         finally:
-            await dd.disconnect()
+            if dd:
+                await dd.disconnect()
     asyncio.run(run())
 
 
@@ -149,12 +171,16 @@ def cli_enable_auto_mode_dosing_pump(
 ):
     """Explicitly switch the doser channel to auto mode and sync time."""
     async def run():
-        ble = await _resolve_ble_or_fail(device_address)
-        dd = DoserDevice(ble)
+        dd: DoserDevice | None = None
         try:
+            ble = await _resolve_ble_or_fail(device_address)
+            dd = DoserDevice(ble)
             await dd.enable_auto_mode_dosing_pump(ch_id)
+        except (BleakDeviceNotFoundError, BleakError, OSError) as ex:
+            _handle_connect_errors(ex)
         finally:
-            await dd.disconnect()
+            if dd:
+                await dd.disconnect()
     asyncio.run(run())
 
 
@@ -170,14 +196,18 @@ def cli_add_setting_dosing_pump(
 ):
     """Add a 24h schedule entry at time with amount, on selected weekdays."""
     async def run():
-        ble = await _resolve_ble_or_fail(device_address)
-        dd = DoserDevice(ble)
+        dd: DoserDevice | None = None
         try:
+            ble = await _resolve_ble_or_fail(device_address)
+            dd = DoserDevice(ble)
             mask = encode_selected_weekdays(weekdays)
             tenths = int(round(ch_ml * 10))
             await dd.add_setting_dosing_pump(performance_time.time(), ch_id, mask, tenths)
+        except (BleakDeviceNotFoundError, BleakError, OSError) as ex:
+            _handle_connect_errors(ex)
         finally:
-            await dd.disconnect()
+            if dd:
+                await dd.disconnect()
     asyncio.run(run())
 
 
@@ -192,12 +222,16 @@ def cli_raw_dosing_pump(
 ):
     """Send a raw A5 frame: [cmd, 1, len, msg_hi, msg_lo, mode, *params, checksum]."""
     async def run():
-        ble = await _resolve_ble_or_fail(device_address)
-        dd = DoserDevice(ble)
+        dd: DoserDevice | None = None
         try:
+            ble = await _resolve_ble_or_fail(device_address)
+            dd = DoserDevice(ble)
             await dd.raw_dosing_pump(cmd_id, mode, params, repeats)
+        except (BleakDeviceNotFoundError, BleakError, OSError) as ex:
+            _handle_connect_errors(ex)
         finally:
-            await dd.disconnect()
+            if dd:
+                await dd.disconnect()
     asyncio.run(run())
 
 
