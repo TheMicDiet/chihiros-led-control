@@ -22,6 +22,7 @@ from ..protocol import _split_ml_25_6
 
 app = typer.Typer(help="Chihiros doser control")
 
+
 # ─────────────────────────────────────────────────────────────────────
 # Device class
 # ─────────────────────────────────────────────────────────────────────
@@ -36,12 +37,8 @@ class DoserDevice(BaseDevice):
 
     # Accept either a BLEDevice or a MAC string for convenience
     def __init__(self, device_or_addr: BLEDevice | str) -> None:
-        if isinstance(device_or_addr, BLEDevice):
-            ble = device_or_addr
-        else:
-            # minimal BLEDevice works with bleak-retry-connector
-            ble = BLEDevice(address=device_or_addr, name=device_or_addr, details=None, rssi=0)
-        super().__init__(ble)
+        # Pass through directly; BaseDevice handles str vs BLEDevice correctly (incl. WinRT)
+        super().__init__(device_or_addr)
 
     @staticmethod
     def _add_minutes(t: time, delta_min: int) -> time:
@@ -117,6 +114,7 @@ class DoserDevice(BaseDevice):
     async def read_dosing_container_status(self, ch_id: int | None = None, timeout_s: float = 2.0) -> None:
         typer.echo("read_dosing_container_status: query/parse not implemented yet.")
 
+
 # ─────────────────────────────────────────────────────────────────────
 # Typer CLI wrappers (create device INSIDE the event loop)
 # ─────────────────────────────────────────────────────────────────────
@@ -135,6 +133,7 @@ def cli_set_dosing_pump_manuell_ml(
         finally:
             await dd.disconnect()
     asyncio.run(run())
+
 
 @app.command("add-setting-dosing-pump")
 def cli_add_setting_dosing_pump(
@@ -157,6 +156,7 @@ def cli_add_setting_dosing_pump(
             await dd.disconnect()
     asyncio.run(run())
 
+
 @app.command("raw-dosing-pump")
 def cli_raw_dosing_pump(
     device_address: Annotated[str, typer.Argument(help="BLE MAC")],
@@ -173,3 +173,7 @@ def cli_raw_dosing_pump(
         finally:
             await dd.disconnect()
     asyncio.run(run())
+
+
+if __name__ == "__main__":
+    app()
