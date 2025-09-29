@@ -1,9 +1,12 @@
 """Module defining a base device class."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from abc import ABC, ABCMeta
 from datetime import datetime
+from typing import Optional, Union
 
 import typer
 from bleak.backends.device import BLEDevice
@@ -38,6 +41,16 @@ class _classproperty(property):
         return ret
 
 
+def _mk_ble_device(addr_or_ble: Union[BLEDevice, str]) -> BLEDevice:
+    """Create a BLEDevice from a MAC string if needed."""
+    if isinstance(addr_or_ble, BLEDevice):
+        return addr_or_ble
+    # Normalize to uppercase; Bleak/HA usually store addresses uppercase.
+    mac = addr_or_ble.upper()
+    # BLEDevice(address, name, details=None, rssi=0) — details/rssi aren’t required for connection.
+    return BLEDevice(mac, mac, None, 0)
+
+
 class BaseDevice(ABC):
     """Base device class used by device classes."""
 
@@ -48,11 +61,13 @@ class BaseDevice(ABC):
     _logger: logging.Logger
 
     def __init__(
-        self, ble_device: BLEDevice, advertisement_data: AdvertisementData | None = None
+        self,
+        ble_device: Union[BLEDevice, str],
+        advertisement_data: AdvertisementData | None = None,
     ) -> None:
         """Create a new device."""
-        self._ble_device = ble_device
-        self._logger = logging.getLogger(ble_device.address.replace(":", "-"))
+        self._ble_device = _mk_ble_device(ble_device)
+        self._logger = logging.getLogger(self._ble_device.address.replace(":", "-"))
         self._advertisement_data = advertisement_data
         self._client: BleakClientWithServiceCache | None = None
         self._disconnect_timer: asyncio.TimerHandle | None = None
@@ -258,7 +273,6 @@ class BaseDevice(ABC):
     ) -> None:
         """Send command to device and read response."""
         await self._ensure_connected()
-        # await self._resolve_protocol()
         if not isinstance(commands, list):
             commands = [commands]
         await self._send_command_while_connected(commands, retry)
@@ -344,7 +358,8 @@ class BaseDevice(ABC):
         self, _sender: BleakGATTCharacteristic, data: bytearray
     ) -> None:
         """Handle notification responses."""
-        self._logger.warning("%s: Notification received: %s", self.name, data)
+        # Too noisy as warning; keep as debug unless you are inspecting traffic.
+        self._logger.debug("%s: Notification received: %s", self.name, data.hex(" ").upper())
 
     def _disconnected(self, client: BleakClientWithServiceCache) -> None:
         """Disconnected callback."""
@@ -361,10 +376,12 @@ class BaseDevice(ABC):
 
     def _resolve_characteristics(self, services: BleakGATTServiceCollection) -> bool:
         """Resolve characteristics."""
+        # TX (notify/read)
         for characteristic in [UART_TX_CHAR_UUID]:
             if char := services.get_characteristic(characteristic):
                 self._read_char = char
                 break
+        # RX (write)
         for characteristic in [UART_RX_CHAR_UUID]:
             if char := services.get_characteristic(characteristic):
                 self._write_char = char
@@ -397,18 +414,20 @@ class BaseDevice(ABC):
                 ble_device_callback=lambda: self._ble_device,
             )
             self._logger.debug("%s: Connected; RSSI: %s", self.name, self.rssi)
-            resolved = self._resolve_characteristics(client.services)
-            if not resolved:
-                # Try to handle services failing to load
-                resolved = self._resolve_characteristics(await client.get_services())
+            # services may not be pre-populated
+            services = client.services or await client.get_services()
+            resolved = self._resolve_characteristics(services)
 
             self._client = client
             self._reset_disconnect_timer()
 
-            self._logger.debug(
-                "%s: Subscribe to notifications; RSSI: %s", self.name, self.rssi
-            )
-            await client.start_notify(self._read_char, self._notification_handler)  # type: ignore
+            if resolved and self._read_char:
+                self._logger.debug(
+                    "%s: Subscribe to notifications; RSSI: %s", self.name, self.rssi
+                )
+                await client.start_notify(self._read_char, self._notification_handler)  # type: ignore
+            else:
+                raise CharacteristicMissingError("Failed to resolve UART characteristics")
 
     def _reset_disconnect_timer(self) -> None:
         """Reset disconnect timer."""
