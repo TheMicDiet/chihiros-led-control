@@ -24,13 +24,21 @@ app = typer.Typer(help="Chihiros doser control")
 class DoserDevice(BaseDevice):
     """Doser-specific commands mixed onto the common BLE BaseDevice."""
 
+    # REQUIRED by BaseDevice.__init__ (avoids the assert)
+    _model_name = "Doser"
+    _model_codes = ["DYDOSED"]
+    _colors: dict[str, int] = {}  # doser has no color channels
+
     # Accept either a BLEDevice or a MAC string for convenience
     def __init__(self, device_or_addr: BLEDevice | str) -> None:  # NEW
         if isinstance(device_or_addr, BLEDevice):
             ble = device_or_addr
         else:
+            # Give it a DYDOSED-like name so logs & any model heuristics look sane
+            mac_nocolon = device_or_addr.replace(":", "").upper()
+            guessed_name = f"DYDOSED{mac_nocolon}"
             # minimal BLEDevice works with bleak-retry-connector
-            ble = BLEDevice(address=device_or_addr, name=device_or_addr, details=None, rssi=0)
+            ble = BLEDevice(address=device_or_addr, name=guessed_name, details=None, rssi=0)
         super().__init__(ble)
 
     @staticmethod
@@ -157,11 +165,11 @@ def cli_raw_dosing_pump(
     device_address: Annotated[str, typer.Argument(help="BLE MAC")],
     cmd_id: Annotated[int, typer.Option("--cmd-id", help="Command (e.g. 165)")],
     mode: Annotated[int, typer.Option("--mode", help="Mode (e.g. 27)")],
-    # required positional argument (no default) must come before any defaulted args
+    # required positional (no default) must come before any defaulted args
     params: Annotated[List[int], typer.Argument(
         help="Parameter list, e.g. 0 0 14 2 0 0"
     )],
-    # defaulted option comes after
+    # defaulted option after
     repeats: Annotated[int, typer.Option(
         "--repeats", help="Send frame N times", min=1
     )] = 3,
