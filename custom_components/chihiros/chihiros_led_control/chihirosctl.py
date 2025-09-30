@@ -20,9 +20,11 @@ from .weekday_encoding import WeekdaySelect
 # Mount the doser Typer app under "doser"
 # (use the thin shim so the import path stays stable)
 from ..chihiros_doser_control.chihirosdoserctl import app as doser_app
+from ..chihiros_led_ch4_control.chihirosch4ctl import app as ch4_app
 
 app = typer.Typer()
 app.add_typer(doser_app, name="doser", help="Chihiros doser control")
+app.add_typer(ch4_app,help="Chihiros ch4 control")
 
 msg_id = commands.next_message_id()
 

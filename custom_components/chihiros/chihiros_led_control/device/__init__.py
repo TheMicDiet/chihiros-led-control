@@ -15,15 +15,15 @@ from .base_device import BaseDevice
 from .a2 import AII
 from .c2 import CII
 from .c2rgb import CIIRGB
-from .commander1 import Commander1
-from .commander4 import Commander4
 from .fallback import Fallback
 from .tiny_terrarium_egg import TinyTerrariumEgg
-from .universal_wrgb import UniversalWRGB
 from .wrgb2 import WRGBII
-from .wrgb2_pro import WRGBIIPro
 from .wrgb2_slim import WRGBIISlim
 from .z_light_tiny import ZLightTiny
+from ...chihiros_led_ch4_control.device.commander1 import Commander1
+from ...chihiros_led_ch4_control.device.commander4 import Commander4
+from ...chihiros_led_ch4_control.device.wrgb2_pro import WRGBIIPro
+from ...chihiros_led_ch4_control.device.universal_wrgb import UniversalWRGB
 
 # NEW: include the doser stub so discovery resolves to "Doser" instead of "fallback"
 from .doser import Doser  # make sure this file exists with _model_codes like ["DYDOSED2", "DYDOSED", "DYDOSE"]

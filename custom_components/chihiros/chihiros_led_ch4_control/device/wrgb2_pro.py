@@ -1,6 +1,6 @@
 """WRGB II Pro device Model."""
 
-from .base_device import BaseDevice
+from ...chihiros_led_control.device.base_device import BaseDevice
 
 
 class WRGBIIPro(BaseDevice):
