@@ -406,18 +406,19 @@ class BaseDevice(ABC):
                 return
             self._logger.debug("%s: Connecting; RSSI: %s", self.name, self.rssi)
 
-            # IMPORTANT: On Windows/WinRT, passing a BLEDevice without .details leads to
-            # AttributeError: 'NoneType' object has no attribute 'adv'.
-            # To be robust across platforms, pass the MAC/address string to Bleak.
-            device_arg: Union[str, BLEDevice] = self._ble_device.address
-
-            kwargs = {
-                "use_services_cache": True,
-            }
-            # If we actually have a BLEDevice instance, we can provide it via callback
-            # so the connector can still use it when helpful.
+            # Prefer passing a BLEDevice so the connector can safely reference .address.
+            # Fall back to the address string only if we don't actually have a BLEDevice.
             if isinstance(self._ble_device, BLEDevice):
-                kwargs["ble_device_callback"] = lambda: self._ble_device  # type: ignore[assignment]
+                device_arg: Union[str, BLEDevice] = self._ble_device
+                kwargs = {
+                    "use_services_cache": True,
+                    "ble_device_callback": lambda: self._ble_device,  # type: ignore[return-value]
+                }
+            else:
+                device_arg = self._ble_device.address  # string MAC
+                kwargs = {
+                    "use_services_cache": True,
+                }
 
             client = await establish_connection(
                 BleakClientWithServiceCache,
