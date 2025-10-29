@@ -94,5 +94,5 @@
   "requirements": [
     "typer[all]==0.15.2"
   ],
-  "version": "0.9.0"
+  "version": "0.9.1"
 }
