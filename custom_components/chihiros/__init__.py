@@ -7,7 +7,7 @@ import logging
 try:
     from homeassistant.components import bluetooth
     from homeassistant.config_entries import ConfigEntry
-    from homeassistant.const import Platform
+    from homeassistant.const import CONF_NAME, Platform
     from homeassistant.core import HomeAssistant
     from homeassistant.exceptions import ConfigEntryNotReady
 
@@ -15,7 +15,6 @@ try:
 except ModuleNotFoundError:
     pass
 
-from homeassistant.const import CONF_NAME
 
 from .chihiros_led_control.device import BaseDevice, get_model_class_from_name
 from .chihiros_led_control.device.commander1 import Commander1
