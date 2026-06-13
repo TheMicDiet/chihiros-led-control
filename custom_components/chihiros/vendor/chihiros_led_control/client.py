@@ -8,13 +8,15 @@ from datetime import datetime
 
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
-from bleak.backends.service import BleakGATTCharacteristic  # type: ignore
-from bleak.backends.service import BleakGATTServiceCollection
+from bleak.backends.service import (
+    BleakGATTCharacteristic,  # type: ignore
+    BleakGATTServiceCollection,
+)
 from bleak.exc import BleakDBusError
 from bleak_retry_connector import BLEAK_RETRY_EXCEPTIONS as BLEAK_EXCEPTIONS
-from bleak_retry_connector import BleakError  # type: ignore
 from bleak_retry_connector import (
     BleakClientWithServiceCache,
+    BleakError,  # type: ignore
     BleakNotFoundError,
     establish_connection,
     retry_bluetooth_connection_error,
@@ -24,7 +26,7 @@ from . import commands
 from .const import UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
 from .exceptions import CharacteristicMissingError
 from .models import FALLBACK, DeviceModel
-from .protocol import next_message_id
+from .protocol import RuntimeNotification, ScheduleSnapshotNotification, next_message_id, parse_notification
 from .weekday_encoding import WeekdaySelect, encode_selected_weekdays
 
 DEFAULT_ATTEMPTS = 3
@@ -130,9 +132,7 @@ class ChihirosDevice:
         if color_id is None:
             self._logger.warning("Color not supported: `%s`", color)
             return
-        cmd = commands.create_manual_setting_command(
-            self.get_next_msg_id(), color_id, brightness
-        )
+        cmd = commands.create_manual_setting_command(self.get_next_msg_id(), color_id, brightness)
         await self._send_command(cmd, 3)
 
     async def set_brightness(self, brightness: int) -> None:
@@ -222,19 +222,17 @@ class ChihirosDevice:
 
     async def enable_auto_mode(self) -> None:
         """Enable auto mode."""
-        switch_cmd = commands.create_switch_to_auto_mode_command(self.get_next_msg_id())
         time_cmd = commands.create_set_time_command(self.get_next_msg_id())
-        await self._send_command(switch_cmd, 3)
+        switch_cmd = commands.create_switch_to_auto_mode_command(self.get_next_msg_id())
         await self._send_command(time_cmd, 3)
+        await self._send_command(switch_cmd, 3)
 
     async def set_manual_mode(self) -> None:
         """Switch to manual mode."""
         for color_name in self.model.color_channels:
             await self.set_color_brightness(100, color_name)
 
-    async def _send_command(
-        self, command: list[bytes] | bytes | bytearray, retry: int | None = None
-    ) -> None:
+    async def _send_command(self, command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
         """Send commands to the device."""
         await self._ensure_connected()
         commands_to_send: list[bytes]
@@ -244,9 +242,7 @@ class ChihirosDevice:
             commands_to_send = [bytes(command)]
         await self._send_command_while_connected(commands_to_send, retry)
 
-    async def _send_command_while_connected(
-        self, commands_to_send: list[bytes], retry: int | None = None
-    ) -> None:
+    async def _send_command_while_connected(self, commands_to_send: list[bytes], retry: int | None = None) -> None:
         """Send commands while connected."""
         self._logger.debug(
             "%s: Sending commands %s",
@@ -303,9 +299,7 @@ class ChihirosDevice:
             await self._execute_disconnect()
             raise
         except BleakError as ex:
-            self._logger.debug(
-                "%s: RSSI: %s; disconnecting due to error: %s", self.name, self.rssi, ex
-            )
+            self._logger.debug("%s: RSSI: %s; disconnecting due to error: %s", self.name, self.rssi, ex)
             await self._execute_disconnect()
             raise
 
@@ -319,18 +313,31 @@ class ChihirosDevice:
         for command in commands_to_send:
             await self._client.write_gatt_char(self._write_char, command, False)
 
-    def _notification_handler(
-        self, _sender: BleakGATTCharacteristic, data: bytearray
-    ) -> None:
+    def _notification_handler(self, _sender: BleakGATTCharacteristic, data: bytearray) -> None:
         """Handle notification responses."""
-        self._logger.warning("%s: Notification received: %s", self.name, data)
+        parsed = parse_notification(data)
+        if isinstance(parsed, RuntimeNotification):
+            self._logger.debug(
+                "%s: Runtime notification received; firmware=%s runtime_minutes=%s",
+                self.name,
+                parsed.firmware_version,
+                parsed.runtime_minutes,
+            )
+            return
+        if isinstance(parsed, ScheduleSnapshotNotification):
+            self._logger.debug(
+                "%s: Schedule snapshot notification received; firmware=%s curve_points=%s",
+                self.name,
+                parsed.firmware_version,
+                parsed.curve_points,
+            )
+            return
+        self._logger.debug("%s: Notification received: %s", self.name, data.hex())
 
     def _disconnected(self, client: BleakClientWithServiceCache) -> None:
         """Handle disconnected callback."""
         if self._expected_disconnect:
-            self._logger.debug(
-                "%s: Disconnected from device; RSSI: %s", self.name, self.rssi
-            )
+            self._logger.debug("%s: Disconnected from device; RSSI: %s", self.name, self.rssi)
             return
         self._logger.warning(
             "%s: Device unexpectedly disconnected; RSSI: %s",
@@ -385,9 +392,7 @@ class ChihirosDevice:
                 self._client = client
                 self._reset_disconnect_timer()
 
-                self._logger.debug(
-                    "%s: Subscribe to notifications; RSSI: %s", self.name, self.rssi
-                )
+                self._logger.debug("%s: Subscribe to notifications; RSSI: %s", self.name, self.rssi)
                 await client.start_notify(self._read_char, self._notification_handler)  # type: ignore
             except Exception:
                 read_char = self._read_char
@@ -406,9 +411,7 @@ class ChihirosDevice:
         if self._disconnect_timer:
             self._disconnect_timer.cancel()
         self._expected_disconnect = False
-        self._disconnect_timer = self.loop.call_later(
-            DISCONNECT_DELAY, self._disconnect
-        )
+        self._disconnect_timer = self.loop.call_later(DISCONNECT_DELAY, self._disconnect)
 
     async def disconnect(self) -> None:
         """Disconnect from the device."""
@@ -442,9 +445,7 @@ class ChihirosDevice:
             try:
                 await client.stop_notify(read_char)
             except BleakError:
-                self._logger.debug(
-                    "%s: Failed to stop notifications", self.name, exc_info=True
-                )
+                self._logger.debug("%s: Failed to stop notifications", self.name, exc_info=True)
         await client.disconnect()
 
     def _disconnect(self) -> None:

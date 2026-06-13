@@ -26,7 +26,7 @@ from . import commands
 from .const import UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
 from .exceptions import CharacteristicMissingError
 from .models import FALLBACK, DeviceModel
-from .protocol import next_message_id
+from .protocol import RuntimeNotification, ScheduleSnapshotNotification, next_message_id, parse_notification
 from .weekday_encoding import WeekdaySelect, encode_selected_weekdays
 
 DEFAULT_ATTEMPTS = 3
@@ -222,10 +222,10 @@ class ChihirosDevice:
 
     async def enable_auto_mode(self) -> None:
         """Enable auto mode."""
-        switch_cmd = commands.create_switch_to_auto_mode_command(self.get_next_msg_id())
         time_cmd = commands.create_set_time_command(self.get_next_msg_id())
-        await self._send_command(switch_cmd, 3)
+        switch_cmd = commands.create_switch_to_auto_mode_command(self.get_next_msg_id())
         await self._send_command(time_cmd, 3)
+        await self._send_command(switch_cmd, 3)
 
     async def set_manual_mode(self) -> None:
         """Switch to manual mode."""
@@ -315,7 +315,24 @@ class ChihirosDevice:
 
     def _notification_handler(self, _sender: BleakGATTCharacteristic, data: bytearray) -> None:
         """Handle notification responses."""
-        self._logger.warning("%s: Notification received: %s", self.name, data)
+        parsed = parse_notification(data)
+        if isinstance(parsed, RuntimeNotification):
+            self._logger.debug(
+                "%s: Runtime notification received; firmware=%s runtime_minutes=%s",
+                self.name,
+                parsed.firmware_version,
+                parsed.runtime_minutes,
+            )
+            return
+        if isinstance(parsed, ScheduleSnapshotNotification):
+            self._logger.debug(
+                "%s: Schedule snapshot notification received; firmware=%s curve_points=%s",
+                self.name,
+                parsed.firmware_version,
+                parsed.curve_points,
+            )
+            return
+        self._logger.debug("%s: Notification received: %s", self.name, data.hex())
 
     def _disconnected(self, client: BleakClientWithServiceCache) -> None:
         """Handle disconnected callback."""

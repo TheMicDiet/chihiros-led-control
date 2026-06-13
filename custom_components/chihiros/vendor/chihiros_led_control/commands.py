@@ -9,14 +9,10 @@ from .protocol import create_command_encoding, encode_timestamp
 
 def create_set_time_command(msg_id: tuple[int, int]) -> bytearray:
     """Create the current time command."""
-    return create_command_encoding(
-        90, 9, msg_id, encode_timestamp(datetime.datetime.now())
-    )
+    return create_command_encoding(90, 9, msg_id, encode_timestamp(datetime.datetime.now()))
 
 
-def create_manual_setting_command(
-    msg_id: tuple[int, int], color: int, brightness_level: int
-) -> bytearray:
+def create_manual_setting_command(msg_id: tuple[int, int], color: int, brightness_level: int) -> bytearray:
     """Create a manual brightness command."""
     return create_command_encoding(90, 7, msg_id, [color, brightness_level])
 
@@ -56,9 +52,7 @@ def create_delete_auto_setting_command(
     weekdays: int,
 ) -> bytearray:
     """Create a delete auto setting command."""
-    return create_add_auto_setting_command(
-        msg_id, sunrise, sunset, (255, 255, 255), ramp_up_minutes, weekdays
-    )
+    return create_add_auto_setting_command(msg_id, sunrise, sunset, (255, 255, 255), ramp_up_minutes, weekdays)
 
 
 def create_reset_auto_settings_command(msg_id: tuple[int, int]) -> bytearray:
