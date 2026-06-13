@@ -1,0 +1,55 @@
+"""BLE protocol helpers for Chihiros commands."""
+
+from __future__ import annotations
+
+import datetime
+
+
+def next_message_id(current_msg_id: tuple[int, int] = (0, 0)) -> tuple[int, int]:
+    """Generate the next Bluetooth message id."""
+    msg_id_higher_byte, msg_id_lower_byte = current_msg_id
+    while True:
+        if msg_id_higher_byte == 255 and msg_id_lower_byte == 255:
+            msg_id_higher_byte, msg_id_lower_byte = 0, 1
+        elif msg_id_lower_byte == 255:
+            msg_id_higher_byte = (msg_id_higher_byte + 1) % 256
+            msg_id_lower_byte = 0
+        else:
+            msg_id_lower_byte += 1
+
+        if msg_id_higher_byte != 90 and msg_id_lower_byte != 90:
+            return (msg_id_higher_byte, msg_id_lower_byte)
+
+
+def calculate_checksum(input_bytes: bytes | bytearray) -> int:
+    """Calculate the command checksum."""
+    if len(input_bytes) < 7:
+        raise ValueError("Commands must contain at least 7 bytes")
+    checksum = input_bytes[1]
+    for input_byte in input_bytes[2:]:
+        checksum = checksum ^ input_byte
+    return checksum
+
+
+def create_command_encoding(
+    cmd_id: int, cmd_mode: int, msg_id: tuple[int, int], parameters: list[int]
+) -> bytearray:
+    """Encode a Chihiros BLE command."""
+    sanitized_params = [value if value != 90 else 89 for value in parameters]
+    command = bytearray(
+        [cmd_id, 1, len(sanitized_params) + 5, msg_id[0], msg_id[1], cmd_mode]
+        + sanitized_params
+    )
+
+    verification_byte = calculate_checksum(command)
+    if verification_byte == 90:
+        return create_command_encoding(
+            cmd_id, cmd_mode, next_message_id(msg_id), sanitized_params
+        )
+
+    return command + bytes([verification_byte])
+
+
+def encode_timestamp(ts: datetime.datetime) -> list[int]:
+    """Encode a timestamp as Chihiros command parameters."""
+    return [ts.year - 2000, ts.month, ts.isoweekday(), ts.hour, ts.minute, ts.second]

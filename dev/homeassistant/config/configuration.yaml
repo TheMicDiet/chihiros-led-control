@@ -1,0 +1,12 @@
+default_config:
+
+homeassistant:
+  name: Chihiros Test
+  time_zone: Europe/Berlin
+  unit_system: metric
+
+logger:
+  default: info
+  logs:
+    custom_components.chihiros: debug
+    custom_components.chihiros.vendor.chihiros_led_control: debug

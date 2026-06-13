@@ -5,28 +5,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-try:
-    from homeassistant.components import bluetooth
-    from homeassistant.components.bluetooth.passive_update_coordinator import (
-        PassiveBluetoothDataUpdateCoordinator,
-    )
-    from homeassistant.core import HomeAssistant, callback
+from homeassistant.components import bluetooth
+from homeassistant.components.bluetooth.passive_update_coordinator import (
+    PassiveBluetoothDataUpdateCoordinator,
+)
+from homeassistant.core import HomeAssistant, callback
 
-    CoordinatorParent: type[PassiveBluetoothDataUpdateCoordinator | _FakeParent] = (
-        PassiveBluetoothDataUpdateCoordinator
-    )
-except ModuleNotFoundError:
-    # FIXME make fake class and decorator
-    class _FakeParent:
-        """Fake aprent class to handle when HA lib is not installed."""
-
-        pass
-
-    CoordinatorParent = _FakeParent  # type :ignore
-    callback = property  # type: ignore
-
-
-from .chihiros_led_control.device.base_device import BaseDevice
+from .vendor.chihiros_led_control import ChihirosDevice
 
 if TYPE_CHECKING:
     from bleak.backends.device import BLEDevice
@@ -34,21 +19,17 @@ if TYPE_CHECKING:
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
 
-class ChihirosDataUpdateCoordinator(CoordinatorParent):  # type: ignore
-    """Class to manage fetching data from the Chihiros.
-
-    TODO: See if the _async_handle_bluetooth_event is called.
-    If not, that means this class is useless, so we can delete it
-    """
+class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
+    """Coordinator that tracks passive Bluetooth availability events."""
 
     def __init__(
         self,
         hass: HomeAssistant,
-        client: BaseDevice,
+        client: ChihirosDevice,
         ble_device: BLEDevice,
     ) -> None:
         """Initialize."""
-        self.api: BaseDevice = client
+        self.api: ChihirosDevice = client
         self.data: dict[str, Any] = {}
         self.ble_device = ble_device
         super().__init__(
@@ -65,7 +46,7 @@ class ChihirosDataUpdateCoordinator(CoordinatorParent):  # type: ignore
         change: bluetooth.BluetoothChange,
     ) -> None:
         """Handle a Bluetooth event."""
-        _LOGGER.critical("%s: CHIHIROS data: %s", self.ble_device.address, self.data)
+        _LOGGER.debug("%s: Bluetooth event: %s", self.ble_device.address, change)
         super()._async_handle_bluetooth_event(service_info, change)
 
     @callback
@@ -73,6 +54,5 @@ class ChihirosDataUpdateCoordinator(CoordinatorParent):  # type: ignore
         self, service_info: bluetooth.BluetoothServiceInfoBleak
     ) -> None:
         """Handle the device going unavailable."""
-        _LOGGER.critical("%s: CHIHIROS device unavailable: %s", self.ble_device.address)
+        _LOGGER.debug("%s: Chihiros device unavailable", self.ble_device.address)
         super()._async_handle_unavailable(service_info)
-        # self._was_unavailable = True

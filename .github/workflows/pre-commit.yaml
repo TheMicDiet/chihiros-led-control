@@ -3,16 +3,14 @@ name: pre-commit
 on:
   pull_request:
   push:
-    branches: [main, test-me-*]
+    branches: [main]
 
 jobs:
   main:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/setup-python@v4
+    - uses: actions/checkout@v4
+    - uses: astral-sh/setup-uv@v8.2.0
       with:
-        python-version: 3.x
-    - uses: pre-commit/action@v3.0.1
-    - uses: pre-commit-ci/lite-action@v1.0.2
-      if: always()
+        enable-cache: true
+    - run: uvx pre-commit run --all-files

@@ -1,4 +1,4 @@
-# Chihiros LED Control
+﻿# Chihiros LED Control
 
 This repository contains a python **CLI** script as well as a **Home Assistant integration** that can be used to control Chihiros LEDs for aquariums via bluetooth without the vendor app. For this purpose, the protocol to control the LED has been reversed engineered with the help of decompiling the old *Magic App* as well as sniffing and analyzing of bluetooth packages that are sent by the new *My Chihiros App*. The new app is based on flutter and only contains a binary that can not easily be analyzed.
 
@@ -28,55 +28,53 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 
 ## Requirements
 - a device with bluetooth LE support for sending the commands to the LED
-- [Python 3](https://www.python.org/downloads/) with pip
+- [uv](https://docs.astral.sh/uv/) for Python environment and dependency management
 
 ## Using the CLI
 ```bash
 # setup the environment
-python -m venv venv
-source venv/bin/activate
-pip install -e .
+uv sync --extra cli
 
 # show help
-chihirosctl --help
+uv run chihirosctl --help
 
 # discover devices and their address
-chihirosctl list-devices
+uv run chihirosctl list-devices
 
 # turn on the device
-chihirosctl turn-on <device-address>
+uv run chihirosctl turn-on <device-address>
 
 # turn off the device
-chihirosctl turn-off <device-address>
+uv run chihirosctl turn-off <device-address>
 
 # manually set the brightness to 100
-chihirosctl set-brightness <device-address> 100
+uv run chihirosctl set-brightness <device-address> 100
 
 # create an automatic timed setting that turns on the light from 8:00 to 18:00
-chihirosctl add-setting <device-address> 8:00 18:00
+uv run chihirosctl add-setting <device-address> 8:00 18:00
 
 # create a setting for specific weekdays with maximum brightness of 75 and ramp up time of 30 minutes
-chihirosctl add-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 75
+uv run chihirosctl add-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 75
 
 # on RGB models, use the RGB versions of the above commands
 
 # manually set the brightness to 60 red, 80 green, 100 blue on RGB models
-chihirosctl set-rgb-brightness <device-address> 60 80 100
+uv run chihirosctl set-rgb-brightness <device-address> 60 80 100
 
 # create an automatic timed setting that turns on the light from 8:00 to 18:00
-chihirosctl add-rgb-setting <device-address> 8:00 18:00
+uv run chihirosctl add-rgb-setting <device-address> 8:00 18:00
 
 # create a setting for specific weekdays with maximum brightness of 35, 55, 75 and ramp up time of 30 minutes
-chihirosctl add-rgb-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 35 55 75
+uv run chihirosctl add-rgb-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 35 55 75
 
 # enable auto mode to activate the created timed settings
-chihirosctl enable-auto-mode <device-address>
+uv run chihirosctl enable-auto-mode <device-address>
 
 # delete a created setting
-chihirosctl delete-setting <device-address> 8:00 18:00
+uv run chihirosctl remove-setting <device-address> 8:00 18:00
 
 # reset all created settings
-chihirosctl reset-settings <device-address>
+uv run chihirosctl reset-settings <device-address>
 
 ```
 
@@ -137,3 +135,32 @@ The auto mode and its settings can be reset by sending the following command:
 - Command ID: **90**
 - Mode: **5**
 - Parameters: [ **5**, **255**, **255** ]
+
+## Contributing
+Reusable library and CLI code lives in `src/chihiros_led_control/`. The Home
+Assistant integration lives in `custom_components/chihiros/` and imports the
+vendored runtime copy from `custom_components/chihiros/vendor/` so HACS installs
+do not require the top-level package.
+
+Set up the development environment with uv:
+
+```bash
+uv sync --group dev
+uv run --group dev pytest
+uv run --group dev pre-commit run --all-files
+```
+
+After changing library code, refresh the vendored copy:
+
+```bash
+uv run python scripts/sync_vendor.py
+uv run python scripts/sync_vendor.py --check
+```
+
+For local Home Assistant testing with Docker Compose, see [docs/home-assistant-docker.md](docs/home-assistant-docker.md).
+
+Successful pushes to `main` create an automatic GitHub release after the `HA Validation` workflow passes. The release workflow reads `custom_components/chihiros/manifest.json`, creates a tag named `v<version>`, and uses GitHub generated release notes. If that tag already exists, the release is skipped.
+
+See [docs/architecture.md](docs/architecture.md) for the package layout.
+
+

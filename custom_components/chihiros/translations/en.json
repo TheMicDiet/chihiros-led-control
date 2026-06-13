@@ -16,6 +16,13 @@
             "bluetooth_confirm": {
                 "description": "Do you want to set up {name}?"
             },
+            "fallback_config": {
+                "data": {
+                    "device_type": "Device type",
+                    "name": "Name"
+                },
+                "description": "Choose how this Chihiros-compatible device should be controlled"
+            },
             "user": {
                 "data": {
                     "device": "Device"
