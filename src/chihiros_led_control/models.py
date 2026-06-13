@@ -28,9 +28,7 @@ Z_LIGHT_TINY_CHANNELS = MappingProxyType({"white": 0, "warm": 1})
 GENERIC_WHITE = DeviceModel("Generic White LED", (), WHITE_CHANNELS)
 GENERIC_RGB = DeviceModel("Generic RGB", (), RGB_CHANNELS)
 GENERIC_WRGB = DeviceModel("Generic WRGB", (), WRGB_CHANNELS)
-FALLBACK = DeviceModel(
-    "fallback", (), COMMANDER_CHANNELS, needs_device_type=True, fallback=True
-)
+FALLBACK = DeviceModel("fallback", (), COMMANDER_CHANNELS, needs_device_type=True, fallback=True)
 
 SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     DeviceModel("Z Light TINY", ("DYSSD", "DYZSD"), Z_LIGHT_TINY_CHANNELS),
@@ -79,9 +77,7 @@ GENERIC_MODELS_BY_DEVICE_TYPE = MappingProxyType(
     }
 )
 
-MODEL_BY_CODE = MappingProxyType(
-    {code: model for model in SUPPORTED_MODELS for code in model.advertised_codes}
-)
+MODEL_BY_CODE = MappingProxyType({code: model for model in SUPPORTED_MODELS for code in model.advertised_codes})
 
 
 def iter_model_codes_by_specificity() -> tuple[tuple[str, DeviceModel], ...]:

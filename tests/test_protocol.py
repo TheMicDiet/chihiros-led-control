@@ -52,9 +52,7 @@ def test_command_encoding_sanitizes_reserved_parameter() -> None:
 
 def test_manual_setting_command_encoding() -> None:
     """Manual brightness commands encode color and brightness."""
-    assert commands.create_manual_setting_command((0, 1), 0, 100) == bytearray(
-        [90, 1, 7, 0, 1, 7, 0, 100, 100]
-    )
+    assert commands.create_manual_setting_command((0, 1), 0, 100) == bytearray([90, 1, 7, 0, 1, 7, 0, 100, 100])
 
 
 def test_encode_timestamp() -> None:

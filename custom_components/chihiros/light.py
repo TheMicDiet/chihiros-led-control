@@ -35,9 +35,7 @@ async def async_setup_entry(
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
     _LOGGER.debug("Setup chihiros entry: %s", chihiros_data.device.address)
     for color in chihiros_data.device.colors:
-        _LOGGER.debug(
-            "Setup chihiros light entity: %s - %s", chihiros_data.device.address, color
-        )
+        _LOGGER.debug("Setup chihiros light entity: %s - %s", chihiros_data.device.address, color)
         async_add_entities(
             [
                 ChihirosLightEntity(
@@ -129,7 +127,5 @@ class ChihirosLightEntity(
         except Exception as ex:
             self._attr_available = False
             self.schedule_update_ha_state()
-            raise HomeAssistantError(
-                f"Failed to set brightness for {self.name}"
-            ) from ex
+            raise HomeAssistantError(f"Failed to set brightness for {self.name}") from ex
         self._attr_available = True

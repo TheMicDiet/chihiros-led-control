@@ -15,9 +15,4 @@ def test_encode_everyday() -> None:
 
 def test_encode_selected_weekdays() -> None:
     """Selected weekdays encode the expected bitmask."""
-    assert (
-        encode_selected_weekdays(
-            [WeekdaySelect.monday, WeekdaySelect.wednesday, WeekdaySelect.sunday]
-        )
-        == 81
-    )
+    assert encode_selected_weekdays([WeekdaySelect.monday, WeekdaySelect.wednesday, WeekdaySelect.sunday]) == 81

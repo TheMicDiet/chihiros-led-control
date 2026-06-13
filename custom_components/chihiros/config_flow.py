@@ -34,26 +34,20 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         self._discovered_device: ChihirosDevice | None = None
         self._discovered_devices: dict[str, BluetoothServiceInfoBleak] = {}
 
-    async def async_step_bluetooth(
-        self, discovery_info: BluetoothServiceInfoBleak
-    ) -> ConfigFlowResult:
+    async def async_step_bluetooth(self, discovery_info: BluetoothServiceInfoBleak) -> ConfigFlowResult:
         """Handle the bluetooth discovery step."""
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
         device = create_device(discovery_info.device)
         self._discovery_info = discovery_info
         self._discovered_device = device
-        _LOGGER.debug(
-            "async_step_bluetooth - discovered device %s", discovery_info.name
-        )
+        _LOGGER.debug("async_step_bluetooth - discovered device %s", discovery_info.name)
         if needs_device_type(discovery_info.name):
             return await self.async_step_fallback_config()
 
         return await self.async_step_bluetooth_confirm()
 
-    async def async_step_bluetooth_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_bluetooth_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Confirm discovery."""
         assert self._discovered_device is not None
         device = self._discovered_device
@@ -61,20 +55,14 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         discovery_info = self._discovery_info
         title = device.name or discovery_info.name
         if user_input is not None:
-            return self.async_create_entry(
-                title=title, data={CONF_ADDRESS: discovery_info.address}
-            )
+            return self.async_create_entry(title=title, data={CONF_ADDRESS: discovery_info.address})
 
         self._set_confirm_only()
         placeholders = {"name": title}
         self.context["title_placeholders"] = placeholders
-        return self.async_show_form(
-            step_id="bluetooth_confirm", description_placeholders=placeholders
-        )
+        return self.async_show_form(step_id="bluetooth_confirm", description_placeholders=placeholders)
 
-    async def async_step_fallback_config(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_fallback_config(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Ask user for device details when fallback device is detected."""
         assert self._discovered_device is not None
         assert self._discovery_info is not None
@@ -83,11 +71,7 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             # Create config entry including the address, chosen name and device type
-            title = (
-                user_input.get(CONF_NAME)
-                or self._discovered_device.name
-                or discovery_info.name
-            )
+            title = user_input.get(CONF_NAME) or self._discovered_device.name or discovery_info.name
             data = {
                 CONF_ADDRESS: discovery_info.address,
                 CONF_NAME: user_input.get(CONF_NAME, title),
@@ -100,27 +84,19 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         data_schema = vol.Schema(
             {
                 vol.Required(CONF_NAME, default=default_name): str,
-                vol.Required("device_type", default="white"): vol.In(
-                    ["white", "rgb", "wrgb"]
-                ),
+                vol.Required("device_type", default="white"): vol.In(["white", "rgb", "wrgb"]),
             }
         )
-        return self.async_show_form(
-            step_id="fallback_config", data_schema=data_schema, errors=errors
-        )
+        return self.async_show_form(step_id="fallback_config", data_schema=data_schema, errors=errors)
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle the user step to pick discovered device."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
             address = user_input[CONF_ADDRESS]
             discovery_info = self._discovered_devices[address]
-            await self.async_set_unique_id(
-                discovery_info.address, raise_on_progress=False
-            )
+            await self.async_set_unique_id(discovery_info.address, raise_on_progress=False)
             self._abort_if_unique_id_configured()
             device = create_device(discovery_info.device)
 
@@ -130,9 +106,7 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
                 return await self.async_step_fallback_config()
 
             title = device.name or discovery_info.name
-            return self.async_create_entry(
-                title=title, data={CONF_ADDRESS: discovery_info.address}
-            )
+            return self.async_create_entry(title=title, data={CONF_ADDRESS: discovery_info.address})
 
         if discovery := self._discovery_info:
             self._discovered_devices[discovery.address] = discovery
@@ -153,14 +127,10 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
             {
                 vol.Required(CONF_ADDRESS): vol.In(
                     {
-                        service_info.address: (
-                            f"{service_info.name} ({service_info.address})"
-                        )
+                        service_info.address: (f"{service_info.name} ({service_info.address})")
                         for service_info in self._discovered_devices.values()
                     }
                 ),
             }
         )
-        return self.async_show_form(
-            step_id="user", data_schema=data_schema, errors=errors
-        )
+        return self.async_show_form(step_id="user", data_schema=data_schema, errors=errors)

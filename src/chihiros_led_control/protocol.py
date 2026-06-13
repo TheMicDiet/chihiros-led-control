@@ -31,21 +31,14 @@ def calculate_checksum(input_bytes: bytes | bytearray) -> int:
     return checksum
 
 
-def create_command_encoding(
-    cmd_id: int, cmd_mode: int, msg_id: tuple[int, int], parameters: list[int]
-) -> bytearray:
+def create_command_encoding(cmd_id: int, cmd_mode: int, msg_id: tuple[int, int], parameters: list[int]) -> bytearray:
     """Encode a Chihiros BLE command."""
     sanitized_params = [value if value != 90 else 89 for value in parameters]
-    command = bytearray(
-        [cmd_id, 1, len(sanitized_params) + 5, msg_id[0], msg_id[1], cmd_mode]
-        + sanitized_params
-    )
+    command = bytearray([cmd_id, 1, len(sanitized_params) + 5, msg_id[0], msg_id[1], cmd_mode] + sanitized_params)
 
     verification_byte = calculate_checksum(command)
     if verification_byte == 90:
-        return create_command_encoding(
-            cmd_id, cmd_mode, next_message_id(msg_id), sanitized_params
-        )
+        return create_command_encoding(cmd_id, cmd_mode, next_message_id(msg_id), sanitized_params)
 
     return command + bytes([verification_byte])
 

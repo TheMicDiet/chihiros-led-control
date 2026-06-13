@@ -11,9 +11,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE = REPO_ROOT / "src" / "chihiros_led_control"
-VENDOR = (
-    REPO_ROOT / "custom_components" / "chihiros" / "vendor" / "chihiros_led_control"
-)
+VENDOR = REPO_ROOT / "custom_components" / "chihiros" / "vendor" / "chihiros_led_control"
 
 EXCLUDED_DIRS = {
     "__pycache__",
@@ -40,9 +38,7 @@ def _is_excluded(path: Path) -> bool:
         return True
     if path.suffix in EXCLUDED_SUFFIXES:
         return True
-    return any(
-        part in EXCLUDED_DIRS or part.endswith(".egg-info") for part in path.parts
-    )
+    return any(part in EXCLUDED_DIRS or part.endswith(".egg-info") for part in path.parts)
 
 
 def _copy_runtime_tree() -> None:

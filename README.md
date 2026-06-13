@@ -162,5 +162,3 @@ For local Home Assistant testing with Docker Compose, see [docs/home-assistant-d
 Successful pushes to `main` create an automatic GitHub release after the `HA Validation` workflow passes. The release workflow reads `custom_components/chihiros/manifest.json`, creates a tag named `v<version>`, and uses GitHub generated release notes. If that tag already exists, the release is skipped.
 
 See [docs/architecture.md](docs/architecture.md) for the package layout.
-
-

@@ -35,9 +35,7 @@ def model_for_device_type(device_type: str | None) -> DeviceModel:
     """Return a generic model for a stored device type."""
     if not device_type:
         return GENERIC_MODELS_BY_DEVICE_TYPE["white"]
-    return GENERIC_MODELS_BY_DEVICE_TYPE.get(
-        device_type, GENERIC_MODELS_BY_DEVICE_TYPE["white"]
-    )
+    return GENERIC_MODELS_BY_DEVICE_TYPE.get(device_type, GENERIC_MODELS_BY_DEVICE_TYPE["white"])
 
 
 def resolve_model(
@@ -63,9 +61,7 @@ def create_device(
     return ChihirosDevice(ble_device, resolved_model, advertisement_data)
 
 
-async def get_device_from_address(
-    device_address: str, device_type: str | None = None
-) -> ChihirosDevice:
+async def get_device_from_address(device_address: str, device_type: str | None = None) -> ChihirosDevice:
     """Get a device client from a BLE address."""
     ble_dev = await BleakScanner.find_device_by_address(device_address)
     if ble_dev:

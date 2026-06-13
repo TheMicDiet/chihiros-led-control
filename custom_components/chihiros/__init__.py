@@ -30,13 +30,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     address: str = entry.unique_id
     ble_device = bluetooth.async_ble_device_from_address(hass, address.upper(), True)
     if not ble_device:
-        raise ConfigEntryNotReady(
-            f"Could not find Chihiros BLE device with address {address}"
-        )
+        raise ConfigEntryNotReady(f"Could not find Chihiros BLE device with address {address}")
     if not ble_device.name:
-        raise ConfigEntryNotReady(
-            f"Found Chihiros BLE device with address {address} but can not find its name"
-        )
+        raise ConfigEntryNotReady(f"Found Chihiros BLE device with address {address} but can not find its name")
     if needs_device_type(ble_device.name):
         entry_name = entry.data.get(CONF_NAME)
         if entry_name:
@@ -45,9 +41,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except Exception:
                 pass
 
-    chihiros_device: ChihirosDevice = create_device(
-        ble_device, device_type=entry.data.get("device_type")
-    )
+    chihiros_device: ChihirosDevice = create_device(ble_device, device_type=entry.data.get("device_type"))
 
     coordinator = ChihirosDataUpdateCoordinator(
         hass,
@@ -56,9 +50,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = ChihirosData(
-        entry.title, chihiros_device, coordinator
-    )
+    hass.data[DOMAIN][entry.entry_id] = ChihirosData(entry.title, chihiros_device, coordinator)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

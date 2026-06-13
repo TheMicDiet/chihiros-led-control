@@ -61,23 +61,17 @@ def set_color_brightness(
     brightness: Annotated[int, typer.Argument(min=0, max=100)],
 ) -> None:
     """Set color brightness of a light."""
-    _run_device_func(
-        device_address, lambda dev: dev.set_color_brightness(brightness, color)
-    )
+    _run_device_func(device_address, lambda dev: dev.set_color_brightness(brightness, color))
 
 
 @app.command()
-def set_brightness(
-    device_address: str, brightness: Annotated[int, typer.Argument(min=0, max=100)]
-) -> None:
+def set_brightness(device_address: str, brightness: Annotated[int, typer.Argument(min=0, max=100)]) -> None:
     """Set brightness of a light."""
     set_color_brightness(device_address, color=0, brightness=brightness)
 
 
 @app.command()
-def set_rgb_brightness(
-    device_address: str, brightness: Annotated[tuple[int, int, int], typer.Argument()]
-) -> None:
+def set_rgb_brightness(device_address: str, brightness: Annotated[tuple[int, int, int], typer.Argument()]) -> None:
     """Set brightness of a RGB light."""
     _run_device_func(device_address, lambda dev: dev.set_rgb_brightness(brightness))
 
