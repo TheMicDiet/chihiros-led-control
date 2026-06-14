@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth.passive_update_coordinator import (
@@ -11,16 +11,13 @@ from homeassistant.components.bluetooth.passive_update_coordinator import (
 )
 from homeassistant.core import HomeAssistant, callback
 
-from .vendor.chihiros_led_control import ChihirosDevice
+from .runtime import ChihirosClient
 from .vendor.chihiros_led_control.protocol import (
     ParsedNotification,
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
 )
-
-if TYPE_CHECKING:
-    from bleak.backends.device import BLEDevice
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 ATTR_FIRMWARE_VERSION = "firmware_version"
@@ -34,18 +31,20 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
     def __init__(
         self,
         hass: HomeAssistant,
-        client: ChihirosDevice,
-        ble_device: BLEDevice,
+        client: ChihirosClient,
+        address: str,
+        always_available: bool = False,
     ) -> None:
         """Initialize."""
-        self.api: ChihirosDevice = client
+        self.api: ChihirosClient = client
         self.data: dict[str, Any] = {}
-        self.ble_device = ble_device
+        self._device_address = address
+        self.always_available = always_available
         self._remove_notification_callback = client.add_notification_callback(self._queue_notification)
         super().__init__(
             hass,
             _LOGGER,
-            ble_device.address,
+            address,
             bluetooth.BluetoothScanningMode.ACTIVE,
         )
 
@@ -79,13 +78,13 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         change: bluetooth.BluetoothChange,
     ) -> None:
         """Handle a Bluetooth event."""
-        _LOGGER.debug("%s: Bluetooth event: %s", self.ble_device.address, change)
+        _LOGGER.debug("%s: Bluetooth event: %s", self._device_address, change)
         super()._async_handle_bluetooth_event(service_info, change)
 
     @callback
     def _async_handle_unavailable(self, service_info: bluetooth.BluetoothServiceInfoBleak) -> None:
         """Handle the device going unavailable."""
-        _LOGGER.debug("%s: Chihiros device unavailable", self.ble_device.address)
+        _LOGGER.debug("%s: Chihiros device unavailable", self._device_address)
         super()._async_handle_unavailable(service_info)
 
 

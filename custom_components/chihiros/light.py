@@ -21,7 +21,7 @@ from .const import DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData
-from .vendor.chihiros_led_control import ChihirosDevice
+from .runtime import ChihirosClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class ChihirosLightEntity(
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        chihiros_device: ChihirosDevice,
+        chihiros_device: ChihirosClient,
         color: str,
     ) -> None:
         """Initialise the entity."""
@@ -88,7 +88,7 @@ class ChihirosLightEntity(
     @property
     def available(self) -> bool:
         """Return whether the light is available."""
-        if getattr(self._device, "is_fake", False):
+        if self.coordinator.always_available:
             return True
         return super().available
 

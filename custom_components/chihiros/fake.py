@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -66,10 +66,16 @@ def create_fake_device(address: str) -> FakeChihirosDevice:
     return FakeChihirosDevice(FAKE_DEVICES_BY_ADDRESS[address])
 
 
+def iter_enabled_fake_devices(current_addresses: Iterable[str]) -> tuple[FakeChihirosDeviceInfo, ...]:
+    """Return fake devices that can be shown in discovery."""
+    if not fake_devices_enabled():
+        return ()
+    configured_addresses = set(current_addresses)
+    return tuple(device for device in FAKE_DEVICES if device.address not in configured_addresses)
+
+
 class FakeChihirosDevice:
     """Small in-memory Chihiros device replacement for HA UI testing."""
-
-    is_fake = True
 
     def __init__(self, device_info: FakeChihirosDeviceInfo) -> None:
         """Initialize the fake device."""

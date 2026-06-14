@@ -25,7 +25,7 @@ from .coordinator import (
 )
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData
-from .vendor.chihiros_led_control import ChihirosDevice
+from .runtime import ChihirosClient
 
 _LOGGER = logging.getLogger(__name__)
 MAX_SENSOR_STATE_LENGTH = 255
@@ -89,7 +89,7 @@ class ChihirosNotificationSensor(
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        device: ChihirosDevice,
+        device: ChihirosClient,
         description: SensorEntityDescription,
     ) -> None:
         """Initialize the sensor."""
@@ -105,7 +105,7 @@ class ChihirosNotificationSensor(
     @property
     def available(self) -> bool:
         """Return whether the sensor is available."""
-        if getattr(self._device, "is_fake", False):
+        if self.coordinator.always_available:
             return True
         return super().available
 

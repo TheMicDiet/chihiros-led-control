@@ -6,10 +6,10 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 
 from .const import MANUFACTURER
-from .vendor.chihiros_led_control import ChihirosDevice
+from .runtime import ChihirosClient
 
 
-def chihiros_device_info(device: ChihirosDevice, address: str) -> DeviceInfo:
+def chihiros_device_info(device: ChihirosClient, address: str) -> DeviceInfo:
     """Return Home Assistant device metadata for a Chihiros device."""
     return DeviceInfo(
         connections={(dr.CONNECTION_BLUETOOTH, address)},
@@ -19,7 +19,7 @@ def chihiros_device_info(device: ChihirosDevice, address: str) -> DeviceInfo:
     )
 
 
-def chihiros_entity_name(device: ChihirosDevice, suffix: str) -> str:
+def chihiros_entity_name(device: ChihirosClient, suffix: str) -> str:
     """Return a consistent Chihiros entity name."""
     return f"{device.name} {suffix}"
 

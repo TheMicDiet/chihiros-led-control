@@ -15,7 +15,7 @@ from .const import DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData
-from .vendor.chihiros_led_control import ChihirosDevice
+from .runtime import ChihirosClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class ChihirosAutoManualSwitch(
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        device: ChihirosDevice,
+        device: ChihirosClient,
     ) -> None:
         """Initialize the switch."""
         super().__init__(coordinator)
@@ -59,7 +59,7 @@ class ChihirosAutoManualSwitch(
     @property
     def available(self) -> bool:
         """Return whether the switch is available."""
-        if getattr(self._device, "is_fake", False):
+        if self.coordinator.always_available:
             return True
         return super().available
 
