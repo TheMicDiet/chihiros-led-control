@@ -24,7 +24,7 @@ keywords = ["chihiros", "bluetooth", "lib"]
 requires-python = ">=3.13"
 dependencies = [
     "bleak>=0.22.3",
-    "bleak-retry-connector==3.9.0",
+    "bleak-retry-connector==4.6.1",
     "click<8.2",
     "rich==13.9.4",
     "typer==0.15.2",

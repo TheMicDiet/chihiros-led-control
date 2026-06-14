@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.13"
 
 [[package]]
@@ -37,16 +37,16 @@ wheels = [
 
 [[package]]
 name = "bleak-retry-connector"
-version = "3.9.0"
+version = "4.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bleak" },
     { name = "bluetooth-adapters", marker = "sys_platform == 'linux'" },
     { name = "dbus-fast", marker = "sys_platform == 'linux'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/27/af/09820adb3c221ecdcf5973db23f5dc27927023898d5f745255af7983299d/bleak_retry_connector-3.9.0.tar.gz", hash = "sha256:5c772298b86bcd3b46a57b16cdd9aa5fca9434ebcf87d72493af94e4f4ca2a6e", size = 15909, upload-time = "2025-02-20T01:31:38.502Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7a/fc/5de052d5995bfea6f5237b4e848e3fd2978777e5371d92dbce725d21181a/bleak_retry_connector-4.6.1.tar.gz", hash = "sha256:ac2d19362f96757708dff2b0fedfefd5a8d8efb724027a777e54cc8ac2fc5a3d", size = 18827, upload-time = "2026-05-21T21:28:38.018Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c2/6c/3c8faf4fe113b35744dc99876b04d146846e4a50b00aed86fc96f9f136bd/bleak_retry_connector-3.9.0-py3-none-any.whl", hash = "sha256:6f7711c3c39b60f3dea5963abe40de3514165e912c9fe7e11a88f36104aa5644", size = 16575, upload-time = "2025-02-20T01:31:36.716Z" },
+    { url = "https://files.pythonhosted.org/packages/98/7c/4490be0547296648e4dfb77c0a1949c3cdc8963c9b621aecc168f1d4cb76/bleak_retry_connector-4.6.1-py3-none-any.whl", hash = "sha256:018ba421babe05785e5a6497c73f3894772fad0f7fa5b054d48beb3d180ce0c4", size = 18759, upload-time = "2026-05-21T21:28:36.032Z" },
 ]
 
 [[package]]
@@ -109,7 +109,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "bleak", specifier = ">=0.22.3" },
-    { name = "bleak-retry-connector", specifier = "==3.9.0" },
+    { name = "bleak-retry-connector", specifier = "==4.6.1" },
     { name = "click", specifier = "<8.2" },
     { name = "click", marker = "extra == 'cli'", specifier = "<8.2" },
     { name = "rich", specifier = "==13.9.4" },
