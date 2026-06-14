@@ -7,6 +7,7 @@ from datetime import datetime
 
 from chihiros_led_control.client import ChihirosDevice
 from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
+from chihiros_led_control.protocol import RuntimeNotification, ScheduleSnapshotNotification
 
 
 class FakeBLEDevice:
@@ -36,6 +37,59 @@ def test_enable_auto_mode_sends_time_before_switch() -> None:
     asyncio.run(run())
 
     assert [command[5] for command in sent_commands] == [9, 5]
+
+
+def test_query_status_sends_runtime_status_query() -> None:
+    """Status refresh sends the legacy runtime/status query."""
+    sent_commands: list[bytes] = []
+
+    async def run() -> None:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+
+        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+            del retry
+            sent_commands.append(bytes(command))
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+
+        await device.query_status()
+
+    asyncio.run(run())
+
+    assert sent_commands[0][5:7] == bytes([4, 1])
+
+
+def test_notification_handler_stores_and_publishes_runtime_notification() -> None:
+    """Parsed runtime notifications are stored and sent to subscribers."""
+    received: list[RuntimeNotification] = []
+
+    async def run() -> ChihirosDevice:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+        device.add_notification_callback(received.append)
+        device._notification_handler(None, bytearray.fromhex("5b170a00010a01ffffffffff13888c"))  # type: ignore[arg-type]
+        return device
+
+    device = asyncio.run(run())
+    assert device.last_runtime_notification == RuntimeNotification(firmware_version=23, runtime_minutes=511)
+    assert received == [RuntimeNotification(firmware_version=23, runtime_minutes=511)]
+
+
+def test_notification_handler_stores_and_publishes_schedule_snapshot() -> None:
+    """Parsed schedule notifications are stored and sent to subscribers."""
+    received: list[ScheduleSnapshotNotification] = []
+
+    async def run() -> ChihirosDevice:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+        device.add_notification_callback(received.append)
+        device._notification_handler(
+            None,  # type: ignore[arg-type]
+            bytearray([0x5B, 0x17, 0x08, 0x00, 0x01, 0xFE, 0x08, 0x00, 0x32]),
+        )
+        return device
+
+    device = asyncio.run(run())
+    assert isinstance(device.last_schedule_snapshot_notification, ScheduleSnapshotNotification)
+    assert received == [device.last_schedule_snapshot_notification]
 
 
 def test_set_brightness_sends_all_true_wrgb_channels() -> None:

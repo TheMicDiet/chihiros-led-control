@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 
 from bleak.backends.device import BLEDevice
@@ -27,12 +27,19 @@ from . import commands
 from .const import UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
 from .exceptions import CharacteristicMissingError
 from .models import FALLBACK, DeviceModel
-from .protocol import RuntimeNotification, ScheduleSnapshotNotification, next_message_id, parse_notification
+from .protocol import (
+    ParsedNotification,
+    RuntimeNotification,
+    ScheduleSnapshotNotification,
+    next_message_id,
+    parse_notification,
+)
 from .weekday_encoding import WeekdaySelect, encode_selected_weekdays
 
 DEFAULT_ATTEMPTS = 3
 DISCONNECT_DELAY = 120
 BLEAK_BACKOFF_TIME = 0.25
+NotificationCallback = Callable[[ParsedNotification], None]
 
 
 class ChihirosDevice:
@@ -59,6 +66,9 @@ class ChihirosDevice:
         self._connect_lock: asyncio.Lock = asyncio.Lock()
         self._expected_disconnect = False
         self._msg_id = next_message_id()
+        self._notification_callbacks: set[NotificationCallback] = set()
+        self.last_runtime_notification: RuntimeNotification | None = None
+        self.last_schedule_snapshot_notification: ScheduleSnapshotNotification | None = None
         self.loop = asyncio.get_running_loop()
 
     def set_log_level(self, level: int | str) -> None:
@@ -205,6 +215,20 @@ class ChihirosDevice:
         """Turn off the light."""
         await self.set_brightness({color_name: 0 for color_name in self.model.color_channels})
 
+    def add_notification_callback(self, callback: NotificationCallback) -> Callable[[], None]:
+        """Register a callback for parsed device notifications."""
+        self._notification_callbacks.add(callback)
+
+        def remove_callback() -> None:
+            self._notification_callbacks.discard(callback)
+
+        return remove_callback
+
+    async def query_status(self) -> None:
+        """Ask the device to send its runtime/status notification snapshot."""
+        cmd = commands.create_query_status_command(self.get_next_msg_id())
+        await self._send_command(cmd, 3)
+
     async def add_setting(
         self,
         sunrise: datetime,
@@ -348,22 +372,31 @@ class ChihirosDevice:
         """Handle notification responses."""
         parsed = parse_notification(data, self.model.color_channels)
         if isinstance(parsed, RuntimeNotification):
+            self.last_runtime_notification = parsed
             self._logger.debug(
                 "%s: Runtime notification received; firmware=%s runtime_minutes=%s",
                 self.name,
                 parsed.firmware_version,
                 parsed.runtime_minutes,
             )
+            self._notify_callbacks(parsed)
             return
         if isinstance(parsed, ScheduleSnapshotNotification):
+            self.last_schedule_snapshot_notification = parsed
             self._logger.debug(
                 "%s: Schedule snapshot notification received; firmware=%s points=%s",
                 self.name,
                 parsed.firmware_version,
                 parsed.points,
             )
+            self._notify_callbacks(parsed)
             return
         self._logger.debug("%s: Notification received: %s", self.name, data.hex())
+
+    def _notify_callbacks(self, notification: ParsedNotification) -> None:
+        """Notify subscribers about a parsed device notification."""
+        for callback in tuple(self._notification_callbacks):
+            callback(notification)
 
     def _disconnected(self, client: BleakClientWithServiceCache) -> None:
         """Handle disconnected callback."""

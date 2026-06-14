@@ -74,6 +74,11 @@ def test_set_brightness_command_encoding() -> None:
     assert commands.create_set_brightness_command((0, 1), 0, 100) == bytearray([90, 1, 7, 0, 1, 7, 0, 100, 100])
 
 
+def test_query_status_command_encoding() -> None:
+    """Status query commands request runtime/status notifications."""
+    assert commands.create_query_status_command((0, 1)) == bytearray([90, 1, 6, 0, 1, 4, 1, 3])
+
+
 def test_auto_setting_command_accepts_four_channel_brightness() -> None:
     """Auto schedule commands can encode true WRGB brightness values."""
     command = commands.create_add_auto_setting_command(

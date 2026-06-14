@@ -20,7 +20,7 @@ from .vendor.chihiros_led_control import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS: list[Platform] = [Platform.LIGHT, Platform.SWITCH]
+PLATFORMS: list[Platform] = [Platform.LIGHT, Platform.SWITCH, Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -61,6 +61,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         chihiros_data: ChihirosData = hass.data[DOMAIN].pop(entry.entry_id)
+        chihiros_data.coordinator.async_close()
         await chihiros_data.device.disconnect()
 
     return unload_ok

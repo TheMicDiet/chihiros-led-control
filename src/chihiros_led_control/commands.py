@@ -21,6 +21,11 @@ def create_set_brightness_command(msg_id: tuple[int, int], color: int, brightnes
     return create_command_encoding(90, 7, msg_id, [color, brightness_level])
 
 
+def create_query_status_command(msg_id: tuple[int, int]) -> bytearray:
+    """Create a command that asks legacy LED devices for runtime/status notifications."""
+    return create_command_encoding(90, 4, msg_id, [1])
+
+
 def create_add_auto_setting_command(
     msg_id: tuple[int, int],
     sunrise: datetime.time,
