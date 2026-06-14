@@ -127,7 +127,11 @@ class ChihirosNotificationSensor(
         points = self.coordinator.data.get(ATTR_SCHEDULE_POINTS)
         if points is None:
             return None
-        return {"points": points}
+        return {
+            "points": points,
+            "schedule": [_format_schedule_point(point) for point in points],
+            "schedule_markdown": _format_schedule_markdown(points),
+        }
 
     async def async_update(self) -> None:
         """Ask the device for a fresh status notification."""
@@ -158,3 +162,20 @@ def _format_schedule_point(point: dict[str, Any]) -> str:
         return f"{point.get('time', 'unknown')} {unique_levels.pop()}%"
     level_text = "/".join(f"{color[:1].upper()}{level}" for color, level in levels.items())
     return f"{point.get('time', 'unknown')} {level_text}"
+
+
+def _format_schedule_markdown(points: tuple[dict[str, Any], ...]) -> str:
+    """Return a markdown table for schedule points."""
+    if not points:
+        return "_No schedule_"
+    lines = ["| Time | Levels |", "| --- | --- |"]
+    lines.extend(f"| {point.get('time', 'unknown')} | {_format_schedule_levels(point)} |" for point in points)
+    return "\n".join(lines)
+
+
+def _format_schedule_levels(point: dict[str, Any]) -> str:
+    """Return schedule point levels for display."""
+    levels = point.get("levels", {})
+    if not isinstance(levels, dict) or not levels:
+        return ""
+    return ", ".join(f"{color}: {level}%" for color, level in levels.items())
