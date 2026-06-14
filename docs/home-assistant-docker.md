@@ -12,6 +12,12 @@ docker compose up
 
 Open <http://localhost:8123>, complete the first-run Home Assistant onboarding, then add the Chihiros integration from **Settings -> Devices & services -> Add integration**.
 
+The default Docker Compose setup enables development fake devices with `CHIHIROS_FAKE_DEVICES=1`. These fake devices appear in the Chihiros integration device picker and let you test entity setup, controls, firmware/runtime sensors, and schedule snapshot attributes without Bluetooth hardware. To disable them:
+
+```bash
+CHIHIROS_FAKE_DEVICES=0 docker compose up
+```
+
 ## Bluetooth Hardware Testing on Linux
 
 Real BLE discovery/control from a Home Assistant container needs access to the host Bluetooth stack. On Linux hosts with BlueZ and D-Bus available, use the Bluetooth compose file:

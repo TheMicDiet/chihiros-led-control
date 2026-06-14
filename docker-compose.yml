@@ -9,6 +9,7 @@ services:
       - "8123:8123"
     environment:
       TZ: ${TZ:-Europe/Berlin}
+      CHIHIROS_FAKE_DEVICES: ${CHIHIROS_FAKE_DEVICES:-1}
     volumes:
       - ./dev/homeassistant/config:/config
       - ./custom_components/chihiros:/config/custom_components/chihiros:ro

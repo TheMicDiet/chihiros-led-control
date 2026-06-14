@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
 
 from .const import DOMAIN
+from .fake import FAKE_DEVICES, FakeChihirosDeviceInfo, fake_devices_enabled
 from .vendor.chihiros_led_control import (
     ChihirosDevice,
     create_device,
@@ -32,7 +33,7 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         """Initialize the config flow."""
         self._discovery_info: BluetoothServiceInfoBleak | None = None
         self._discovered_device: ChihirosDevice | None = None
-        self._discovered_devices: dict[str, BluetoothServiceInfoBleak] = {}
+        self._discovered_devices: dict[str, BluetoothServiceInfoBleak | FakeChihirosDeviceInfo] = {}
 
     async def async_step_bluetooth(self, discovery_info: BluetoothServiceInfoBleak) -> ConfigFlowResult:
         """Handle the bluetooth discovery step."""
@@ -96,6 +97,11 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             address = user_input[CONF_ADDRESS]
             discovery_info = self._discovered_devices[address]
+            if isinstance(discovery_info, FakeChihirosDeviceInfo):
+                await self.async_set_unique_id(discovery_info.address, raise_on_progress=False)
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(title=discovery_info.name, data={CONF_ADDRESS: discovery_info.address})
+
             await self.async_set_unique_id(discovery_info.address, raise_on_progress=False)
             self._abort_if_unique_id_configured()
             device = create_device(discovery_info.device)
@@ -120,6 +126,12 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
                 ):
                     self._discovered_devices[discovery.address] = discovery
 
+        if fake_devices_enabled():
+            current_addresses = self._async_current_ids()
+            for fake_device in FAKE_DEVICES:
+                if fake_device.address not in current_addresses:
+                    self._discovered_devices.setdefault(fake_device.address, fake_device)
+
         if not self._discovered_devices:
             return self.async_abort(reason="no_devices_found")
 
@@ -127,8 +139,8 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
             {
                 vol.Required(CONF_ADDRESS): vol.In(
                     {
-                        service_info.address: (f"{service_info.name} ({service_info.address})")
-                        for service_info in self._discovered_devices.values()
+                        device.address: (f"{device.name} ({device.address})")
+                        for device in self._discovered_devices.values()
                     }
                 ),
             }

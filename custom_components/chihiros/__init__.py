@@ -12,6 +12,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
+from .fake import create_fake_device, fake_devices_enabled, is_fake_address
 from .models import ChihirosData
 from .vendor.chihiros_led_control import (
     ChihirosDevice,
@@ -28,6 +29,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.unique_id is None:
         raise ConfigEntryNotReady(f"Entry doesn't have any unique_id {entry.title}")
     address: str = entry.unique_id
+    if fake_devices_enabled() and is_fake_address(address):
+        chihiros_device = create_fake_device(address)
+        ble_device = chihiros_device
+        coordinator = ChihirosDataUpdateCoordinator(
+            hass,
+            chihiros_device,
+            ble_device,
+        )
+
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = ChihirosData(entry.title, chihiros_device, coordinator)
+
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        return True
+
     ble_device = bluetooth.async_ble_device_from_address(hass, address.upper(), True)
     if not ble_device:
         raise ConfigEntryNotReady(f"Could not find Chihiros BLE device with address {address}")
