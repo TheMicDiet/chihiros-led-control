@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-import os
 
-from .vendor.chihiros_led_control.models import DeviceModel, RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS
+from .vendor.chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
 from .vendor.chihiros_led_control.protocol import (
     ParsedNotification,
     RuntimeNotification,

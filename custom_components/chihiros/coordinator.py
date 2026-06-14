@@ -70,7 +70,7 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         elif isinstance(notification, ScheduleSnapshotNotification):
             self.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
             self.data[ATTR_SCHEDULE_POINTS] = tuple(_schedule_point_to_dict(point) for point in notification.points)
-        self.async_set_updated_data(dict(self.data))
+        self.async_update_listeners()
 
     @callback
     def _async_handle_bluetooth_event(

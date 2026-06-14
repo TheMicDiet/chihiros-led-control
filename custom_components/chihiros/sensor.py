@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.bluetooth.passive_update_coordinator import (
     PassiveBluetoothCoordinatorEntity,
 )
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant
@@ -31,28 +30,18 @@ from .vendor.chihiros_led_control import ChihirosDevice
 _LOGGER = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class ChihirosSensorDescription:
-    """Description for a Chihiros notification sensor."""
-
-    key: str
-    name: str
-    device_class: SensorDeviceClass | None = None
-    native_unit_of_measurement: str | None = None
-
-
 SENSOR_DESCRIPTIONS = (
-    ChihirosSensorDescription(
+    SensorEntityDescription(
         key=ATTR_FIRMWARE_VERSION,
         name="Firmware Version",
     ),
-    ChihirosSensorDescription(
+    SensorEntityDescription(
         key=ATTR_RUNTIME_MINUTES,
         name="Runtime",
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.MINUTES,
     ),
-    ChihirosSensorDescription(
+    SensorEntityDescription(
         key=ATTR_SCHEDULE_POINTS,
         name="Schedule",
     ),
@@ -100,7 +89,7 @@ class ChihirosNotificationSensor(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
         device: ChihirosDevice,
-        description: ChihirosSensorDescription,
+        description: SensorEntityDescription,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
