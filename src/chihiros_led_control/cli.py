@@ -55,25 +55,9 @@ def turn_off(device_address: str) -> None:
 
 
 @app.command()
-def set_color_brightness(
-    device_address: str,
-    color: int,
-    brightness: Annotated[int, typer.Argument(min=0, max=100)],
-) -> None:
-    """Set color brightness of a light."""
-    _run_device_func(device_address, lambda dev: dev.set_color_brightness(brightness, color))
-
-
-@app.command()
-def set_brightness(device_address: str, brightness: Annotated[int, typer.Argument(min=0, max=100)]) -> None:
+def set_brightness(device_address: str, brightness: Annotated[list[int], typer.Argument()]) -> None:
     """Set brightness of a light."""
-    set_color_brightness(device_address, color=0, brightness=brightness)
-
-
-@app.command()
-def set_rgb_brightness(device_address: str, brightness: Annotated[tuple[int, int, int], typer.Argument()]) -> None:
-    """Set brightness of a RGB light."""
-    _run_device_func(device_address, lambda dev: dev.set_rgb_brightness(brightness))
+    _run_device_func(device_address, lambda dev: dev.set_brightness(brightness))
 
 
 @app.command()
@@ -81,7 +65,7 @@ def add_setting(
     device_address: str,
     sunrise: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
     sunset: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
-    max_brightness: Annotated[int, typer.Option(max=100, min=0)] = 100,
+    max_brightness: Annotated[list[int], typer.Argument()],
     ramp_up_in_minutes: Annotated[int, typer.Option(min=0, max=150)] = 0,
     weekdays: Annotated[list[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday],
 ) -> None:
@@ -89,28 +73,6 @@ def add_setting(
     _run_device_func(
         device_address,
         lambda dev: dev.add_setting(
-            sunrise=sunrise,
-            sunset=sunset,
-            max_brightness=max_brightness,
-            ramp_up_in_minutes=ramp_up_in_minutes,
-            weekdays=weekdays,
-        ),
-    )
-
-
-@app.command()
-def add_rgb_setting(
-    device_address: str,
-    sunrise: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
-    sunset: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
-    max_brightness: Annotated[tuple[int, int, int], typer.Option()] = (100, 100, 100),
-    ramp_up_in_minutes: Annotated[int, typer.Option(min=0, max=150)] = 0,
-    weekdays: Annotated[list[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday],
-) -> None:
-    """Add setting to a RGB light."""
-    _run_device_func(
-        device_address,
-        lambda dev: dev.add_rgb_setting(
             sunrise=sunrise,
             sunset=sunset,
             max_brightness=max_brightness,

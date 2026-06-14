@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import datetime
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 RESERVED_BYTE = 0x5A
+SCHEDULE_POINT_TIME_BYTES = 2
 
 
 @dataclass(frozen=True)
@@ -17,11 +19,20 @@ class RuntimeNotification:
 
 
 @dataclass(frozen=True)
+class SchedulePoint:
+    """Parsed auto schedule point."""
+
+    hour: int
+    minute: int
+    levels: Mapping[str, int]
+
+
+@dataclass(frozen=True)
 class ScheduleSnapshotNotification:
     """Parsed auto schedule/status snapshot notification."""
 
     firmware_version: int
-    curve_points: tuple[tuple[int, int, int], ...]
+    points: tuple[SchedulePoint, ...]
 
 
 ParsedNotification = RuntimeNotification | ScheduleSnapshotNotification
@@ -97,7 +108,15 @@ def encode_timestamp(ts: datetime.datetime) -> list[int]:
     return [ts.year - 2000, ts.month, ts.isoweekday(), ts.hour, ts.minute, ts.second]
 
 
-def parse_notification(data: bytes | bytearray) -> ParsedNotification | None:
+def _notification_channels(color_channels: Mapping[str, int]) -> tuple[tuple[str, int], ...]:
+    """Return notification channels sorted by protocol channel id."""
+    return tuple(sorted(color_channels.items(), key=lambda color_channel: color_channel[1]))
+
+
+def parse_notification(
+    data: bytes | bytearray,
+    color_channels: Mapping[str, int] | None = None,
+) -> ParsedNotification | None:
     """Parse known Chihiros notification payloads."""
     if len(data) < 7 or data[0] != 0x5B:
         return None
@@ -109,17 +128,23 @@ def parse_notification(data: bytes | bytearray) -> ParsedNotification | None:
         return RuntimeNotification(firmware_version, runtime_minutes)
 
     if mode == 0xFE:
-        points: list[tuple[int, int, int]] = []
-        for index in range(6, len(data), 3):
-            point = data[index : index + 3]
-            if len(point) < 3:
+        if color_channels is None:
+            return None
+        channels = _notification_channels(color_channels)
+        point_size = SCHEDULE_POINT_TIME_BYTES + len(channels)
+        points: list[SchedulePoint] = []
+        for index in range(6, len(data), point_size):
+            point = data[index : index + point_size]
+            if len(point) < point_size:
                 break
-            hour, minute, level = point
-            if hour > 23 or minute > 59 or level > 100:
+            hour = point[0]
+            minute = point[1]
+            levels = dict(zip((color for color, _channel_id in channels), point[2:], strict=True))
+            if hour > 23 or minute > 59 or any(level > 100 for level in levels.values()):
                 continue
-            if hour == 0 and minute == 0 and level == 0:
+            if hour == 0 and minute == 0 and all(level == 0 for level in levels.values()):
                 continue
-            points.append((hour, minute, level))
+            points.append(SchedulePoint(hour, minute, levels))
         return ScheduleSnapshotNotification(firmware_version, tuple(points))
 
     return None

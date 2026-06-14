@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from bleak.backends.device import BLEDevice
@@ -117,80 +118,110 @@ class ChihirosDevice:
             return self._advertisement_data.rssi
         return None
 
-    async def set_color_brightness(
-        self,
-        brightness: int,
-        color: str | int = 0,
-    ) -> None:
-        """Set brightness of a color channel."""
+    def _color_id(self, color: str | int) -> int | None:
+        """Return protocol channel id for a color name or id."""
         color_id: int | None = None
         colors = self.model.color_channels
         if isinstance(color, int) and color in colors.values():
             color_id = color
         elif isinstance(color, str) and color in colors:
             color_id = colors[color]
+        return color_id
+
+    async def _set_channel_brightness(
+        self,
+        brightness: int,
+        color: str | int,
+    ) -> None:
+        """Set brightness of one color channel."""
+        color_id = self._color_id(color)
         if color_id is None:
             self._logger.warning("Color not supported: `%s`", color)
             return
-        cmd = commands.create_manual_setting_command(self.get_next_msg_id(), color_id, brightness)
+        cmd = commands.create_set_brightness_command(self.get_next_msg_id(), color_id, brightness)
         await self._send_command(cmd, 3)
 
-    async def set_brightness(self, brightness: int) -> None:
-        """Set light brightness."""
-        await self.set_color_brightness(brightness)
+    def _validate_brightness_levels(self, brightness: Sequence[int]) -> None:
+        """Validate brightness levels."""
+        if not brightness:
+            raise ValueError("At least one brightness level is required")
+        if any(level < 0 or level > 100 for level in brightness):
+            raise ValueError("Brightness levels must be between 0 and 100")
 
-    async def set_rgb_brightness(self, brightness: tuple[int, int, int]) -> None:
-        """Set RGB brightness."""
-        for color_id, brightness_level in enumerate(brightness):
-            await self.set_color_brightness(brightness_level, color_id)
+    def _normalize_brightness(self, brightness: int | Sequence[int] | Mapping[str | int, int]) -> dict[int, int]:
+        """Normalize supported brightness inputs to protocol channel ids."""
+        if isinstance(brightness, int):
+            color_id = self._color_id(self._primary_schedule_color())
+            assert color_id is not None  # nosec
+            self._validate_brightness_levels((brightness,))
+            return {color_id: brightness}
+
+        if isinstance(brightness, Mapping):
+            self._validate_brightness_levels(tuple(brightness.values()))
+            result: dict[int, int] = {}
+            for color, level in brightness.items():
+                color_id = self._color_id(color)
+                if color_id is None:
+                    raise ValueError(f"Color not supported: {color}")
+                result[color_id] = level
+            return result
+
+        brightness_values = list(brightness)
+        self._validate_brightness_levels(brightness_values)
+        channel_count = self._channel_count()
+        if len(brightness_values) == 1:
+            color_id = self._color_id(self._primary_schedule_color())
+            assert color_id is not None  # nosec
+            return {color_id: brightness_values[0]}
+        if len(brightness_values) != channel_count:
+            raise ValueError(f"Expected 1 or {channel_count} brightness levels")
+        return dict(enumerate(brightness_values))
+
+    def _channel_count(self) -> int:
+        """Return number of protocol channel slots for this model."""
+        return max(self.model.color_channels.values()) + 1
+
+    def _brightness_parameter_values(self, brightness: int | Sequence[int] | Mapping[str | int, int]) -> list[int]:
+        """Return auto schedule brightness parameters ordered by channel id."""
+        brightness_by_channel = self._normalize_brightness(brightness)
+        return [brightness_by_channel.get(channel_id, 255) for channel_id in range(self._channel_count())]
+
+    async def set_brightness(self, brightness: int | Sequence[int] | Mapping[str | int, int]) -> None:
+        """Set light brightness."""
+        for color_id, brightness_level in self._normalize_brightness(brightness).items():
+            await self._set_channel_brightness(brightness_level, color_id)
+
+    def _primary_schedule_color(self) -> str:
+        """Return the single channel used by plain auto schedules."""
+        if "white" in self.model.color_channels:
+            return "white"
+        return min(self.model.color_channels, key=self.model.color_channels.__getitem__)
 
     async def turn_on(self) -> None:
         """Turn on the light."""
-        for color_name in self.model.color_channels:
-            await self.set_color_brightness(100, color_name)
+        await self.set_brightness({color_name: 100 for color_name in self.model.color_channels})
 
     async def turn_off(self) -> None:
         """Turn off the light."""
-        for color_name in self.model.color_channels:
-            await self.set_color_brightness(0, color_name)
+        await self.set_brightness({color_name: 0 for color_name in self.model.color_channels})
 
     async def add_setting(
         self,
         sunrise: datetime,
         sunset: datetime,
-        max_brightness: int = 100,
+        max_brightness: int | Sequence[int] | Mapping[str | int, int] = 100,
         ramp_up_in_minutes: int = 0,
         weekdays: list[WeekdaySelect] | None = None,
     ) -> None:
         """Add an automation setting to the light."""
         if weekdays is None:
             weekdays = [WeekdaySelect.everyday]
+        brightness = self._brightness_parameter_values(max_brightness)
         cmd = commands.create_add_auto_setting_command(
             self.get_next_msg_id(),
             sunrise.time(),
             sunset.time(),
-            (max_brightness, 255, 255),
-            ramp_up_in_minutes,
-            encode_selected_weekdays(weekdays),
-        )
-        await self._send_command(cmd, 3)
-
-    async def add_rgb_setting(
-        self,
-        sunrise: datetime,
-        sunset: datetime,
-        max_brightness: tuple[int, int, int] = (100, 100, 100),
-        ramp_up_in_minutes: int = 0,
-        weekdays: list[WeekdaySelect] | None = None,
-    ) -> None:
-        """Add an automation setting to the RGB light."""
-        if weekdays is None:
-            weekdays = [WeekdaySelect.everyday]
-        cmd = commands.create_add_auto_setting_command(
-            self.get_next_msg_id(),
-            sunrise.time(),
-            sunset.time(),
-            max_brightness,
+            brightness,
             ramp_up_in_minutes,
             encode_selected_weekdays(weekdays),
         )
@@ -212,6 +243,7 @@ class ChihirosDevice:
             sunset.time(),
             ramp_up_in_minutes,
             encode_selected_weekdays(weekdays),
+            brightness_channels=self._channel_count(),
         )
         await self._send_command(cmd, 3)
 
@@ -229,8 +261,7 @@ class ChihirosDevice:
 
     async def set_manual_mode(self) -> None:
         """Switch to manual mode."""
-        for color_name in self.model.color_channels:
-            await self.set_color_brightness(100, color_name)
+        await self.turn_on()
 
     async def _send_command(self, command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
         """Send commands to the device."""
@@ -315,7 +346,7 @@ class ChihirosDevice:
 
     def _notification_handler(self, _sender: BleakGATTCharacteristic, data: bytearray) -> None:
         """Handle notification responses."""
-        parsed = parse_notification(data)
+        parsed = parse_notification(data, self.model.color_channels)
         if isinstance(parsed, RuntimeNotification):
             self._logger.debug(
                 "%s: Runtime notification received; firmware=%s runtime_minutes=%s",
@@ -326,10 +357,10 @@ class ChihirosDevice:
             return
         if isinstance(parsed, ScheduleSnapshotNotification):
             self._logger.debug(
-                "%s: Schedule snapshot notification received; firmware=%s curve_points=%s",
+                "%s: Schedule snapshot notification received; firmware=%s points=%s",
                 self.name,
                 parsed.firmware_version,
-                parsed.curve_points,
+                parsed.points,
             )
             return
         self._logger.debug("%s: Notification received: %s", self.name, data.hex())

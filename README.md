@@ -50,22 +50,23 @@ uv run chihirosctl turn-off <device-address>
 # manually set the brightness to 100
 uv run chihirosctl set-brightness <device-address> 100
 
-# create an automatic timed setting that turns on the light from 8:00 to 18:00
-uv run chihirosctl add-setting <device-address> 8:00 18:00
+# create an automatic timed setting that turns on the light from 8:00 to 18:00 at brightness 100
+uv run chihirosctl add-setting <device-address> 8:00 18:00 100
 
 # create a setting for specific weekdays with maximum brightness of 75 and ramp up time of 30 minutes
-uv run chihirosctl add-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 75
-
-# on RGB models, use the RGB versions of the above commands
+uv run chihirosctl add-setting <device-address> 9:00 18:00 75 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30
 
 # manually set the brightness to 60 red, 80 green, 100 blue on RGB models
-uv run chihirosctl set-rgb-brightness <device-address> 60 80 100
+uv run chihirosctl set-brightness <device-address> 60 80 100
 
 # create an automatic timed setting that turns on the light from 8:00 to 18:00
-uv run chihirosctl add-rgb-setting <device-address> 8:00 18:00
+uv run chihirosctl add-setting <device-address> 8:00 18:00 100 100 100
 
 # create a setting for specific weekdays with maximum brightness of 35, 55, 75 and ramp up time of 30 minutes
-uv run chihirosctl add-rgb-setting <device-address> 9:00 18:00 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30 --max-brightness 35 55 75
+uv run chihirosctl add-setting <device-address> 9:00 18:00 35 55 75 --weekdays monday --weekdays tuesday --ramp-up-in-minutes 30
+
+# on true WRGB models, set red, green, blue, and white levels
+uv run chihirosctl add-setting <device-address> 9:00 18:00 35 55 75 40
 
 # enable auto mode to activate the created timed settings
 uv run chihirosctl enable-auto-mode <device-address>

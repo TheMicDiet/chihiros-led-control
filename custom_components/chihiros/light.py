@@ -101,11 +101,11 @@ class ChihirosLightEntity(
             hass_brightness = int(kwargs[ATTR_BRIGHTNESS])
             brightness = max(1, math.ceil((hass_brightness / 255) * 100))
             _LOGGER.debug("Turning on: %s to %s", self.name, brightness)
-            await self._set_color_brightness(brightness)
+            await self._set_entity_brightness(brightness)
             self._attr_brightness = hass_brightness
         else:
             _LOGGER.debug("Turning on: %s", self.name)
-            await self._set_color_brightness(100)
+            await self._set_entity_brightness(100)
             self._attr_brightness = 255
         self._attr_is_on = True
         self.schedule_update_ha_state()
@@ -114,16 +114,16 @@ class ChihirosLightEntity(
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Instruct the light to turn off."""
         _LOGGER.debug("Turning off: %s", self.name)
-        await self._set_color_brightness(0)
+        await self._set_entity_brightness(0)
         self._attr_is_on = False
         self._attr_brightness = 0
         self.schedule_update_ha_state()
         _LOGGER.debug("Turned off: %s", self.name)
 
-    async def _set_color_brightness(self, brightness: int) -> None:
+    async def _set_entity_brightness(self, brightness: int) -> None:
         """Set brightness and keep Home Assistant availability in sync."""
         try:
-            await self._device.set_color_brightness(brightness, self._color)
+            await self._device.set_brightness({self._color: brightness})
         except Exception as ex:
             self._attr_available = False
             self.schedule_update_ha_state()

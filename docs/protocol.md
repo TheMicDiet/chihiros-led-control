@@ -47,7 +47,7 @@ Total frame length is `parameter_count + 7`.
 Example manual brightness frame before checksum:
 
 ```text
-5a 01 07 msg_hi msg_lo 07 color brightness
+5a 01 07 msg_hi msg_lo 07 channel brightness
 ```
 
 ## Message IDs And Reserved Bytes
@@ -145,7 +145,20 @@ Create or update an automatic schedule setting:
 - Command ID: `0xa5` / `165`
 - Mode: `0x19` / `25`
 - Parameters:
-  `[sunrise hour, sunrise minute, sunset hour, sunset minute, ramp up minutes, weekdays, red brightness, green brightness, blue brightness, 255, 255, 255, 255, 255]`
+  `[sunrise hour, sunrise minute, sunset hour, sunset minute, ramp up minutes, weekdays, brightness values by channel id, 255 padding...]`
+
+The parameter payload is 14 bytes total. Brightness values are written in
+protocol channel order. RGB models use red, green, and blue brightness fields:
+
+```text
+[red_brightness, green_brightness, blue_brightness]
+```
+
+True WRGB models use all four channel fields:
+
+```text
+[red_brightness, green_brightness, blue_brightness, white_brightness]
+```
 
 For non-RGB models, put the desired white brightness in the red brightness field
 and set the other two brightness fields to `255`:

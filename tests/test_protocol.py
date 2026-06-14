@@ -5,8 +5,10 @@ from __future__ import annotations
 import datetime
 
 from chihiros_led_control import commands
+from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS
 from chihiros_led_control.protocol import (
     RuntimeNotification,
+    SchedulePoint,
     ScheduleSnapshotNotification,
     calculate_checksum,
     create_command_encoding,
@@ -67,9 +69,23 @@ def test_command_encoding_normalizes_reserved_message_id() -> None:
     assert command[3:5] == bytearray([0, 91])
 
 
-def test_manual_setting_command_encoding() -> None:
-    """Manual brightness commands encode color and brightness."""
-    assert commands.create_manual_setting_command((0, 1), 0, 100) == bytearray([90, 1, 7, 0, 1, 7, 0, 100, 100])
+def test_set_brightness_command_encoding() -> None:
+    """Brightness commands encode color and brightness."""
+    assert commands.create_set_brightness_command((0, 1), 0, 100) == bytearray([90, 1, 7, 0, 1, 7, 0, 100, 100])
+
+
+def test_auto_setting_command_accepts_four_channel_brightness() -> None:
+    """Auto schedule commands can encode true WRGB brightness values."""
+    command = commands.create_add_auto_setting_command(
+        (0, 1),
+        datetime.time(8, 0),
+        datetime.time(18, 30),
+        (10, 20, 30, 40),
+        15,
+        127,
+    )
+
+    assert command[6:-1] == bytearray([8, 0, 18, 30, 15, 127, 10, 20, 30, 40, 255, 255, 255, 255])
 
 
 def test_encode_timestamp() -> None:
@@ -86,8 +102,8 @@ def test_parse_runtime_notification() -> None:
     assert notification == RuntimeNotification(firmware_version=23, runtime_minutes=511)
 
 
-def test_parse_schedule_snapshot_notification() -> None:
-    """Schedule snapshot notifications expose saved curve points."""
+def test_parse_schedule_snapshot_notification_requires_channel_context() -> None:
+    """Schedule snapshot notifications need model channel context."""
     notification = parse_notification(
         bytearray(
             [
@@ -114,7 +130,89 @@ def test_parse_schedule_snapshot_notification() -> None:
         )
     )
 
+    assert notification is None
+
+
+def test_parse_schedule_snapshot_notification_for_single_channel_model() -> None:
+    """Single-channel schedule snapshots use the model channel name."""
+    notification = parse_notification(
+        bytearray([0x5B, 0x17, 0x08, 0x00, 0x01, 0xFE, 0x08, 0x00, 0x32]),
+        WHITE_CHANNELS,
+    )
+
     assert notification == ScheduleSnapshotNotification(
         firmware_version=23,
-        curve_points=((13, 15, 0), (13, 45, 100), (21, 15, 100), (21, 45, 0)),
+        points=(SchedulePoint(hour=8, minute=0, levels={"white": 50}),),
+    )
+
+
+def test_parse_schedule_snapshot_notification_for_rgb_model() -> None:
+    """RGB schedule snapshots decode three channel levels."""
+    notification = parse_notification(
+        bytearray(
+            [
+                0x5B,
+                0x17,
+                0x0C,
+                0x00,
+                0x01,
+                0xFE,
+                0x08,
+                0x00,
+                0x0A,
+                0x14,
+                0x1E,
+                0x12,
+                0x1E,
+                0x28,
+                0x32,
+                0x3C,
+            ]
+        ),
+        RGB_CHANNELS,
+    )
+
+    assert notification == ScheduleSnapshotNotification(
+        firmware_version=23,
+        points=(
+            SchedulePoint(hour=8, minute=0, levels={"red": 10, "green": 20, "blue": 30}),
+            SchedulePoint(hour=18, minute=30, levels={"red": 40, "green": 50, "blue": 60}),
+        ),
+    )
+
+
+def test_parse_schedule_snapshot_notification_for_true_wrgb_model() -> None:
+    """True WRGB schedule snapshots decode four channel levels by channel id."""
+    notification = parse_notification(
+        bytearray(
+            [
+                0x5B,
+                0x17,
+                0x0E,
+                0x00,
+                0x01,
+                0xFE,
+                0x08,
+                0x00,
+                0x0A,
+                0x14,
+                0x1E,
+                0x28,
+                0x12,
+                0x1E,
+                0x32,
+                0x3C,
+                0x46,
+                0x50,
+            ]
+        ),
+        WRGB_CHANNELS,
+    )
+
+    assert notification == ScheduleSnapshotNotification(
+        firmware_version=23,
+        points=(
+            SchedulePoint(hour=8, minute=0, levels={"red": 10, "green": 20, "blue": 30, "white": 40}),
+            SchedulePoint(hour=18, minute=30, levels={"red": 50, "green": 60, "blue": 70, "white": 80}),
+        ),
     )
