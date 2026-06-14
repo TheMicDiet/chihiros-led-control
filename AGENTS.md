@@ -14,12 +14,13 @@ This repository contains a Python library/CLI and a Home Assistant custom integr
 
 ## Build, Test, and Development Commands
 
-- `uv sync --group dev`: install development dependencies.
-- `uv run --group dev pytest`: run the test suite.
-- `uv run --group dev pre-commit run --all-files`: run formatting, linting, doc, YAML/TOML, and AST checks.
-- `uv run chihirosctl --help`: inspect CLI commands after syncing dependencies.
-- `uv run python scripts/sync_vendor.py`: refresh `custom_components/chihiros/vendor/` after library changes.
-- `uv run python scripts/sync_vendor.py --check`: verify the vendored copy is current.
+- Always pass `--cache-dir .uv-cache` to `uv` commands so dependency/cache writes stay inside the repo.
+- `uv --cache-dir .uv-cache sync --group dev`: install development dependencies.
+- `uv --cache-dir .uv-cache run --group dev pytest`: run the test suite.
+- `uv --cache-dir .uv-cache run --group dev pre-commit run --all-files`: run formatting, linting, doc, YAML/TOML, and AST checks.
+- `uv --cache-dir .uv-cache run chihirosctl --help`: inspect CLI commands after syncing dependencies.
+- `uv --cache-dir .uv-cache run python scripts/sync_vendor.py`: refresh `custom_components/chihiros/vendor/` after library changes.
+- `uv --cache-dir .uv-cache run python scripts/sync_vendor.py --check`: verify the vendored copy is current.
 - `docker compose up`: start the local Home Assistant environment; see `docs/home-assistant-docker.md`.
 
 ## Coding Style & Naming Conventions
