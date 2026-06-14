@@ -28,6 +28,7 @@ from .models import ChihirosData
 from .vendor.chihiros_led_control import ChihirosDevice
 
 _LOGGER = logging.getLogger(__name__)
+MAX_SENSOR_STATE_LENGTH = 255
 
 
 SENSOR_DESCRIPTIONS = (
@@ -115,7 +116,7 @@ class ChihirosNotificationSensor(
         if self.entity_description.key == ATTR_SCHEDULE_POINTS:
             if value is None:
                 return None
-            return f"{len(value)} points"
+            return _format_schedule_state(value)
         return value
 
     @property
@@ -134,3 +135,26 @@ class ChihirosNotificationSensor(
             await self.coordinator.async_request_status()
         except Exception as ex:
             raise HomeAssistantError(f"Failed to request status for {self._device.name}") from ex
+
+
+def _format_schedule_state(points: tuple[dict[str, Any], ...]) -> str:
+    """Return a compact display value for schedule points."""
+    if not points:
+        return "No schedule"
+    formatted_points = [_format_schedule_point(point) for point in points]
+    schedule = "; ".join(formatted_points)
+    if len(schedule) <= MAX_SENSOR_STATE_LENGTH:
+        return schedule
+    return f"{len(points)} points"
+
+
+def _format_schedule_point(point: dict[str, Any]) -> str:
+    """Return one compact schedule point."""
+    levels = point.get("levels", {})
+    if not isinstance(levels, dict) or not levels:
+        return str(point.get("time", "unknown"))
+    unique_levels = set(levels.values())
+    if len(unique_levels) == 1:
+        return f"{point.get('time', 'unknown')} {unique_levels.pop()}%"
+    level_text = "/".join(f"{color[:1].upper()}{level}" for color, level in levels.items())
+    return f"{point.get('time', 'unknown')} {level_text}"
