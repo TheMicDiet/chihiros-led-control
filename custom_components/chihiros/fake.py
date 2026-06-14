@@ -69,6 +69,8 @@ def create_fake_device(address: str) -> FakeChihirosDevice:
 class FakeChihirosDevice:
     """Small in-memory Chihiros device replacement for HA UI testing."""
 
+    is_fake = True
+
     def __init__(self, device_info: FakeChihirosDeviceInfo) -> None:
         """Initialize the fake device."""
         self._device_info = device_info

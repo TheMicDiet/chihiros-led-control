@@ -86,6 +86,13 @@ class ChihirosLightEntity(
             self._attr_brightness = last_state.attributes.get("brightness")
 
     @property
+    def available(self) -> bool:
+        """Return whether the light is available."""
+        if getattr(self._device, "is_fake", False):
+            return True
+        return super().available
+
+    @property
     def brightness(self) -> int | None:
         """Return the brightness property."""
         return self._attr_brightness

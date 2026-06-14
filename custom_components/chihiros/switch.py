@@ -57,6 +57,13 @@ class ChihirosAutoManualSwitch(
         self._attr_device_info = chihiros_device_info(device, coordinator.address)
 
     @property
+    def available(self) -> bool:
+        """Return whether the switch is available."""
+        if getattr(self._device, "is_fake", False):
+            return True
+        return super().available
+
+    @property
     def is_on(self) -> bool:
         """Return True if the switch is in auto mode."""
         return self._attr_is_on

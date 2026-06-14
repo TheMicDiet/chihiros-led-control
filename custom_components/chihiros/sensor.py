@@ -102,6 +102,13 @@ class ChihirosNotificationSensor(
         self._attr_native_unit_of_measurement = description.native_unit_of_measurement
 
     @property
+    def available(self) -> bool:
+        """Return whether the sensor is available."""
+        if getattr(self._device, "is_fake", False):
+            return True
+        return super().available
+
+    @property
     def native_value(self) -> int | str | None:
         """Return the current sensor value."""
         value = self.coordinator.data.get(self.entity_description.key)
