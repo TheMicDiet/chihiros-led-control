@@ -92,7 +92,7 @@
   "iot_class": "assumed_state",
   "issue_tracker": "https://github.com/TheMicDiet/chihiros-led-control/issues",
   "requirements": [
-    "bleak-retry-connector==4.6.1"
+    "bleak-retry-connector==4.4.3"
   ],
   "version": "0.10.0"
 }

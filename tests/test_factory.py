@@ -27,6 +27,16 @@ def test_detect_model_matches_name_prefix() -> None:
     assert detect_model("DYNW601234567890").name == "WRGB II"
 
 
+def test_detect_model_matches_legacy_wrgb_prefix() -> None:
+    """Model detection matches the legacy WRGB prefix from app templates."""
+    assert detect_model("DYWRGB1234567890").name == "WRGB II"
+
+
+def test_detect_model_matches_esphome_wrgb_prefix() -> None:
+    """Model detection matches the WRGB prefix observed in the ESPHome bridge."""
+    assert detect_model("DYNT901234567890").name == "WRGB II"
+
+
 def test_detect_model_does_not_rely_on_fixed_slicing() -> None:
     """Model detection works without fixed suffix slicing."""
     assert detect_model("DYSL120-short").name == "WRGB II Slim"

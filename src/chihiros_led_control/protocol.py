@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 RESERVED_BYTE = 0x5A
 SCHEDULE_POINT_TIME_BYTES = 2
+SCHEDULE_SNAPSHOT_POINTS_START = 25
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class RuntimeNotification:
 
     firmware_version: int
     runtime_minutes: int
+    raw: bytes = b""
 
 
 @dataclass(frozen=True)
@@ -125,7 +127,7 @@ def parse_notification(
     mode = data[5]
     if mode == 0x0A and len(data) >= 8:
         runtime_minutes = (data[6] << 8) | data[7]
-        return RuntimeNotification(firmware_version, runtime_minutes)
+        return RuntimeNotification(firmware_version, runtime_minutes, bytes(data))
 
     if mode == 0xFE:
         if color_channels is None:
@@ -133,7 +135,7 @@ def parse_notification(
         channels = _notification_channels(color_channels)
         point_size = SCHEDULE_POINT_TIME_BYTES + len(channels)
         points: list[SchedulePoint] = []
-        for index in range(6, len(data), point_size):
+        for index in range(SCHEDULE_SNAPSHOT_POINTS_START, len(data), point_size):
             point = data[index : index + point_size]
             if len(point) < point_size:
                 break

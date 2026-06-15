@@ -22,6 +22,8 @@ from .vendor.chihiros_led_control.protocol import (
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 ATTR_FIRMWARE_VERSION = "firmware_version"
 ATTR_RUNTIME_MINUTES = "runtime_minutes"
+ATTR_RUNTIME_NOTIFICATION = "runtime_notification"
+ATTR_RUNTIME_NOTIFICATION_PAYLOAD = "runtime_notification_payload"
 ATTR_SCHEDULE_POINTS = "schedule_points"
 
 
@@ -39,6 +41,7 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         self.api: ChihirosClient = client
         self.data: dict[str, Any] = {}
         self._device_address = address
+        self._auto_mode = False
         self.always_available = always_available
         self._remove_notification_callback = client.add_notification_callback(self._queue_notification)
         super().__init__(
@@ -47,6 +50,19 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
             address,
             bluetooth.BluetoothScanningMode.ACTIVE,
         )
+
+    @property
+    def auto_mode(self) -> bool:
+        """Return whether the device is currently assumed to be in auto mode."""
+        return self._auto_mode
+
+    @callback
+    def async_set_auto_mode(self, enabled: bool) -> None:
+        """Update the assumed auto/manual mode and notify entities."""
+        if self._auto_mode == enabled:
+            return
+        self._auto_mode = enabled
+        self.async_update_listeners()
 
     async def async_request_status(self) -> None:
         """Request the latest runtime/status notification from the device."""
@@ -66,6 +82,8 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         if isinstance(notification, RuntimeNotification):
             self.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
             self.data[ATTR_RUNTIME_MINUTES] = notification.runtime_minutes
+            self.data[ATTR_RUNTIME_NOTIFICATION] = notification.raw.hex(" ")
+            self.data[ATTR_RUNTIME_NOTIFICATION_PAYLOAD] = notification.raw[6:].hex(" ")
         elif isinstance(notification, ScheduleSnapshotNotification):
             self.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
             self.data[ATTR_SCHEDULE_POINTS] = tuple(_schedule_point_to_dict(point) for point in notification.points)

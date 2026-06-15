@@ -36,7 +36,7 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     DeviceModel("A II", ("DYNA2", "DYNA2N"), WHITE_CHANNELS),
     DeviceModel(
         "WRGB II",
-        ("DYNWRGB", "DYNW30", "DYNW45", "DYNW60", "DYNW90", "DYNW12P"),
+        ("DYNT90", "DYWRGB", "DYNWRGB", "DYNW30", "DYNW45", "DYNW60", "DYNW90", "DYNW12P"),
         RGB_CHANNELS,
     ),
     DeviceModel(

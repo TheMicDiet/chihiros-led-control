@@ -119,7 +119,11 @@ class FakeChihirosDevice:
     async def query_status(self) -> None:
         """Publish fake runtime and schedule notifications."""
         await asyncio.sleep(0)
-        self.last_runtime_notification = RuntimeNotification(firmware_version=23, runtime_minutes=511)
+        self.last_runtime_notification = RuntimeNotification(
+            firmware_version=23,
+            runtime_minutes=511,
+            raw=bytes.fromhex("5b 17 0a 00 01 0a 01 ff ff ff ff 0c 36 2d"),
+        )
         self.last_schedule_snapshot_notification = ScheduleSnapshotNotification(
             firmware_version=23,
             points=(

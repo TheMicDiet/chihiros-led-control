@@ -17,6 +17,34 @@ from chihiros_led_control.protocol import (
     parse_notification,
 )
 
+SCHEDULE_SNAPSHOT_PREFIX = [
+    0x5B,
+    0x17,
+    0x30,
+    0x00,
+    0x01,
+    0xFE,
+    0x01,
+    0x12,
+    0x0B,
+    0x0D,
+    0x0F,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x11,
+    0x08,
+    0x11,
+    0x0C,
+    0x11,
+    0x13,
+    0x00,
+    0x01,
+    0x12,
+    0x0B,
+]
+
 
 def test_next_message_id_skips_reserved_lower_byte() -> None:
     """Message ids skip reserved lower byte 90."""
@@ -74,9 +102,14 @@ def test_set_brightness_command_encoding() -> None:
     assert commands.create_set_brightness_command((0, 1), 0, 100) == bytearray([90, 1, 7, 0, 1, 7, 0, 100, 100])
 
 
+def test_base_auth_command_encoding() -> None:
+    """Base auth commands use the LED status/auth frame."""
+    assert commands.create_base_auth_command((0, 1)) == bytearray([90, 1, 6, 0, 1, 4, 1, 3])
+
+
 def test_query_status_command_encoding() -> None:
     """Status query commands request runtime/status notifications."""
-    assert commands.create_query_status_command((0, 1)) == bytearray([90, 1, 6, 0, 1, 4, 1, 3])
+    assert commands.create_query_status_command((0, 1)) == commands.create_base_auth_command((0, 1))
 
 
 def test_auto_setting_command_accepts_four_channel_brightness() -> None:
@@ -102,9 +135,10 @@ def test_encode_timestamp() -> None:
 
 def test_parse_runtime_notification() -> None:
     """Runtime notifications expose firmware and runtime minutes."""
-    notification = parse_notification(bytearray.fromhex("5b170a00010a01ffffffffff13888c"))
+    frame = bytearray.fromhex("5b170a00010a01ffffffffff13888c")
+    notification = parse_notification(frame)
 
-    assert notification == RuntimeNotification(firmware_version=23, runtime_minutes=511)
+    assert notification == RuntimeNotification(firmware_version=23, runtime_minutes=511, raw=bytes(frame))
 
 
 def test_parse_schedule_snapshot_notification_requires_channel_context() -> None:
@@ -141,7 +175,7 @@ def test_parse_schedule_snapshot_notification_requires_channel_context() -> None
 def test_parse_schedule_snapshot_notification_for_single_channel_model() -> None:
     """Single-channel schedule snapshots use the model channel name."""
     notification = parse_notification(
-        bytearray([0x5B, 0x17, 0x08, 0x00, 0x01, 0xFE, 0x08, 0x00, 0x32]),
+        bytearray([*SCHEDULE_SNAPSHOT_PREFIX, 0x08, 0x00, 0x32]),
         WHITE_CHANNELS,
     )
 
@@ -152,16 +186,11 @@ def test_parse_schedule_snapshot_notification_for_single_channel_model() -> None
 
 
 def test_parse_schedule_snapshot_notification_for_rgb_model() -> None:
-    """RGB schedule snapshots decode three channel levels."""
+    """RGB schedule snapshots decode separate channel levels."""
     notification = parse_notification(
         bytearray(
             [
-                0x5B,
-                0x17,
-                0x0C,
-                0x00,
-                0x01,
-                0xFE,
+                *SCHEDULE_SNAPSHOT_PREFIX,
                 0x08,
                 0x00,
                 0x0A,
@@ -187,16 +216,11 @@ def test_parse_schedule_snapshot_notification_for_rgb_model() -> None:
 
 
 def test_parse_schedule_snapshot_notification_for_true_wrgb_model() -> None:
-    """True WRGB schedule snapshots decode four channel levels by channel id."""
+    """True WRGB schedule snapshots decode separate channel levels by channel id."""
     notification = parse_notification(
         bytearray(
             [
-                0x5B,
-                0x17,
-                0x0E,
-                0x00,
-                0x01,
-                0xFE,
+                *SCHEDULE_SNAPSHOT_PREFIX,
                 0x08,
                 0x00,
                 0x0A,
@@ -219,5 +243,39 @@ def test_parse_schedule_snapshot_notification_for_true_wrgb_model() -> None:
         points=(
             SchedulePoint(hour=8, minute=0, levels={"red": 10, "green": 20, "blue": 30, "white": 40}),
             SchedulePoint(hour=18, minute=30, levels={"red": 50, "green": 60, "blue": 70, "white": 80}),
+        ),
+    )
+
+
+def test_parse_schedule_snapshot_notification_skips_metadata_prefix() -> None:
+    """Schedule snapshots skip status metadata before hour/minute/level data points."""
+    notification = parse_notification(
+        bytearray(
+            [
+                *SCHEDULE_SNAPSHOT_PREFIX,
+                0x0D,
+                0x0F,
+                0x00,
+                0x0D,
+                0x2D,
+                0x64,
+                0x15,
+                0x0F,
+                0x64,
+                0x15,
+                0x2D,
+                0x00,
+            ]
+        ),
+        WHITE_CHANNELS,
+    )
+
+    assert notification == ScheduleSnapshotNotification(
+        firmware_version=23,
+        points=(
+            SchedulePoint(hour=13, minute=15, levels={"white": 0}),
+            SchedulePoint(hour=13, minute=45, levels={"white": 100}),
+            SchedulePoint(hour=21, minute=15, levels={"white": 100}),
+            SchedulePoint(hour=21, minute=45, levels={"white": 0}),
         ),
     )

@@ -136,3 +136,4 @@ class ChihirosLightEntity(
             self.schedule_update_ha_state()
             raise HomeAssistantError(f"Failed to set brightness for {self.name}") from ex
         self._attr_available = True
+        self.coordinator.async_set_auto_mode(False)

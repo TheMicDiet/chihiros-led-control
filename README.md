@@ -28,6 +28,82 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 - Restart Home-Assistant
 - Add the Chihiros integration to your Home Assistant instance via the integrations user interface
 
+### Home Assistant services
+
+The integration provides services for changing the auto mode schedule from
+**Developer Tools -> Actions** or from automations:
+
+- `chihiros.add_schedule`: add one schedule period.
+- `chihiros.remove_schedule`: remove one schedule period.
+- `chihiros.reset_schedule`: remove all schedule periods.
+- `chihiros.set_schedule`: replace the complete schedule.
+
+If only one Chihiros device is configured, `entry_id` and `address` can be
+omitted. If multiple devices are configured, include either the config entry ID
+or Bluetooth address.
+
+Replace the complete schedule:
+
+```yaml
+service: chihiros.set_schedule
+data:
+  address: "AA:BB:CC:DD:EE:FF"
+  periods:
+    - start: "08:00"
+      end: "12:00"
+      brightness: 40
+      ramp_up_minutes: 30
+      weekdays:
+        - everyday
+    - start: "12:00"
+      end: "18:30"
+      levels:
+        red: 60
+        green: 70
+        blue: 80
+        white: 50
+```
+
+Add one white or shared-brightness period:
+
+```yaml
+service: chihiros.add_schedule
+data:
+  start: "08:00"
+  end: "18:30"
+  brightness: 70
+  ramp_up_minutes: 30
+  weekdays:
+    - monday
+    - tuesday
+```
+
+Remove a matching period:
+
+```yaml
+service: chihiros.remove_schedule
+data:
+  start: "08:00"
+  end: "18:30"
+  ramp_up_minutes: 30
+  weekdays:
+    - monday
+    - tuesday
+```
+
+Reset all schedule periods:
+
+```yaml
+service: chihiros.reset_schedule
+data:
+  address: "AA:BB:CC:DD:EE:FF"
+```
+
+Schedule writes are validated before sending commands to the device. Unsupported
+channels, invalid brightness values, invalid weekdays, empty replacement
+schedules, and overlapping replacement periods on the same weekdays are rejected.
+After writing a schedule, enable the `Auto Mode` switch to run it.
+
 ## Requirements
 - a device with bluetooth LE support for sending the commands to the LED
 - [uv](https://docs.astral.sh/uv/) for Python environment and dependency management

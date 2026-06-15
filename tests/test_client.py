@@ -62,16 +62,21 @@ def test_query_status_sends_runtime_status_query() -> None:
 def test_notification_handler_stores_and_publishes_runtime_notification() -> None:
     """Parsed runtime notifications are stored and sent to subscribers."""
     received: list[RuntimeNotification] = []
+    frame = bytearray.fromhex("5b170a00010a01ffffffffff13888c")
 
     async def run() -> ChihirosDevice:
         device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
         device.add_notification_callback(received.append)
-        device._notification_handler(None, bytearray.fromhex("5b170a00010a01ffffffffff13888c"))  # type: ignore[arg-type]
+        device._notification_handler(None, frame)  # type: ignore[arg-type]
         return device
 
     device = asyncio.run(run())
-    assert device.last_runtime_notification == RuntimeNotification(firmware_version=23, runtime_minutes=511)
-    assert received == [RuntimeNotification(firmware_version=23, runtime_minutes=511)]
+    assert device.last_runtime_notification == RuntimeNotification(
+        firmware_version=23,
+        runtime_minutes=511,
+        raw=bytes(frame),
+    )
+    assert received == [device.last_runtime_notification]
 
 
 def test_notification_handler_stores_and_publishes_schedule_snapshot() -> None:

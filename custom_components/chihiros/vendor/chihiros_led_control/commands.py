@@ -11,6 +11,11 @@ AUTO_SETTING_PARAMETER_COUNT = 14
 AUTO_SETTING_METADATA_PARAMETER_COUNT = 6
 
 
+def create_base_auth_command(msg_id: tuple[int, int]) -> bytearray:
+    """Create the base LED auth/status command used at connection startup."""
+    return create_command_encoding(90, 4, msg_id, [1])
+
+
 def create_set_time_command(msg_id: tuple[int, int]) -> bytearray:
     """Create the current time command."""
     return create_command_encoding(90, 9, msg_id, encode_timestamp(datetime.datetime.now()))
@@ -23,7 +28,7 @@ def create_set_brightness_command(msg_id: tuple[int, int], color: int, brightnes
 
 def create_query_status_command(msg_id: tuple[int, int]) -> bytearray:
     """Create a command that asks legacy LED devices for runtime/status notifications."""
-    return create_command_encoding(90, 4, msg_id, [1])
+    return create_base_auth_command(msg_id)
 
 
 def create_add_auto_setting_command(

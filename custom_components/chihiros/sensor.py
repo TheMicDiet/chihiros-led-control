@@ -8,9 +8,8 @@ from typing import Any
 from homeassistant.components.bluetooth.passive_update_coordinator import (
     PassiveBluetoothCoordinatorEntity,
 )
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorEntityDescription
+from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityCategory
@@ -19,7 +18,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN
 from .coordinator import (
     ATTR_FIRMWARE_VERSION,
-    ATTR_RUNTIME_MINUTES,
     ATTR_SCHEDULE_POINTS,
     ChihirosDataUpdateCoordinator,
 )
@@ -35,12 +33,6 @@ SENSOR_DESCRIPTIONS = (
     SensorEntityDescription(
         key=ATTR_FIRMWARE_VERSION,
         name="Firmware Version",
-    ),
-    SensorEntityDescription(
-        key=ATTR_RUNTIME_MINUTES,
-        name="Runtime",
-        device_class=SensorDeviceClass.DURATION,
-        native_unit_of_measurement=UnitOfTime.MINUTES,
     ),
     SensorEntityDescription(
         key=ATTR_SCHEDULE_POINTS,

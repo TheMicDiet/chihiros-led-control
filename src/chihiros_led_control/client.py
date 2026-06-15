@@ -458,6 +458,7 @@ class ChihirosDevice:
 
                 self._logger.debug("%s: Subscribe to notifications; RSSI: %s", self.name, self.rssi)
                 await client.start_notify(self._read_char, self._notification_handler)  # type: ignore
+                await self._send_connection_prelude(client)
             except Exception:
                 read_char = self._read_char
                 self._client = None
@@ -469,6 +470,23 @@ class ChihirosDevice:
                 self._expected_disconnect = True
                 await self._disconnect_client(client, read_char)
                 raise
+
+    async def _send_connection_prelude(self, client: BleakClientWithServiceCache) -> None:
+        """Send the LED startup sequence observed in the vendor app/ESPHome flow."""
+        if not self._write_char:
+            raise CharacteristicMissingError("Write characteristic missing")
+        prelude = [
+            commands.create_base_auth_command(self.get_next_msg_id()),
+            commands.create_set_time_command(self.get_next_msg_id()),
+            commands.create_set_time_command(self.get_next_msg_id()),
+        ]
+        self._logger.debug(
+            "%s: Sending connection prelude %s",
+            self.name,
+            [command.hex() for command in prelude],
+        )
+        for command in prelude:
+            await client.write_gatt_char(self._write_char, command, False)
 
     def _reset_disconnect_timer(self) -> None:
         """Reset the delayed disconnect timer."""
