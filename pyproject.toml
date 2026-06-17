@@ -39,13 +39,13 @@ cli = [
 
 [dependency-groups]
 test = [
-    "pytest==8.3.5",
+    "pytest==9.0.3",
 ]
 dev = [
     "click<8.2",
     "doc8==1.1.1",
     "pre-commit==3.7.1",
-    "pytest==8.3.5",
+    "pytest==9.0.3",
     "rich==13.9.4",
     "ruff==0.15.16",
     "typer==0.15.2",
