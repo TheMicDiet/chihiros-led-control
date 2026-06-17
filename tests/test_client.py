@@ -39,8 +39,8 @@ def test_enable_auto_mode_sends_time_before_switch() -> None:
     assert [command[5] for command in sent_commands] == [9, 5]
 
 
-def test_query_status_sends_runtime_status_query() -> None:
-    """Status refresh sends the legacy runtime/status query."""
+def test_enable_auto_mode_uses_supplied_timestamp() -> None:
+    """Auto mode time sync can use a caller-supplied local timestamp."""
     sent_commands: list[bytes] = []
 
     async def run() -> None:
@@ -52,11 +52,77 @@ def test_query_status_sends_runtime_status_query() -> None:
 
         device._send_command = capture_command  # type: ignore[method-assign]
 
+        await device.enable_auto_mode(datetime(2026, 6, 16, 20, 30, 45))
+
+    asyncio.run(run())
+
+    assert sent_commands[0][5] == 9
+    assert sent_commands[0][6:12] == bytes([26, 6, 2, 20, 30, 45])
+
+
+def test_query_status_sends_runtime_status_query() -> None:
+    """Status refresh sends the legacy runtime/status query."""
+    sent_commands: list[bytes] = []
+    notification_waits: list[float] = []
+
+    async def run() -> None:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+
+        async def capture_command(
+            command: list[bytes] | bytes | bytearray,
+            retry: int | None = None,
+            notification_wait: float = 0,
+        ) -> None:
+            del retry
+            sent_commands.append(bytes(command))
+            notification_waits.append(notification_wait)
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+
         await device.query_status()
 
     asyncio.run(run())
 
     assert sent_commands[0][5:7] == bytes([4, 1])
+    assert notification_waits == [1.0]
+
+
+def test_send_command_disconnects_after_command_batch() -> None:
+    """Command batches do not keep the BLE connection alive."""
+    events: list[str] = []
+    sleeps: list[float] = []
+
+    async def run() -> None:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+
+        async def ensure_connected() -> None:
+            events.append("connect")
+
+        async def send_while_connected(commands: list[bytes], retry: int | None = None) -> None:
+            del retry
+            events.append(f"send:{len(commands)}")
+
+        async def execute_disconnect() -> None:
+            events.append("disconnect")
+
+        async def capture_sleep(delay: float) -> None:
+            sleeps.append(delay)
+
+        device._ensure_connected = ensure_connected  # type: ignore[method-assign]
+        device._send_command_while_connected = send_while_connected  # type: ignore[method-assign]
+        device._execute_disconnect = execute_disconnect  # type: ignore[method-assign]
+        original_sleep = asyncio.sleep
+        asyncio.sleep = capture_sleep  # type: ignore[method-assign]
+
+        try:
+            await device._send_command([b"\x01", b"\x02"])  # noqa: SLF001
+        finally:
+            asyncio.sleep = original_sleep  # type: ignore[method-assign]
+
+    asyncio.run(run())
+
+    assert events == ["connect", "send:2", "disconnect"]
+    assert sleeps == [0.5]
 
 
 def test_notification_handler_stores_and_publishes_runtime_notification() -> None:

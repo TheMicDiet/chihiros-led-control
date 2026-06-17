@@ -54,14 +54,14 @@ data:
       brightness: 40
       ramp_up_minutes: 30
       weekdays:
-        - everyday
-    - start: "12:00"
-      end: "18:30"
-      levels:
-        red: 60
-        green: 70
-        blue: 80
-        white: 50
+        - monday
+        - tuesday
+    - start: "09:00"
+      end: "17:00"
+      brightness: 55
+      weekdays:
+        - wednesday
+        - thursday
 ```
 
 Add one white or shared-brightness period:
@@ -101,8 +101,10 @@ data:
 
 Schedule writes are validated before sending commands to the device. Unsupported
 channels, invalid brightness values, invalid weekdays, empty replacement
-schedules, and overlapping replacement periods on the same weekdays are rejected.
-After writing a schedule, enable the `Auto Mode` switch to run it.
+schedules, and multiple replacement periods for the same weekday are rejected.
+Known devices replace the previous period for a weekday when another one is
+written, so `set_schedule` accepts at most one period per weekday. After writing
+a schedule, enable the `Auto Mode` switch to run it.
 
 ## Requirements
 - a device with bluetooth LE support for sending the commands to the LED

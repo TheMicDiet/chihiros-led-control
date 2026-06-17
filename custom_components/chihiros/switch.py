@@ -10,6 +10,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
@@ -69,7 +70,7 @@ class ChihirosAutoManualSwitch(
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Auto mode: set brightness to auto level and enable auto mode."""
-        await self._device.enable_auto_mode()
+        await self._device.enable_auto_mode(dt_util.now())
         self.coordinator.async_set_auto_mode(True)
         self.async_write_ha_state()
         _LOGGER.debug("Switched to auto mode for %s", self._device.name)

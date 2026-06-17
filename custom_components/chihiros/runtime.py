@@ -60,7 +60,7 @@ class ChihirosClient(Protocol):
     async def turn_off(self) -> None:
         """Turn the device off."""
 
-    async def enable_auto_mode(self) -> None:
+    async def enable_auto_mode(self, timestamp: datetime | None = None) -> None:
         """Enable automatic mode."""
 
     async def set_manual_mode(self) -> None:

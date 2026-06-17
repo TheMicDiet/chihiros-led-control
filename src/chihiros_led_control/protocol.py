@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 RESERVED_BYTE = 0x5A
 SCHEDULE_POINT_TIME_BYTES = 2
@@ -17,7 +17,7 @@ class RuntimeNotification:
 
     firmware_version: int
     runtime_minutes: int
-    raw: bytes = b""
+    raw: bytes = field(default=b"", compare=False)
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,7 @@ class ScheduleSnapshotNotification:
 
     firmware_version: int
     points: tuple[SchedulePoint, ...]
+    raw: bytes = field(default=b"", compare=False)
 
 
 ParsedNotification = RuntimeNotification | ScheduleSnapshotNotification
@@ -147,6 +148,6 @@ def parse_notification(
             if hour == 0 and minute == 0 and all(level == 0 for level in levels.values()):
                 continue
             points.append(SchedulePoint(hour, minute, levels))
-        return ScheduleSnapshotNotification(firmware_version, tuple(points))
+        return ScheduleSnapshotNotification(firmware_version, tuple(points), bytes(data))
 
     return None

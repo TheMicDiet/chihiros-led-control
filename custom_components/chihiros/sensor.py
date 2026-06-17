@@ -18,6 +18,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN
 from .coordinator import (
     ATTR_FIRMWARE_VERSION,
+    ATTR_LAST_NOTIFICATION,
     ATTR_SCHEDULE_POINTS,
     ChihirosDataUpdateCoordinator,
 )
@@ -37,6 +38,10 @@ SENSOR_DESCRIPTIONS = (
     SensorEntityDescription(
         key=ATTR_SCHEDULE_POINTS,
         name="Schedule",
+    ),
+    SensorEntityDescription(
+        key=ATTR_LAST_NOTIFICATION,
+        name="Last Notification",
     ),
 )
 
@@ -105,6 +110,10 @@ class ChihirosNotificationSensor(
     def native_value(self) -> int | str | None:
         """Return the current sensor value."""
         value = self.coordinator.data.get(self.entity_description.key)
+        if self.entity_description.key == ATTR_LAST_NOTIFICATION:
+            if not isinstance(value, dict):
+                return None
+            return value.get("mode")
         if self.entity_description.key == ATTR_SCHEDULE_POINTS:
             if value is None:
                 return None
@@ -114,6 +123,11 @@ class ChihirosNotificationSensor(
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         """Return detailed notification data."""
+        if self.entity_description.key == ATTR_LAST_NOTIFICATION:
+            notification = self.coordinator.data.get(ATTR_LAST_NOTIFICATION)
+            if not isinstance(notification, dict):
+                return None
+            return notification
         if self.entity_description.key != ATTR_SCHEDULE_POINTS:
             return None
         points = self.coordinator.data.get(ATTR_SCHEDULE_POINTS)

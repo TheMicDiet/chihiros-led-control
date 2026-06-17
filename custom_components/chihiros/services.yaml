@@ -139,7 +139,7 @@ reset_schedule:
 
 set_schedule:
   name: Set schedule
-  description: Replace all auto mode schedule periods on a Chihiros light.
+  description: Replace auto mode schedule periods on a Chihiros light. Only one period per weekday is supported.
   fields:
     entry_id:
       name: Config entry ID
@@ -159,13 +159,13 @@ set_schedule:
           brightness: 40
           ramp_up_minutes: 30
           weekdays:
-            - everyday
-        - start: "12:00"
-          end: "18:30"
-          levels:
-            red: 60
-            green: 70
-            blue: 80
-            white: 50
+            - monday
+            - tuesday
+        - start: "09:00"
+          end: "17:00"
+          brightness: 55
+          weekdays:
+            - wednesday
+            - thursday
       selector:
         object:

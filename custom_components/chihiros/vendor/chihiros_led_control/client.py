@@ -37,8 +37,9 @@ from .protocol import (
 from .weekday_encoding import WeekdaySelect, encode_selected_weekdays
 
 DEFAULT_ATTEMPTS = 3
-DISCONNECT_DELAY = 120
 BLEAK_BACKOFF_TIME = 0.25
+COMMAND_NOTIFICATION_WAIT = 0.5
+STATUS_NOTIFICATION_WAIT = 1.0
 NotificationCallback = Callable[[ParsedNotification], None]
 
 
@@ -227,7 +228,7 @@ class ChihirosDevice:
     async def query_status(self) -> None:
         """Ask the device to send its runtime/status notification snapshot."""
         cmd = commands.create_query_status_command(self.get_next_msg_id())
-        await self._send_command(cmd, 3)
+        await self._send_command(cmd, 3, notification_wait=STATUS_NOTIFICATION_WAIT)
 
     async def add_setting(
         self,
@@ -276,9 +277,9 @@ class ChihirosDevice:
         cmd = commands.create_reset_auto_settings_command(self.get_next_msg_id())
         await self._send_command(cmd, 3)
 
-    async def enable_auto_mode(self) -> None:
+    async def enable_auto_mode(self, timestamp: datetime | None = None) -> None:
         """Enable auto mode."""
-        time_cmd = commands.create_set_time_command(self.get_next_msg_id())
+        time_cmd = commands.create_set_time_command(self.get_next_msg_id(), timestamp)
         switch_cmd = commands.create_switch_to_auto_mode_command(self.get_next_msg_id())
         await self._send_command(time_cmd, 3)
         await self._send_command(switch_cmd, 3)
@@ -287,15 +288,25 @@ class ChihirosDevice:
         """Switch to manual mode."""
         await self.turn_on()
 
-    async def _send_command(self, command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+    async def _send_command(
+        self,
+        command: list[bytes] | bytes | bytearray,
+        retry: int | None = None,
+        notification_wait: float = COMMAND_NOTIFICATION_WAIT,
+    ) -> None:
         """Send commands to the device."""
-        await self._ensure_connected()
-        commands_to_send: list[bytes]
-        if isinstance(command, list):
-            commands_to_send = command
-        else:
-            commands_to_send = [bytes(command)]
-        await self._send_command_while_connected(commands_to_send, retry)
+        try:
+            await self._ensure_connected()
+            commands_to_send: list[bytes]
+            if isinstance(command, list):
+                commands_to_send = command
+            else:
+                commands_to_send = [bytes(command)]
+            await self._send_command_while_connected(commands_to_send, retry)
+            if notification_wait:
+                await asyncio.sleep(notification_wait)
+        finally:
+            await self._execute_disconnect()
 
     async def _send_command_while_connected(self, commands_to_send: list[bytes], retry: int | None = None) -> None:
         """Send commands while connected."""
@@ -489,11 +500,11 @@ class ChihirosDevice:
             await client.write_gatt_char(self._write_char, command, False)
 
     def _reset_disconnect_timer(self) -> None:
-        """Reset the delayed disconnect timer."""
+        """Reset connection state without scheduling a delayed keepalive."""
         if self._disconnect_timer:
             self._disconnect_timer.cancel()
+            self._disconnect_timer = None
         self._expected_disconnect = False
-        self._disconnect_timer = self.loop.call_later(DISCONNECT_DELAY, self._disconnect)
 
     async def disconnect(self) -> None:
         """Disconnect from the device."""
@@ -529,17 +540,3 @@ class ChihirosDevice:
             except BleakError:
                 self._logger.debug("%s: Failed to stop notifications", self.name, exc_info=True)
         await client.disconnect()
-
-    def _disconnect(self) -> None:
-        """Schedule the timed disconnection."""
-        self._disconnect_timer = None
-        asyncio.create_task(self._execute_timed_disconnect())
-
-    async def _execute_timed_disconnect(self) -> None:
-        """Execute timed disconnection."""
-        self._logger.debug(
-            "%s: Disconnecting after timeout of %s",
-            self.name,
-            DISCONNECT_DELAY,
-        )
-        await self._execute_disconnect()

@@ -16,9 +16,9 @@ def create_base_auth_command(msg_id: tuple[int, int]) -> bytearray:
     return create_command_encoding(90, 4, msg_id, [1])
 
 
-def create_set_time_command(msg_id: tuple[int, int]) -> bytearray:
+def create_set_time_command(msg_id: tuple[int, int], timestamp: datetime.datetime | None = None) -> bytearray:
     """Create the current time command."""
-    return create_command_encoding(90, 9, msg_id, encode_timestamp(datetime.datetime.now()))
+    return create_command_encoding(90, 9, msg_id, encode_timestamp(timestamp or datetime.datetime.now()))
 
 
 def create_set_brightness_command(msg_id: tuple[int, int], color: int, brightness_level: int) -> bytearray:

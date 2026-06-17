@@ -24,6 +24,7 @@ ATTR_FIRMWARE_VERSION = "firmware_version"
 ATTR_RUNTIME_MINUTES = "runtime_minutes"
 ATTR_RUNTIME_NOTIFICATION = "runtime_notification"
 ATTR_RUNTIME_NOTIFICATION_PAYLOAD = "runtime_notification_payload"
+ATTR_LAST_NOTIFICATION = "last_notification"
 ATTR_SCHEDULE_POINTS = "schedule_points"
 
 
@@ -84,9 +85,11 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
             self.data[ATTR_RUNTIME_MINUTES] = notification.runtime_minutes
             self.data[ATTR_RUNTIME_NOTIFICATION] = notification.raw.hex(" ")
             self.data[ATTR_RUNTIME_NOTIFICATION_PAYLOAD] = notification.raw[6:].hex(" ")
+            self.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "runtime")
         elif isinstance(notification, ScheduleSnapshotNotification):
             self.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
             self.data[ATTR_SCHEDULE_POINTS] = tuple(_schedule_point_to_dict(point) for point in notification.points)
+            self.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "schedule_snapshot")
         self.async_update_listeners()
 
     @callback
@@ -111,4 +114,20 @@ def _schedule_point_to_dict(point: SchedulePoint) -> dict[str, Any]:
     return {
         "time": f"{point.hour:02d}:{point.minute:02d}",
         "levels": dict(point.levels),
+    }
+
+
+def _notification_to_debug_dict(
+    notification: RuntimeNotification | ScheduleSnapshotNotification,
+    parsed_type: str,
+) -> dict[str, Any]:
+    """Return a Home Assistant-friendly raw notification diagnostic payload."""
+    raw = notification.raw
+    mode = raw[5] if len(raw) > 5 else None
+    return {
+        "firmware_version": notification.firmware_version,
+        "frame": raw.hex(" "),
+        "payload": raw[6:].hex(" "),
+        "mode": f"0x{mode:02x}" if mode is not None else None,
+        "parsed_type": parsed_type,
     }

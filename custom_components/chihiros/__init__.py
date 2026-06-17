@@ -16,6 +16,10 @@ from .const import DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
 from .models import ChihirosData
 from .runtime import resolve_chihiros_runtime
+from .vendor.chihiros_led_control.schedule_validation import (
+    find_duplicate_schedule_weekdays,
+    normalize_schedule_weekdays,
+)
 from .vendor.chihiros_led_control.weekday_encoding import WeekdaySelect
 
 _LOGGER = logging.getLogger(__name__)
@@ -37,15 +41,6 @@ ATTR_START = "start"
 ATTR_WEEKDAYS = "weekdays"
 
 WEEKDAY_VALUES = [weekday.value for weekday in WeekdaySelect]
-SCHEDULE_WEEKDAYS = (
-    WeekdaySelect.monday,
-    WeekdaySelect.tuesday,
-    WeekdaySelect.wednesday,
-    WeekdaySelect.thursday,
-    WeekdaySelect.friday,
-    WeekdaySelect.saturday,
-    WeekdaySelect.sunday,
-)
 
 BRIGHTNESS_VALUE_SCHEMA = vol.All(vol.Coerce(int), vol.Range(min=0, max=100))
 LEVELS_SCHEMA = {str: BRIGHTNESS_VALUE_SCHEMA}
@@ -187,17 +182,12 @@ def _validate_schedule_periods(chihiros_data: ChihirosData, periods: list[dict[s
     if not periods:
         raise HomeAssistantError("Schedule must contain at least one period")
     validated_periods = [_validate_schedule_period(chihiros_data, period) for period in periods]
-    for index, period in enumerate(validated_periods):
-        for other_index, other_period in enumerate(validated_periods[index + 1 :], start=index + 1):
-            overlapping_weekdays = period["weekdays"] & other_period["weekdays"]
-            if overlapping_weekdays and _time_ranges_overlap(
-                period["start_minutes"],
-                period["end_minutes"],
-                other_period["start_minutes"],
-                other_period["end_minutes"],
-            ):
-                weekdays = ", ".join(sorted(weekday.value for weekday in overlapping_weekdays))
-                raise HomeAssistantError(f"Schedule periods {index + 1} and {other_index + 1} overlap on {weekdays}")
+    if duplicate := find_duplicate_schedule_weekdays([period["weekdays"] for period in validated_periods]):
+        weekdays = ", ".join(weekday.value for weekday in duplicate.weekdays)
+        raise HomeAssistantError(
+            f"{chihiros_data.device.name} stores only one schedule period per weekday; "
+            f"periods {duplicate.first_index + 1} and {duplicate.second_index + 1} both target {weekdays}"
+        )
 
 
 def _validate_schedule_period(chihiros_data: ChihirosData, data: dict[str, Any]) -> dict[str, Any]:
@@ -206,12 +196,8 @@ def _validate_schedule_period(chihiros_data: ChihirosData, data: dict[str, Any])
     end = _parse_schedule_time(data[ATTR_END])
     _validate_time_range(start, end)
     _validate_schedule_brightness(chihiros_data, data)
-    weekdays = set(_parse_weekdays(data.get(ATTR_WEEKDAYS)) or SCHEDULE_WEEKDAYS)
-    if WeekdaySelect.everyday in weekdays:
-        weekdays = set(SCHEDULE_WEEKDAYS)
+    weekdays = normalize_schedule_weekdays(_parse_weekdays(data.get(ATTR_WEEKDAYS)))
     return {
-        "start_minutes": _minutes_since_midnight(start),
-        "end_minutes": _minutes_since_midnight(end),
         "weekdays": weekdays,
     }
 
@@ -240,16 +226,6 @@ def _validate_schedule_brightness(chihiros_data: ChihirosData, data: dict[str, A
         raise HomeAssistantError(
             f"Channel {unsupported} is not supported by {chihiros_data.device.name}. Supported channels: {supported}"
         )
-
-
-def _minutes_since_midnight(value: datetime) -> int:
-    """Return a datetime's time as minutes since midnight."""
-    return (value.hour * 60) + value.minute
-
-
-def _time_ranges_overlap(start: int, end: int, other_start: int, other_end: int) -> bool:
-    """Return whether two half-open time ranges overlap."""
-    return start < other_end and other_start < end
 
 
 async def _async_add_schedule_period(chihiros_data: ChihirosData, data: dict[str, Any]) -> None:
