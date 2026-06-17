@@ -1,0 +1,171 @@
+add_schedule:
+  name: Add schedule period
+  description: Add one auto mode schedule period to a Chihiros light.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: Chihiros config entry ID. Required only when more than one Chihiros device is configured.
+      example: 01HZX3Z7K8M7YY9Y8H1C4BM2QA
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      description: Chihiros Bluetooth address. Required only when more than one Chihiros device is configured.
+      example: AA:BB:CC:DD:EE:FF
+      selector:
+        text:
+    start:
+      name: Start
+      description: Schedule start time.
+      required: true
+      example: "08:00"
+      selector:
+        time:
+    end:
+      name: End
+      description: Schedule end time.
+      required: true
+      example: "18:30"
+      selector:
+        time:
+    brightness:
+      name: Brightness
+      description: Brightness percentage for the primary channel, or a channel map in YAML mode.
+      default: 100
+      example: 70
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+          unit_of_measurement: "%"
+    levels:
+      name: Channel levels
+      description: Optional per-channel brightness levels. Use YAML mode for red, green, blue, and white maps.
+      example:
+        red: 40
+        green: 60
+        blue: 80
+        white: 50
+      selector:
+        object:
+    ramp_up_minutes:
+      name: Ramp up
+      description: Ramp up duration in minutes.
+      default: 0
+      example: 30
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: box
+          unit_of_measurement: min
+    weekdays:
+      name: Weekdays
+      description: Days when the period applies. Leave empty for every day.
+      selector:
+        select:
+          multiple: true
+          options:
+            - everyday
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
+
+remove_schedule:
+  name: Remove schedule period
+  description: Remove one auto mode schedule period from a Chihiros light.
+  fields:
+    entry_id:
+      name: Config entry ID
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      selector:
+        text:
+    start:
+      name: Start
+      required: true
+      example: "08:00"
+      selector:
+        time:
+    end:
+      name: End
+      required: true
+      example: "18:30"
+      selector:
+        time:
+    ramp_up_minutes:
+      name: Ramp up
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: box
+          unit_of_measurement: min
+    weekdays:
+      name: Weekdays
+      selector:
+        select:
+          multiple: true
+          options:
+            - everyday
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
+
+reset_schedule:
+  name: Reset schedule
+  description: Remove all auto mode schedule periods from a Chihiros light.
+  fields:
+    entry_id:
+      name: Config entry ID
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      selector:
+        text:
+
+set_schedule:
+  name: Set schedule
+  description: Replace auto mode schedule periods on a Chihiros light. Only one period per weekday is supported.
+  fields:
+    entry_id:
+      name: Config entry ID
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      selector:
+        text:
+    periods:
+      name: Periods
+      description: Schedule periods to write. Use YAML mode.
+      required: true
+      example:
+        - start: "08:00"
+          end: "12:00"
+          brightness: 40
+          ramp_up_minutes: 30
+          weekdays:
+            - monday
+            - tuesday
+        - start: "09:00"
+          end: "17:00"
+          brightness: 55
+          weekdays:
+            - wednesday
+            - thursday
+      selector:
+        object:

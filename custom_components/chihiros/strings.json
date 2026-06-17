@@ -10,6 +10,13 @@
       },
       "bluetooth_confirm": {
         "description": "[%key:component::bluetooth::config::step::bluetooth_confirm::description%]"
+      },
+      "fallback_config": {
+        "description": "Choose how this Chihiros-compatible device should be controlled",
+        "data": {
+          "name": "[%key:common::config_flow::data::name%]",
+          "device_type": "Device type"
+        }
       }
     },
     "error": {

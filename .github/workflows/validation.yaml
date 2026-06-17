@@ -1,11 +1,44 @@
 name: HA Validation
 
+permissions:
+  contents: read
+
 on:
   push:
   pull_request:
   workflow_dispatch:
 
 jobs:
+  test-library:
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout repository
+        uses: "actions/checkout@v4"
+      - name: Set up uv
+        uses: "astral-sh/setup-uv@v8.2.0"
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.13
+      - name: Install test dependencies
+        run: uv sync --group test
+      - name: Run tests
+        run: uv run --group test pytest
+
+  check-vendor-sync:
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout repository
+        uses: "actions/checkout@v4"
+      - name: Set up uv
+        uses: "astral-sh/setup-uv@v8.2.0"
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.13
+      - name: Check vendored library
+        run: uv run --group test python scripts/sync_vendor.py --check
+
   validate-hacs:
     runs-on: "ubuntu-latest"
     steps:

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .chihiros_led_control.device import BaseDevice
 from .coordinator import ChihirosDataUpdateCoordinator
+from .runtime import ChihirosClient
 
 
 @dataclass
@@ -13,5 +13,5 @@ class ChihirosData:
     """Data for the chihiros integration."""
 
     title: str
-    device: BaseDevice
+    device: ChihirosClient
     coordinator: ChihirosDataUpdateCoordinator
