@@ -173,16 +173,30 @@ do not require the top-level package.
 Set up the development environment with uv:
 
 ```bash
-uv sync --group dev
-uv run --group dev pytest
-uv run --group dev pre-commit run --all-files
+uv --cache-dir .uv-cache sync --group dev
+uv --cache-dir .uv-cache run --group dev pytest
+uv --cache-dir .uv-cache run --group dev pre-commit run --all-files
 ```
+
+Home Assistant integration tests use the separate `ha-test` dependency group
+because they install Home Assistant and its test-time runtime dependencies. Run
+them explicitly when changing files under `custom_components/chihiros/`:
+
+```bash
+uv --cache-dir .uv-cache run --group ha-test pytest tests/test_home_assistant_integration.py tests/test_manifest_requirements.py
+```
+
+The integration test creates a temporary Home Assistant config directory,
+symlinks this repository's `custom_components/` directory into it, and patches
+storage writes so the test does not need a running Home Assistant instance or
+real Bluetooth hardware. The manifest requirements test keeps the integration's
+runtime requirement pins aligned with `pyproject.toml`.
 
 After changing library code, refresh the vendored copy:
 
 ```bash
-uv run python scripts/sync_vendor.py
-uv run python scripts/sync_vendor.py --check
+uv --cache-dir .uv-cache run python scripts/sync_vendor.py
+uv --cache-dir .uv-cache run python scripts/sync_vendor.py --check
 ```
 
 For local Home Assistant testing with Docker Compose, see [docs/home-assistant-docker.md](docs/home-assistant-docker.md).
