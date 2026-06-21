@@ -79,6 +79,10 @@
       "connectable": true
     },
     {
+      "local_name": "DYDOSE*",
+      "connectable": true
+    },
+    {
       "service_data_uuid": "6e400001-b5a3-f393-e0a9-e50e24dcca9e",
       "connectable": true
     }
@@ -94,5 +98,5 @@
   "requirements": [
     "bleak-retry-connector==4.6.1"
   ],
-  "version": "0.10.1"
+  "version": "0.11.0"
 }

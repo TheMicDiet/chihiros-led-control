@@ -12,7 +12,7 @@ from rich import print
 from rich.table import Table
 from typing_extensions import Annotated
 
-from .client import ChihirosDevice
+from .client import ChihirosDevice, ChihirosDosingPump
 from .factory import detect_model, get_device_from_address
 from .weekday_encoding import WeekdaySelect
 
@@ -106,6 +106,22 @@ def remove_setting(
 def reset_settings(device_address: str) -> None:
     """Reset settings from a light."""
     _run_device_func(device_address, lambda dev: dev.reset_settings())
+
+
+@app.command()
+def dose_ml(
+    device_address: str,
+    pump: Annotated[int, typer.Argument(min=1, max=4)],
+    ml: Annotated[float, typer.Argument(min=0.2, max=999.9)],
+) -> None:
+    """Trigger an immediate manual dose on a dosing pump."""
+
+    async def command(dev: ChihirosDevice) -> None:
+        if not isinstance(dev, ChihirosDosingPump):
+            raise typer.BadParameter(f"{dev.name} is not a dosing pump")
+        await dev.dose_ml(pump - 1, ml)
+
+    _run_device_func(device_address, command)
 
 
 @app.command()

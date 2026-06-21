@@ -43,11 +43,14 @@ try:
         ATTR_END,
         ATTR_ENTRY_ID,
         ATTR_LEVELS,
+        ATTR_ML,
         ATTR_PERIODS,
+        ATTR_PUMP,
         ATTR_RAMP_UP_MINUTES,
         ATTR_START,
         ATTR_WEEKDAYS,
         SERVICE_ADD_SCHEDULE,
+        SERVICE_DOSE_ML,
         SERVICE_REMOVE_SCHEDULE,
         SERVICE_RESET_SCHEDULE,
         SERVICE_SET_SCHEDULE,
@@ -57,6 +60,7 @@ try:
     )
     from custom_components.chihiros.const import DOMAIN
     from custom_components.chihiros.coordinator import ChihirosDataUpdateCoordinator
+    from custom_components.chihiros.dosing import CONF_PUMP_COUNT
     from custom_components.chihiros.runtime import ChihirosRuntime
 except ImportError as err:
     pytest.skip(
@@ -95,6 +99,7 @@ class TrackingChihirosClient:
         self.remove_setting_calls: list[dict[str, Any]] = []
         self.reset_settings_calls = 0
         self.disconnect_calls = 0
+        self.dose_ml_calls: list[tuple[int, float]] = []
         self._callbacks: set[Callable[[ParsedNotification], None]] = set()
 
     @property
@@ -165,6 +170,10 @@ class TrackingChihirosClient:
         """Record enabling manual mode."""
         self.manual_mode_calls += 1
 
+    async def dose_ml(self, pump_idx: int, volume_ml: float) -> None:
+        """Record a manual dose."""
+        self.dose_ml_calls.append((pump_idx, volume_ml))
+
     async def add_setting(
         self,
         sunrise: datetime,
@@ -213,6 +222,20 @@ class TrackingChihirosClient:
         """Publish a notification to registered callbacks."""
         for callback in tuple(self._callbacks):
             callback(notification)
+
+
+class TrackingDosingClient(TrackingChihirosClient):
+    """Mock dosing pump client."""
+
+    def __init__(self) -> None:
+        """Initialize the tracking dosing pump client."""
+        super().__init__()
+        self.model = DeviceModel("Dosing Pump", ("DYDOSE",), {})
+
+    @property
+    def name(self) -> str:
+        """Return the fake dosing pump name."""
+        return "Test Dosing Pump"
 
 
 @pytest.fixture
@@ -296,9 +319,11 @@ async def hass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> HomeAssistant
 async def _setup_entry(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
+    client: TrackingChihirosClient | None = None,
+    entry_data: dict[str, Any] | None = None,
 ) -> tuple[ConfigEntry, TrackingChihirosClient]:
     """Set up the integration through Home Assistant's config entry interface."""
-    client = TrackingChihirosClient()
+    client = client or TrackingChihirosClient()
 
     async def wait_for_step(label: str, awaitable: Any) -> Any:
         try:
@@ -350,7 +375,7 @@ async def _setup_entry(
         title=client.name,
         unique_id=TEST_ADDRESS,
         version=1,
-        data={CONF_ADDRESS: TEST_ADDRESS},
+        data={CONF_ADDRESS: TEST_ADDRESS, **(entry_data or {})},
     )
     await wait_for_step("config entry add", hass.config_entries.async_add(entry))
     await client.query_status()
@@ -454,6 +479,75 @@ async def test_light_and_auto_mode_services_drive_client(
 
     assert client.manual_mode_calls == 1
     assert hass.states.get(auto_switch).state == STATE_OFF
+
+
+async def test_manual_dose_service_updates_persisted_daily_total_sensor(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Manual dose service drives the dosing client and updates today's persisted local total."""
+    dosing_client = TrackingDosingClient()
+    entry, client = await _setup_entry(hass, monkeypatch, dosing_client)
+    assert isinstance(client, TrackingDosingClient)
+    entity_registry = er.async_get(hass)
+    pump_2_sensor = _entity_id(entity_registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_dosed_today")
+
+    assert hass.services.has_service(DOMAIN, SERVICE_DOSE_ML)
+    assert hass.states.get(pump_2_sensor).state == "0.0"
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_DOSE_ML,
+        {ATTR_ENTRY_ID: entry.entry_id, ATTR_PUMP: 2, ATTR_ML: 2.5},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert client.dose_ml_calls == [(1, 2.5)]
+    assert hass.states.get(pump_2_sensor).state == "2.5"
+
+
+async def test_two_channel_dosing_pump_creates_two_sensors_and_rejects_pump_three(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Configured dosing channel count controls entities and service validation."""
+    dosing_client = TrackingDosingClient()
+    entry, client = await _setup_entry(hass, monkeypatch, dosing_client, {CONF_PUMP_COUNT: "2"})
+    entity_registry = er.async_get(hass)
+
+    pump_2_sensor = _entity_id(entity_registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_dosed_today")
+    assert hass.states.get(pump_2_sensor).state == "0.0"
+    pump_3_sensor = entity_registry.async_get_entity_id(
+        SENSOR_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_dosing_pump_3_dosed_today"
+    )
+    assert pump_3_sensor is None
+
+    with pytest.raises(HomeAssistantError, match="has 2 pumps"):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_DOSE_ML,
+            {ATTR_ENTRY_ID: entry.entry_id, ATTR_PUMP: 3, ATTR_ML: 2.5},
+            blocking=True,
+        )
+
+    assert client.dose_ml_calls == []
+
+
+async def test_schedule_services_are_not_registered_for_dosing_only(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Light schedule services are hidden when only dosing pumps are configured."""
+    _entry, client = await _setup_entry(hass, monkeypatch, TrackingDosingClient())
+
+    assert not hass.services.has_service(DOMAIN, SERVICE_ADD_SCHEDULE)
+    assert not hass.services.has_service(DOMAIN, SERVICE_REMOVE_SCHEDULE)
+    assert not hass.services.has_service(DOMAIN, SERVICE_RESET_SCHEDULE)
+    assert not hass.services.has_service(DOMAIN, SERVICE_SET_SCHEDULE)
+    assert hass.services.has_service(DOMAIN, SERVICE_DOSE_ML)
+    assert client.remove_setting_calls == []
+    assert client.reset_settings_calls == 0
 
 
 async def test_schedule_services_validate_and_drive_client(

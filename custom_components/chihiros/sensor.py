@@ -8,10 +8,12 @@ from typing import Any
 from homeassistant.components.bluetooth.passive_update_coordinator import (
     PassiveBluetoothCoordinatorEntity,
 )
-from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -22,6 +24,7 @@ from .coordinator import (
     ATTR_SCHEDULE_POINTS,
     ChihirosDataUpdateCoordinator,
 )
+from .dosing import DosingDailyTotals
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData
 from .runtime import ChihirosClient
@@ -53,15 +56,25 @@ async def async_setup_entry(
 ) -> None:
     """Set up notification sensors for Chihiros LED Control."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        [
-            ChihirosNotificationSensor(
+    if chihiros_data.dosing_totals:
+        async_add_entities(
+            ChihirosDosingDailyTotalSensor(
                 chihiros_data.coordinator,
                 chihiros_data.device,
-                description,
+                chihiros_data.dosing_totals,
+                pump_idx,
             )
-            for description in SENSOR_DESCRIPTIONS
-        ]
+            for pump_idx in range(chihiros_data.dosing_totals.pump_count)
+        )
+        return
+
+    async_add_entities(
+        ChihirosNotificationSensor(
+            chihiros_data.coordinator,
+            chihiros_data.device,
+            description,
+        )
+        for description in SENSOR_DESCRIPTIONS
     )
     hass.async_create_task(_async_request_initial_status(chihiros_data.coordinator))
 
@@ -141,6 +154,42 @@ class ChihirosNotificationSensor(
             await self.coordinator.async_request_status()
         except Exception as ex:
             raise HomeAssistantError(f"Failed to request status for {self._device.name}") from ex
+
+
+class ChihirosDosingDailyTotalSensor(SensorEntity):
+    """Sensor for locally tracked manual dosing total for today."""
+
+    _attr_should_poll = False
+    _attr_device_class = SensorDeviceClass.VOLUME
+    _attr_native_unit_of_measurement = UnitOfVolume.MILLILITERS
+    _attr_suggested_display_precision = 1
+
+    def __init__(
+        self,
+        coordinator: ChihirosDataUpdateCoordinator,
+        device: ChihirosClient,
+        totals: DosingDailyTotals,
+        pump_idx: int,
+    ) -> None:
+        """Initialize the dosing total sensor."""
+        self._device = device
+        self._totals = totals
+        self._pump_idx = pump_idx
+        pump_number = pump_idx + 1
+        self._attr_name = chihiros_entity_name(device, f"Pump {pump_number} dosed today")
+        self._attr_unique_id = chihiros_unique_id(coordinator.address, f"dosing_pump_{pump_number}_dosed_today")
+        self._attr_device_info = chihiros_device_info(device, coordinator.address)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to dosing total updates."""
+        self.async_on_remove(
+            async_dispatcher_connect(self.hass, self._totals.address_signal, self.async_write_ha_state)
+        )
+
+    @property
+    def native_value(self) -> float:
+        """Return today's tracked total."""
+        return self._totals.total_ml(self._pump_idx)
 
 
 def _format_schedule_state(points: tuple[dict[str, Any], ...]) -> str:

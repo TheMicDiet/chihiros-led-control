@@ -28,6 +28,8 @@ async def async_setup_entry(
 ) -> None:
     """Set up the switch platform for Chihiros LED Control."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
+    if not chihiros_data.device.colors:
+        return
     async_add_entities(
         [
             ChihirosAutoManualSwitch(

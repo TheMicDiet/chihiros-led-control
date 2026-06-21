@@ -540,3 +540,16 @@ class ChihirosDevice:
             except BleakError:
                 self._logger.debug("%s: Failed to stop notifications", self.name, exc_info=True)
         await client.disconnect()
+
+
+class ChihirosDosingPump(ChihirosDevice):
+    """Concrete BLE client for a Chihiros dosing pump."""
+
+    async def dose_ml(self, pump_idx: int, volume_ml: float) -> None:
+        """Trigger an immediate manual dose on one pump channel."""
+        commands_to_send = [
+            commands.create_dose_auth_1_command(self.get_next_msg_id()),
+            commands.create_dose_auth_2_command(self.get_next_msg_id()),
+            commands.create_manual_dose_command(self.get_next_msg_id(), pump_idx, volume_ml),
+        ]
+        await self._send_command(commands_to_send, 3)

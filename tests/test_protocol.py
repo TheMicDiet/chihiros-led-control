@@ -107,6 +107,24 @@ def test_base_auth_command_encoding() -> None:
     assert commands.create_base_auth_command((0, 1)) == bytearray([90, 1, 6, 0, 1, 4, 1, 3])
 
 
+def test_dosing_auth_command_encoding() -> None:
+    """Dosing auth commands use DEVICE auth data 4 and 5."""
+    assert commands.create_dose_auth_1_command((0, 4)) == bytearray([165, 1, 6, 0, 4, 4, 4, 3])
+    assert commands.create_dose_auth_2_command((0, 5)) == bytearray([165, 1, 6, 0, 5, 4, 5, 3])
+
+
+def test_manual_dose_command_encoding_small_volume() -> None:
+    """Manual dose encoding is compatible with single-byte examples for small volumes."""
+    assert commands.create_manual_dose_command((0, 6), 0, 2.0) == bytearray([165, 1, 10, 0, 6, 27, 0, 0, 0, 0, 20, 2])
+
+
+def test_manual_dose_command_encoding_large_volume() -> None:
+    """Manual dose encoding supports 25.6 mL buckets for larger volumes."""
+    assert commands.split_dose_volume_ml(29.0) == (1, 34)
+    command = commands.create_manual_dose_command((0, 6), 2, 29.0)
+    assert command[6:-1] == bytearray([2, 0, 0, 1, 34])
+
+
 def test_query_status_command_encoding() -> None:
     """Status query commands request runtime/status notifications."""
     assert commands.create_query_status_command((0, 1)) == commands.create_base_auth_command((0, 1))

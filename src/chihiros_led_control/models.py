@@ -22,6 +22,7 @@ WHITE_CHANNELS = MappingProxyType({"white": 0})
 RGB_CHANNELS = MappingProxyType({"red": 0, "green": 1, "blue": 2})
 WRGB_CHANNELS = MappingProxyType({"white": 3, "red": 0, "green": 1, "blue": 2})
 COMMANDER_CHANNELS = MappingProxyType({"white": 0, "red": 0, "green": 1, "blue": 2})
+DOSING_CHANNELS = MappingProxyType({})
 TINY_TERRARIUM_EGG_CHANNELS = MappingProxyType({"red": 0, "green": 1})
 Z_LIGHT_TINY_CHANNELS = MappingProxyType({"white": 0, "warm": 1})
 
@@ -29,6 +30,7 @@ GENERIC_WHITE = DeviceModel("Generic White LED", (), WHITE_CHANNELS)
 GENERIC_RGB = DeviceModel("Generic RGB", (), RGB_CHANNELS)
 GENERIC_WRGB = DeviceModel("Generic WRGB", (), WRGB_CHANNELS)
 FALLBACK = DeviceModel("fallback", (), COMMANDER_CHANNELS, needs_device_type=True, fallback=True)
+DOSING_PUMP = DeviceModel("Dosing Pump", ("DYDOSE", "DYDOSED", "DOSER"), DOSING_CHANNELS)
 
 SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     DeviceModel("Z Light TINY", ("DYSSD", "DYZSD"), Z_LIGHT_TINY_CHANNELS),
@@ -67,6 +69,7 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     ),
     DeviceModel("Commander 1", ("DYCOM",), COMMANDER_CHANNELS, needs_device_type=True),
     DeviceModel("Commander 4", ("DYLED",), COMMANDER_CHANNELS, needs_device_type=True),
+    DOSING_PUMP,
 )
 
 GENERIC_MODELS_BY_DEVICE_TYPE = MappingProxyType(

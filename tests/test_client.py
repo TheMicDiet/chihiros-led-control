@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
-from chihiros_led_control.client import ChihirosDevice
+from chihiros_led_control.client import ChihirosDevice, ChihirosDosingPump
 from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
 from chihiros_led_control.protocol import RuntimeNotification, ScheduleSnapshotNotification
 
@@ -85,6 +85,28 @@ def test_query_status_sends_runtime_status_query() -> None:
 
     assert sent_commands[0][5:7] == bytes([4, 1])
     assert notification_waits == [1.0]
+
+
+def test_dosing_pump_manual_dose_sends_auth_and_dose_batch() -> None:
+    """Manual dosing sends dose auth frames before the one-shot dose command."""
+    sent_batches: list[list[bytes]] = []
+
+    async def run() -> None:
+        device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
+
+        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+            del retry
+            assert isinstance(command, list)
+            sent_batches.append([bytes(item) for item in command])
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+
+        await device.dose_ml(1, 2.0)
+
+    asyncio.run(run())
+
+    assert [command[5:7] for command in sent_batches[0]] == [bytes([4, 4]), bytes([4, 5]), bytes([27, 1])]
+    assert sent_batches[0][2][6:-1] == bytes([1, 0, 0, 0, 20])
 
 
 def test_send_command_disconnects_after_command_batch() -> None:

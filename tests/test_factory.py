@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+from chihiros_led_control.client import ChihirosDosingPump
 from chihiros_led_control.factory import (
     create_device,
     detect_model,
@@ -42,6 +43,11 @@ def test_detect_model_does_not_rely_on_fixed_slicing() -> None:
     assert detect_model("DYSL120-short").name == "WRGB II Slim"
 
 
+def test_detect_model_matches_dosing_pump_prefix() -> None:
+    """Model detection matches dosing pump advertisements."""
+    assert detect_model("DYDOSE1234567890").name == "Dosing Pump"
+
+
 def test_unknown_model_needs_device_type() -> None:
     """Unknown models use fallback metadata and need a type."""
     assert detect_model("UNKNOWN").fallback is True
@@ -72,3 +78,16 @@ def test_factory_created_device_uses_generic_wrgb_model() -> None:
 
     assert model_name == "Generic WRGB"
     assert colors == {"white": 3, "red": 0, "green": 1, "blue": 2}
+
+
+def test_factory_created_dosing_pump_uses_dosing_client() -> None:
+    """Factory-created dosing pump devices use the dosing client class."""
+
+    async def create() -> ChihirosDosingPump:
+        return create_device(FakeBLEDevice("DYDOSE1234567890"))  # type: ignore[arg-type, return-value]
+
+    device = asyncio.run(create())
+
+    assert isinstance(device, ChihirosDosingPump)
+    assert device.model_name == "Dosing Pump"
+    assert device.colors == {}

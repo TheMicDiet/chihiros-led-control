@@ -23,6 +23,12 @@
                 },
                 "description": "Choose how this Chihiros-compatible device should be controlled"
             },
+            "dosing_config": {
+                "data": {
+                    "pump_count": "Pump channels"
+                },
+                "description": "Choose how many pump channels this dosing pump has"
+            },
             "user": {
                 "data": {
                     "device": "Device"

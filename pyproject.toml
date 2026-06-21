@@ -93,7 +93,7 @@ asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 120
-target-version = "py314"
+target-version = "py313"
 force-exclude = true
 extend-exclude = [
     "custom_components/chihiros/vendor",
