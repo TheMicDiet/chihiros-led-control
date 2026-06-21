@@ -19,7 +19,7 @@ jobs:
         with:
           enable-cache: true
       - name: Set up Python
-        run: uv python install 3.13
+        run: uv python install 3.14
       - name: Install test dependencies
         run: uv sync --group test
       - name: Run tests
@@ -35,7 +35,7 @@ jobs:
         with:
           enable-cache: true
       - name: Set up Python
-        run: uv python install 3.13
+        run: uv python install 3.14
       - name: Check vendored library
         run: uv run --group test python scripts/sync_vendor.py --check
 

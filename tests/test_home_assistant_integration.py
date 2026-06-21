@@ -234,6 +234,7 @@ async def hass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> HomeAssistant
     monkeypatch.setattr(storage.Store, "async_load", async_load_empty_store)
     monkeypatch.setattr(storage.Store, "async_delay_save", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(storage.Store, "async_save", async_save_noop)
+    dr.async_setup(hass_instance)
     await dr.async_load(hass_instance)
     await er.async_load(hass_instance)
 
