@@ -158,8 +158,9 @@ class FakeChihirosDevice:
         """Turn off all fake channels."""
         await self.set_brightness(0)
 
-    async def enable_auto_mode(self) -> None:
+    async def enable_auto_mode(self, timestamp: datetime | None = None) -> None:
         """Enable fake auto mode."""
+        del timestamp
         self._auto_mode = True
         await self.query_status()
 

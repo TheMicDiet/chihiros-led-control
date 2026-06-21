@@ -9,7 +9,7 @@ from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth.passive_update_coordinator import (
     PassiveBluetoothDataUpdateCoordinator,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 
 from .runtime import ChihirosClient
 from .vendor.chihiros_led_control.protocol import (
@@ -45,6 +45,7 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         self._auto_mode = False
         self.always_available = always_available
         self._remove_notification_callback = client.add_notification_callback(self._queue_notification)
+        self._remove_bluetooth_callback: CALLBACK_TYPE | None = None
         super().__init__(
             hass,
             _LOGGER,
@@ -69,8 +70,18 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         """Request the latest runtime/status notification from the device."""
         await self.api.query_status()
 
+    @callback
+    def async_start_bluetooth(self) -> None:
+        """Start tracking passive Bluetooth availability events."""
+        if self._remove_bluetooth_callback is not None:
+            return
+        self._remove_bluetooth_callback = self.async_start()
+
     def async_close(self) -> None:
-        """Remove library callbacks held by this coordinator."""
+        """Remove callbacks held by this coordinator."""
+        if self._remove_bluetooth_callback is not None:
+            self._remove_bluetooth_callback()
+            self._remove_bluetooth_callback = None
         self._remove_notification_callback()
 
     def _queue_notification(self, notification: ParsedNotification) -> None:

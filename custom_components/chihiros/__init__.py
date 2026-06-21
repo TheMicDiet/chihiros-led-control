@@ -84,6 +84,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         runtime.address,
         always_available=runtime.always_available,
     )
+    coordinator.async_start_bluetooth()
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = ChihirosData(entry.title, runtime.client, coordinator)

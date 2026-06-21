@@ -23,7 +23,7 @@ keywords = ["chihiros", "bluetooth", "lib"]
 
 requires-python = ">=3.13"
 dependencies = [
-    "bleak>=0.22.3",
+    "bleak>=2",
     "bleak-retry-connector==4.6.1",
     "click<8.2",
     "rich==13.9.4",
@@ -40,15 +40,19 @@ cli = [
 [dependency-groups]
 test = [
     "pytest==9.0.3",
+    "pytest-asyncio",
 ]
 dev = [
-    "click<8.2",
+    {include-group = "test"},
     "doc8==1.1.1",
     "pre-commit==3.7.1",
-    "pytest==9.0.3",
-    "rich==13.9.4",
     "ruff==0.15.16",
-    "typer==0.15.2",
+]
+ha-test = [
+    {include-group = "test"},
+    "aiousbwatcher",
+    "homeassistant",
+    "pyserial",
 ]
 
 [project.urls]
@@ -77,6 +81,14 @@ chihirosctl = "chihiros_led_control.cli:app"
 
 [tool.uv]
 default-groups = []
+
+[tool.pytest.ini_options]
+addopts = [
+    "-p",
+    "no:homeassistant",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 120
