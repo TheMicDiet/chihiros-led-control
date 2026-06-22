@@ -15,6 +15,7 @@ from homeassistant.const import CONF_ADDRESS, CONF_NAME
 
 from .const import DOMAIN
 from .discovery import ChihirosDiscovery, discovery_title
+from .dosing import CONF_PUMP_COUNT, PUMP_COUNT, PUMP_COUNT_OPTIONS, is_dosing_capable, normalize_pump_count
 from .fake import iter_enabled_fake_devices
 from .vendor.chihiros_led_control import (
     ChihirosDevice,
@@ -35,6 +36,8 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         self._discovery_info: BluetoothServiceInfoBleak | None = None
         self._discovered_device: ChihirosDevice | None = None
         self._discovered_devices: dict[str, ChihirosDiscovery] = {}
+        self._entry_title: str | None = None
+        self._entry_address: str | None = None
 
     async def async_step_bluetooth(self, discovery_info: BluetoothServiceInfoBleak) -> ConfigFlowResult:
         """Handle the bluetooth discovery step."""
@@ -57,12 +60,35 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         discovery_info = self._discovery_info
         title = device.name or discovery_info.name
         if user_input is not None:
+            self._entry_title = title
+            self._entry_address = discovery_info.address
+            if is_dosing_capable(device):
+                return await self.async_step_dosing_config()
             return self.async_create_entry(title=title, data={CONF_ADDRESS: discovery_info.address})
 
         self._set_confirm_only()
         placeholders = {"name": title}
         self.context["title_placeholders"] = placeholders
         return self.async_show_form(step_id="bluetooth_confirm", description_placeholders=placeholders)
+
+    async def async_step_dosing_config(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Ask user how many channels a dosing pump has."""
+        assert self._entry_title is not None
+        assert self._entry_address is not None
+
+        if user_input is not None:
+            return self.async_create_entry(
+                title=self._entry_title,
+                data={
+                    CONF_ADDRESS: self._entry_address,
+                    CONF_PUMP_COUNT: normalize_pump_count(user_input[CONF_PUMP_COUNT]),
+                },
+            )
+
+        data_schema = vol.Schema(
+            {vol.Required(CONF_PUMP_COUNT, default=PUMP_COUNT): vol.All(vol.Coerce(int), vol.In(PUMP_COUNT_OPTIONS))}
+        )
+        return self.async_show_form(step_id="dosing_config", data_schema=data_schema, errors={})
 
     async def async_step_fallback_config(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Ask user for device details when fallback device is detected."""
@@ -101,6 +127,10 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
             if discovery.is_fake:
                 await self.async_set_unique_id(discovery.address, raise_on_progress=False)
                 self._abort_if_unique_id_configured()
+                self._entry_title = discovery.name
+                self._entry_address = discovery.address
+                if discovery.fake_info and is_dosing_capable(discovery.fake_info.model):
+                    return await self.async_step_dosing_config()
                 return self.async_create_entry(title=discovery.name, data=discovery.entry_data())
 
             discovery_info = discovery.bluetooth_info
@@ -115,6 +145,10 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
                 return await self.async_step_fallback_config()
 
             title = discovery_title(device, discovery)
+            self._entry_title = title
+            self._entry_address = discovery_info.address
+            if is_dosing_capable(device):
+                return await self.async_step_dosing_config()
             return self.async_create_entry(title=title, data={CONF_ADDRESS: discovery_info.address})
 
         if discovery := self._discovery_info:

@@ -292,47 +292,41 @@ The old Chihiros Magic app identifies these Doctor commands:
 
 ## Dosing Pump Commands
 
-Dosing pump findings are not used by the current LED implementation, but they
-confirm that Chihiros dosing devices use the same frame format, checksum, and
-Nordic UART-style transport. Observed device name prefixes include `DYDOSE` and
-`DYNDOS`.
+Chihiros dosing pumps use the same Nordic UART-style transport, frame format,
+and checksum. The current implementation recognizes devices whose BLE name
+starts with `DYDOSE` and supports manual one-shot dosing.
 
-Amounts are encoded as a big-endian integer in tenths of a milliliter:
-
-```python
-units = round(ml * 10)
-ml_hi = units >> 8
-ml_lo = units & 0xff
-```
-
-Known dosing pump commands:
+Dosing pump interactions use the normal connection prelude (`90 / 4`, then
+two `90 / 9` time sync commands), followed by two dosing auth commands:
 
 | Command ID | Mode | Parameters | Meaning |
 | ---: | ---: | --- | --- |
-| `0xa5` / `165` | `0x15` / `21` | `[channel, unknown_or_timer_type, hour, minute, 0, 0]` | Timer/time command |
-| `0xa5` / `165` | `0x1b` / `27` | `[channel, 0, subtype/status, ml_hi, ml_lo]` | Manual or amount command variant |
-| `0xa5` / `165` | `0x1b` / `27` | `[channel, weekdays, recurrence_flag, unknown/status, ml_hi, ml_lo]` | Scheduled/recurring amount command variant |
-| `0xa5` / `165` | `0x20` / `32` | `[channel, catch_up_missed, active]` | Auto/channel enable |
+| `165` | `4` | `[4]` | Dosing auth step 1 |
+| `165` | `4` | `[5]` | Dosing auth step 2 |
 
-Captured OEM automatic schedule save order:
+Manual dose command:
 
-```text
-0x5a / 0x04 / [1]
-0x5a / 0x09 / [year - 2000, month, weekday, hour, minute, second]
-0x5a / 0x09 / [year - 2000, month, weekday, hour, minute, second]
-0xa5 / 0x04 / [4]
-0xa5 / 0x04 / [5]
-0xa5 / 0x20 / [channel, catch_up_missed, active]
-0xa5 / 0x1b / [channel, weekdays, recurrence_flag, unknown/status, ml_hi, ml_lo]
-0xa5 / 0x15 / [channel, unknown_or_timer_type, hour, minute, 0, 0]
+| Command ID | Mode | Parameters | Meaning |
+| ---: | ---: | --- | --- |
+| `165` | `27` | `[pump, 0, 0, ml_hi, ml_lo]` | Dose one pump channel immediately |
+
+Parameter details:
+
+- `pump`: zero-based pump index, `0` to `3`.
+- Dose volume is encoded in tenths of a milliliter as `ml_hi * 25.6 mL + ml_lo * 0.1 mL`.
+- The Home Assistant integration currently accepts `0.2 mL` to `999.9 mL`.
+
+Python equivalent:
+
+```python
+tenths_ml = round(ml * 10)
+ml_hi, ml_lo = divmod(tenths_ml, 256)
 ```
 
-Captured example for channel `0`, every day, `60.0 ml`, time `22:35`:
+Example for pump `0`, `2.0 mL`:
 
 ```text
-a5 01 08 00 57 20 00 00 01 7f
-a5 01 0b 00 58 1b 00 7f 01 01 02 58 6c
-a5 01 0b 00 59 15 00 00 16 23 00 00 73
+165 1 10 0 6 27 0 0 0 0 20 2
 ```
 
 ## Decompiler Notes

@@ -8,7 +8,8 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from .vendor.chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
+from .dosing import normalize_pump_count
+from .vendor.chihiros_led_control.models import DOSING_PUMP, RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
 from .vendor.chihiros_led_control.protocol import (
     ParsedNotification,
     RuntimeNotification,
@@ -45,6 +46,11 @@ FAKE_DEVICES = (
         name="DYNA2-fake",
         model=DeviceModel("Fake A II", ("DYNA2",), WHITE_CHANNELS),
     ),
+    FakeChihirosDeviceInfo(
+        address=f"{FAKE_ADDRESS_PREFIX}:00:00:04",
+        name="DYDOSE-fake",
+        model=DOSING_PUMP,
+    ),
 )
 FAKE_DEVICES_BY_ADDRESS = {device.address: device for device in FAKE_DEVICES}
 
@@ -61,9 +67,9 @@ def is_fake_address(address: str) -> bool:
     return address in FAKE_DEVICES_BY_ADDRESS
 
 
-def create_fake_device(address: str) -> FakeChihirosDevice:
+def create_fake_device(address: str, pump_count: int = 4) -> FakeChihirosDevice:
     """Create a fake Chihiros device from a fake address."""
-    return FakeChihirosDevice(FAKE_DEVICES_BY_ADDRESS[address])
+    return FakeChihirosDevice(FAKE_DEVICES_BY_ADDRESS[address], pump_count)
 
 
 def iter_enabled_fake_devices(current_addresses: Iterable[str]) -> tuple[FakeChihirosDeviceInfo, ...]:
@@ -77,12 +83,14 @@ def iter_enabled_fake_devices(current_addresses: Iterable[str]) -> tuple[FakeChi
 class FakeChihirosDevice:
     """Small in-memory Chihiros device replacement for HA UI testing."""
 
-    def __init__(self, device_info: FakeChihirosDeviceInfo) -> None:
+    def __init__(self, device_info: FakeChihirosDeviceInfo, pump_count: int = 4) -> None:
         """Initialize the fake device."""
         self._device_info = device_info
+        self.pump_count = normalize_pump_count(pump_count)
         self.model = device_info.model
         self._callbacks: set[NotificationCallback] = set()
         self._brightness = {color: 0 for color in self.model.color_channels}
+        self._dosed_ml = [0.0] * self.pump_count
         self._auto_mode = False
         self.last_runtime_notification: RuntimeNotification | None = None
         self.last_schedule_snapshot_notification: ScheduleSnapshotNotification | None = None
@@ -195,6 +203,11 @@ class FakeChihirosDevice:
     async def reset_settings(self) -> None:
         """Accept fake schedule resets."""
         await self.query_status()
+
+    async def dose_ml(self, pump_idx: int, volume_ml: float) -> None:
+        """Record a fake manual dose for local dosing pump testing."""
+        await asyncio.sleep(0)
+        self._dosed_ml[pump_idx] = round(self._dosed_ml[pump_idx] + volume_ml, 1)
 
     async def disconnect(self) -> None:
         """Disconnect the fake device."""

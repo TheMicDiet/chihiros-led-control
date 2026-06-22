@@ -22,11 +22,27 @@ repos:
     entry: uv --cache-dir .uv-cache run --group dev ruff check --fix
     language: system
     types_or: [python, pyi]
+    require_serial: true
   - id: ruff-format
     name: ruff format
     entry: uv --cache-dir .uv-cache run --group dev ruff format
     language: system
     types_or: [python, pyi]
+    require_serial: true
+  - id: sync-vendor-check
+    name: sync vendor check
+    entry: uv --cache-dir .uv-cache run python scripts/sync_vendor.py --check
+    language: system
+    pass_filenames: false
+    always_run: true
+    require_serial: true
+  - id: pytest
+    name: pytest
+    entry: uv --cache-dir .uv-cache run --group dev pytest
+    language: system
+    pass_filenames: false
+    always_run: true
+    require_serial: true
 
 - repo: https://github.com/PyCQA/doc8
   rev: v1.1.1

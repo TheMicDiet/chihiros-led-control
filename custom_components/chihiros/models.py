@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .coordinator import ChihirosDataUpdateCoordinator
+from .dosing import DosingDailyTotals
 from .runtime import ChihirosClient
 
 
@@ -15,3 +16,5 @@ class ChihirosData:
     title: str
     device: ChihirosClient
     coordinator: ChihirosDataUpdateCoordinator
+    dosing_totals: DosingDailyTotals | None = None
+    dosing_volumes: list[float] = field(default_factory=list)

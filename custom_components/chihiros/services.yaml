@@ -137,6 +137,41 @@ reset_schedule:
       selector:
         text:
 
+dose_ml:
+  name: Manual dose
+  description: Trigger a one-shot manual dose on a Chihiros dosing pump and add it to today's local total.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: Chihiros config entry ID. Required only when more than one Chihiros device is configured.
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      description: Chihiros Bluetooth address. Required only when more than one Chihiros device is configured.
+      example: AA:BB:CC:DD:EE:FF
+      selector:
+        text:
+    pump:
+      name: Pump
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 4
+          step: 1
+          mode: box
+    ml:
+      name: Volume
+      required: true
+      selector:
+        number:
+          min: 0.2
+          max: 999.9
+          step: 0.1
+          mode: box
+          unit_of_measurement: mL
+
 set_schedule:
   name: Set schedule
   description: Replace auto mode schedule periods on a Chihiros light. Only one period per weekday is supported.

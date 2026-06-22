@@ -13,6 +13,7 @@ from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
+from .dosing import CONF_PUMP_COUNT, normalize_pump_count
 from .fake import create_fake_device, fake_devices_enabled, is_fake_address
 from .vendor.chihiros_led_control import create_device, needs_device_type
 from .vendor.chihiros_led_control.models import DeviceModel
@@ -20,6 +21,13 @@ from .vendor.chihiros_led_control.protocol import ParsedNotification, RuntimeNot
 from .vendor.chihiros_led_control.weekday_encoding import WeekdaySelect
 
 NotificationCallback = Callable[[ParsedNotification], None]
+
+
+class DosingChihirosClient(Protocol):
+    """Home Assistant-facing dosing pump client surface."""
+
+    async def dose_ml(self, pump_idx: int, volume_ml: float) -> None:
+        """Dose a volume in mL on a dosing pump channel."""
 
 
 class ChihirosClient(Protocol):
@@ -109,7 +117,7 @@ async def resolve_chihiros_runtime(hass: HomeAssistant, entry: ConfigEntry) -> C
     address: str = entry.unique_id
     if fake_devices_enabled() and is_fake_address(address):
         return ChihirosRuntime(
-            client=create_fake_device(address),
+            client=create_fake_device(address, normalize_pump_count(entry.data.get(CONF_PUMP_COUNT))),
             address=address,
             always_available=True,
         )

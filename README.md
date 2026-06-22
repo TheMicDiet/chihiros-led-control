@@ -1,6 +1,6 @@
 ﻿# Chihiros LED Control
 
-This repository contains a python **CLI** script as well as a **Home Assistant integration** that can be used to control Chihiros LEDs for aquariums via bluetooth without the vendor app. For this purpose, the protocol to control the LED has been reversed engineered with the help of decompiling the old *Magic App* as well as sniffing and analyzing of bluetooth packages that are sent by the new *My Chihiros App*. The new app is based on flutter and only contains a binary that can not easily be analyzed.
+This repository contains a python **CLI** script as well as a **Home Assistant integration** that can be used to control Chihiros LEDs for aquariums via bluetooth without the vendor app. It also includes first Home Assistant support for Chihiros dosing pumps. For this purpose, the protocol to control the devices has been reversed engineered with the help of decompiling the old *Magic App* as well as sniffing and analyzing of bluetooth packages that are sent by the new *My Chihiros App*. The new app is based on flutter and only contains a binary that can not easily be analyzed.
 
 ## Supported Devices
 - [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
@@ -11,6 +11,7 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 - Chihiros Z Light TINY
 - Chihiros Commander 1
 - Chihiros Commander 4
+- Chihiros dosing pump (`DYDOSE*`) with first Home Assistant support for manual dosing and daily dose totals
 - other LED models might work as well but are not tested
 
 
@@ -106,6 +107,19 @@ Known devices replace the previous period for a weekday when another one is
 written, so `set_schedule` accepts at most one period per weekday. After writing
 a schedule, enable the `Auto Mode` switch to run it.
 
+Dosing pumps expose one manual dose button, one dose-volume number control, and
+one locally tracked daily total sensor per pump channel. The first setup asks
+whether the pump has two or four channels. Manual doses can also be triggered
+from automations with `chihiros.dose_ml`:
+
+```yaml
+service: chihiros.dose_ml
+data:
+  address: "AA:BB:CC:DD:EE:FF"
+  pump: 1
+  ml: 2.5
+```
+
 ## Requirements
 - a device with bluetooth LE support for sending the commands to the LED
 - [uv](https://docs.astral.sh/uv/) for Python environment and dependency management
@@ -156,6 +170,9 @@ uv run chihirosctl remove-setting <device-address> 8:00 18:00
 
 # reset all created settings
 uv run chihirosctl reset-settings <device-address>
+
+# trigger a manual dose on a dosing pump: pump 1, 2.5 mL
+uv run chihirosctl dose-ml <device-address> 1 2.5
 
 ```
 

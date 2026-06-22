@@ -6,9 +6,10 @@ from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
-from .client import ChihirosDevice
+from .client import ChihirosDevice, ChihirosDosingPump
 from .exceptions import DeviceNotFound
 from .models import (
+    DOSING_PUMP,
     FALLBACK,
     GENERIC_MODELS_BY_DEVICE_TYPE,
     DeviceModel,
@@ -58,6 +59,8 @@ def create_device(
 ) -> ChihirosDevice:
     """Create a device client for a BLE device."""
     resolved_model = resolve_model(ble_device.name, model, device_type)
+    if resolved_model == DOSING_PUMP:
+        return ChihirosDosingPump(ble_device, resolved_model, advertisement_data)
     return ChihirosDevice(ble_device, resolved_model, advertisement_data)
 
 

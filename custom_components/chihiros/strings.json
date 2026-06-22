@@ -17,6 +17,12 @@
           "name": "[%key:common::config_flow::data::name%]",
           "device_type": "Device type"
         }
+      },
+      "dosing_config": {
+        "description": "Choose how many pump channels this dosing pump has",
+        "data": {
+          "pump_count": "Pump channels"
+        }
       }
     },
     "error": {
