@@ -98,5 +98,5 @@
   "requirements": [
     "bleak-retry-connector==4.6.1"
   ],
-  "version": "0.11.0"
+  "version": "0.11.1"
 }
