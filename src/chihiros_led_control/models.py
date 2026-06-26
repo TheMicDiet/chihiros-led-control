@@ -30,7 +30,7 @@ GENERIC_WHITE = DeviceModel("Generic White LED", (), WHITE_CHANNELS)
 GENERIC_RGB = DeviceModel("Generic RGB", (), RGB_CHANNELS)
 GENERIC_WRGB = DeviceModel("Generic WRGB", (), WRGB_CHANNELS)
 FALLBACK = DeviceModel("fallback", (), COMMANDER_CHANNELS, needs_device_type=True, fallback=True)
-DOSING_PUMP = DeviceModel("Dosing Pump", ("DYDOSE", "DYDOSED", "DOSER"), DOSING_CHANNELS)
+DOSING_PUMP = DeviceModel("Dosing Pump", ("DYDOSE", "DYDOSED", "DOSER", "DYTDOS"), DOSING_CHANNELS)
 
 SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     DeviceModel("Z Light TINY", ("DYSSD", "DYZSD"), Z_LIGHT_TINY_CHANNELS),
