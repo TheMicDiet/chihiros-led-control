@@ -204,7 +204,7 @@ def test_parse_schedule_snapshot_notification_for_single_channel_model() -> None
 
 
 def test_parse_schedule_snapshot_notification_for_rgb_model() -> None:
-    """RGB schedule snapshots decode separate channel levels."""
+    """RGB schedule snapshots apply each schedule level to all named channels."""
     notification = parse_notification(
         bytearray(
             [
@@ -212,12 +212,8 @@ def test_parse_schedule_snapshot_notification_for_rgb_model() -> None:
                 0x08,
                 0x00,
                 0x0A,
-                0x14,
-                0x1E,
                 0x12,
                 0x1E,
-                0x28,
-                0x32,
                 0x3C,
             ]
         ),
@@ -227,14 +223,14 @@ def test_parse_schedule_snapshot_notification_for_rgb_model() -> None:
     assert notification == ScheduleSnapshotNotification(
         firmware_version=23,
         points=(
-            SchedulePoint(hour=8, minute=0, levels={"red": 10, "green": 20, "blue": 30}),
-            SchedulePoint(hour=18, minute=30, levels={"red": 40, "green": 50, "blue": 60}),
+            SchedulePoint(hour=8, minute=0, levels={"red": 10, "green": 10, "blue": 10}),
+            SchedulePoint(hour=18, minute=30, levels={"red": 60, "green": 60, "blue": 60}),
         ),
     )
 
 
 def test_parse_schedule_snapshot_notification_for_true_wrgb_model() -> None:
-    """True WRGB schedule snapshots decode separate channel levels by channel id."""
+    """True WRGB schedule snapshots apply each schedule level to all named channels."""
     notification = parse_notification(
         bytearray(
             [
@@ -242,14 +238,8 @@ def test_parse_schedule_snapshot_notification_for_true_wrgb_model() -> None:
                 0x08,
                 0x00,
                 0x0A,
-                0x14,
-                0x1E,
-                0x28,
                 0x12,
                 0x1E,
-                0x32,
-                0x3C,
-                0x46,
                 0x50,
             ]
         ),
@@ -259,8 +249,31 @@ def test_parse_schedule_snapshot_notification_for_true_wrgb_model() -> None:
     assert notification == ScheduleSnapshotNotification(
         firmware_version=23,
         points=(
-            SchedulePoint(hour=8, minute=0, levels={"red": 10, "green": 20, "blue": 30, "white": 40}),
-            SchedulePoint(hour=18, minute=30, levels={"red": 50, "green": 60, "blue": 70, "white": 80}),
+            SchedulePoint(hour=8, minute=0, levels={"red": 10, "green": 10, "blue": 10, "white": 10}),
+            SchedulePoint(hour=18, minute=30, levels={"red": 80, "green": 80, "blue": 80, "white": 80}),
+        ),
+    )
+
+
+def test_parse_captured_schedule_snapshot_notification_for_true_wrgb_model() -> None:
+    """A captured WRGB response decodes its three-byte time and level records."""
+    frame = bytearray.fromhex(
+        "5B 15 30 00 01 FE 01 0C 0B 02 04 04 16 09 00 01 3B 02 04 02 16 00 01 0C 0B "
+        "09 00 00 09 01 05 10 3B 05 11 00 00 11 01 41 15 3B 41 16 00 00 00 00 00 00"
+    )
+
+    notification = parse_notification(frame, WRGB_CHANNELS)
+
+    assert notification == ScheduleSnapshotNotification(
+        firmware_version=21,
+        points=(
+            SchedulePoint(hour=9, minute=0, levels={"red": 0, "green": 0, "blue": 0, "white": 0}),
+            SchedulePoint(hour=9, minute=1, levels={"red": 5, "green": 5, "blue": 5, "white": 5}),
+            SchedulePoint(hour=16, minute=59, levels={"red": 5, "green": 5, "blue": 5, "white": 5}),
+            SchedulePoint(hour=17, minute=0, levels={"red": 0, "green": 0, "blue": 0, "white": 0}),
+            SchedulePoint(hour=17, minute=1, levels={"red": 65, "green": 65, "blue": 65, "white": 65}),
+            SchedulePoint(hour=21, minute=59, levels={"red": 65, "green": 65, "blue": 65, "white": 65}),
+            SchedulePoint(hour=22, minute=0, levels={"red": 0, "green": 0, "blue": 0, "white": 0}),
         ),
     )
 
