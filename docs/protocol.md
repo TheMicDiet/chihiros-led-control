@@ -167,12 +167,24 @@ and set the other two brightness fields to `255`:
 [white_brightness, 255, 255]
 ```
 
-To delete or deactivate a setting, send the same schedule fields with all three
-brightness fields set to `255`:
+To delete or deactivate a setting, send the same schedule metadata with every
+remaining brightness/padding slot set to `255`. Since the parameter payload is
+always 14 bytes, this means eight trailing `0xff` bytes:
 
 ```text
-[255, 255, 255]
+[sunrise hour, sunrise minute, sunset hour, sunset minute, ramp up minutes,
+ weekdays, 255, 255, 255, 255, 255, 255, 255, 255]
 ```
+
+Captured deletion of an everyday `02:30` to `05:10` schedule with a one-minute
+ramp and message ID `0x0017`:
+
+```text
+a5 01 13 00 17 19 02 1e 05 0a 01 7f ff ff ff ff ff ff ff ff 71
+```
+
+Here, `0x13` is the command length, `0x19` is the schedule mode, `0x7f`
+selects every weekday, and `0x71` is the valid XOR checksum.
 
 Only one setting can be configured per day, so settings cannot conflict. There
 is a maximum of 7 settings.
@@ -243,14 +255,30 @@ The old app also handled related legacy `0xb5` frames where runtime is a
 ## Auto Schedule Snapshot Responses
 
 The same startup/status flow can produce a longer old LED `0x5b` notification
-with mode byte `0xfe`. A captured example contained saved auto curve points as
-hour/minute/level triples:
+with mode byte `0xfe`. Saved auto curve points start at offset `25` and use
+hour/minute/level triples regardless of the model's channel count. The level is
+the schedule's common brightness and is exposed under every named RGB or WRGB
+channel by this repository:
 
 ```text
 0d 0f 00  -> 13:15 level 0
 0d 2d 64  -> 13:45 level 100
 15 0f 64  -> 21:15 level 100
 15 2d 00  -> 21:45 level 0
+```
+
+An all-zero triple is an unused schedule slot and is omitted. For example, a
+captured WRGB payload decodes as:
+
+```text
+09 00 00  -> 09:00 level 0
+09 01 05  -> 09:01 level 5
+10 3b 05  -> 16:59 level 5
+11 00 00  -> 17:00 level 0
+11 01 41  -> 17:01 level 65
+15 3b 41  -> 21:59 level 65
+16 00 00  -> 22:00 level 0
+00 00 00  -> unused slot
 ```
 
 Unlike the short runtime response, the captured `0x5b / 0xfe` snapshot did not

@@ -144,6 +144,20 @@ def test_auto_setting_command_accepts_four_channel_brightness() -> None:
     assert command[6:-1] == bytearray([8, 0, 18, 30, 15, 127, 10, 20, 30, 40, 255, 255, 255, 255])
 
 
+def test_delete_auto_setting_command_matches_captured_frame() -> None:
+    """Schedule deletion fills every brightness slot and produces the captured checksum."""
+    command = commands.create_delete_auto_setting_command(
+        (0, 0x17),
+        datetime.time(2, 30),
+        datetime.time(5, 10),
+        1,
+        127,
+        brightness_channels=4,
+    )
+
+    assert command == bytearray.fromhex("A5 01 13 00 17 19 02 1E 05 0A 01 7F FF FF FF FF FF FF FF FF 71")
+
+
 def test_encode_timestamp() -> None:
     """Timestamps are encoded as protocol parameters."""
     timestamp = datetime.datetime(2026, 6, 11, 9, 8, 7)
