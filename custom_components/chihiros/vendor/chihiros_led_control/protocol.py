@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 RESERVED_BYTE = 0x5A
-SCHEDULE_POINT_TIME_BYTES = 2
+SCHEDULE_POINT_SIZE = 3
 SCHEDULE_SNAPSHOT_POINTS_START = 25
 
 
@@ -134,16 +134,14 @@ def parse_notification(
         if color_channels is None:
             return None
         channels = _notification_channels(color_channels)
-        point_size = SCHEDULE_POINT_TIME_BYTES + len(channels)
         points: list[SchedulePoint] = []
-        for index in range(SCHEDULE_SNAPSHOT_POINTS_START, len(data), point_size):
-            point = data[index : index + point_size]
-            if len(point) < point_size:
+        for index in range(SCHEDULE_SNAPSHOT_POINTS_START, len(data), SCHEDULE_POINT_SIZE):
+            point = data[index : index + SCHEDULE_POINT_SIZE]
+            if len(point) < SCHEDULE_POINT_SIZE:
                 break
-            hour = point[0]
-            minute = point[1]
-            levels = dict(zip((color for color, _channel_id in channels), point[2:], strict=True))
-            if hour > 23 or minute > 59 or any(level > 100 for level in levels.values()):
+            hour, minute, level = point
+            levels = {color: level for color, _channel_id in channels}
+            if hour > 23 or minute > 59 or level > 100:
                 continue
             if hour == 0 and minute == 0 and all(level == 0 for level in levels.values()):
                 continue
