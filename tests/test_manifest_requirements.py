@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import json
 import re
-import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PYPROJECT = REPO_ROOT / "pyproject.toml"
 MANIFEST = REPO_ROOT / "custom_components" / "chihiros" / "manifest.json"
-HOME_ASSISTANT_REQUIREMENT_NAMES = {
+HOME_ASSISTANT_PROVIDED_REQUIREMENT_NAMES = {
     "bleak-retry-connector",
 }
 
@@ -21,15 +19,9 @@ def _requirement_name(requirement: str) -> str:
     return name.lower().replace("_", "-")
 
 
-def test_home_assistant_manifest_requirements_match_project_dependencies() -> None:
-    """Home Assistant runtime requirement versions stay aligned with pyproject."""
-    pyproject = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
-    project_dependencies = {
-        _requirement_name(requirement): requirement for requirement in pyproject["project"]["dependencies"]
-    }
-
+def test_manifest_does_not_duplicate_home_assistant_requirements() -> None:
+    """Home Assistant-provided requirements are not pinned by the integration."""
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    manifest_requirements = {_requirement_name(requirement): requirement for requirement in manifest["requirements"]}
+    manifest_requirement_names = {_requirement_name(requirement) for requirement in manifest["requirements"]}
 
-    expected_requirements = {name: project_dependencies[name] for name in HOME_ASSISTANT_REQUIREMENT_NAMES}
-    assert manifest_requirements == expected_requirements
+    assert manifest_requirement_names.isdisjoint(HOME_ASSISTANT_PROVIDED_REQUIREMENT_NAMES)
