@@ -712,6 +712,7 @@ dev = [
     { name = "pyserial" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
     { name = "pytest-homeassistant-custom-component" },
     { name = "ruff" },
     { name = "serialx", extra = ["esphome"] },
@@ -722,12 +723,19 @@ ha-test = [
     { name = "pyserial" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
     { name = "pytest-homeassistant-custom-component" },
     { name = "serialx", extra = ["esphome"] },
+]
+lint = [
+    { name = "doc8" },
+    { name = "pre-commit" },
+    { name = "ruff" },
 ]
 test = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
 ]
 
 [package.metadata]
@@ -752,6 +760,7 @@ dev = [
     { name = "pyserial" },
     { name = "pytest", specifier = "==9.0.3" },
     { name = "pytest-asyncio" },
+    { name = "pytest-cov", specifier = "==7.1.0" },
     { name = "pytest-homeassistant-custom-component", specifier = "==0.13.346" },
     { name = "ruff", specifier = "==0.15.16" },
     { name = "serialx", extras = ["esphome"] },
@@ -762,12 +771,19 @@ ha-test = [
     { name = "pyserial" },
     { name = "pytest", specifier = "==9.0.3" },
     { name = "pytest-asyncio" },
+    { name = "pytest-cov", specifier = "==7.1.0" },
     { name = "pytest-homeassistant-custom-component", specifier = "==0.13.346" },
     { name = "serialx", extras = ["esphome"] },
+]
+lint = [
+    { name = "doc8", specifier = "==1.1.1" },
+    { name = "pre-commit", specifier = "==3.7.1" },
+    { name = "ruff", specifier = "==0.15.16" },
 ]
 test = [
     { name = "pytest", specifier = "==9.0.3" },
     { name = "pytest-asyncio" },
+    { name = "pytest-cov", specifier = "==7.1.0" },
 ]
 
 [[package]]

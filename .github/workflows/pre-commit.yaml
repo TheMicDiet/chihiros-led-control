@@ -1,4 +1,4 @@
-name: pre-commit
+name: Lint
 
 on:
   pull_request:
@@ -8,12 +8,27 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  main:
+  pre-commit:
+    name: Pre-commit checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v4
-    - uses: astral-sh/setup-uv@v8.2.0
-      with:
-        enable-cache: true
-    - run: uvx pre-commit run --all-files
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.14
+      - name: Install lint dependencies
+        run: uv --cache-dir .uv-cache sync --frozen --group lint
+      - name: Run pre-commit checks
+        env:
+          SKIP: sync-vendor-check
+        run: uv --cache-dir .uv-cache run --frozen --group lint pre-commit run --all-files
