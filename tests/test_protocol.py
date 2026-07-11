@@ -188,16 +188,21 @@ def test_parse_runtime_notification() -> None:
     assert notification == RuntimeNotification(firmware_version=23, runtime_minutes=511, raw=bytes(frame))
 
 
-def test_parse_notification_rejects_bad_length_and_checksum() -> None:
-    """Inbound frames must match their declared length and checksum."""
+def test_parse_runtime_notification_accepts_legacy_framing() -> None:
+    """Runtime notifications tolerate unreliable legacy length and checksum bytes."""
     valid = bytearray.fromhex("5b170a00010a01ffffffffff13888c")
     bad_length = bytearray(valid)
     bad_length[2] -= 1
     bad_checksum = bytearray(valid)
     bad_checksum[-1] ^= 1
-    assert parse_notification(bad_length) is None
-    assert parse_notification(bad_checksum) is None
+    assert parse_notification(bad_length) == RuntimeNotification(firmware_version=23, runtime_minutes=511)
+    assert parse_notification(bad_checksum) == RuntimeNotification(firmware_version=23, runtime_minutes=511)
+
+
+def test_parse_notification_rejects_short_or_unknown_frames() -> None:
+    """Inbound frames still require the Chihiros header and mode fields."""
     assert parse_notification(bytes([0x5B, 0, 2, 0, 0, 0, 0])) is None
+    assert parse_notification(bytes([0x00, 0, 3, 0, 0, 0, 0, 0])) is None
 
 
 def test_parse_schedule_snapshot_notification_requires_channel_context() -> None:
