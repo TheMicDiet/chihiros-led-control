@@ -79,9 +79,6 @@ include = [
   "chihiros_led_control*",
 ]
 
-[tool.setuptools.package-data]
-chihiros_led_control = ["py.typed"]
-
 [tool.setuptools_scm]
 
 
