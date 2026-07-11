@@ -43,6 +43,7 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         self.data: dict[str, Any] = {}
         self._device_address = address
         self._auto_mode = False
+        self._closed = False
         self.always_available = always_available
         self._remove_notification_callback = client.add_notification_callback(self._queue_notification)
         self._remove_bluetooth_callback: CALLBACK_TYPE | None = None
@@ -79,6 +80,7 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
 
     def async_close(self) -> None:
         """Remove callbacks held by this coordinator."""
+        self._closed = True
         if self._remove_bluetooth_callback is not None:
             self._remove_bluetooth_callback()
             self._remove_bluetooth_callback = None
@@ -86,11 +88,15 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
 
     def _queue_notification(self, notification: ParsedNotification) -> None:
         """Queue notification handling on the Home Assistant event loop."""
+        if self._closed:
+            return
         self.hass.loop.call_soon_threadsafe(self._async_handle_notification, notification)
 
     @callback
     def _async_handle_notification(self, notification: ParsedNotification) -> None:
         """Store parsed notification data and update entities."""
+        if self._closed:
+            return
         if isinstance(notification, RuntimeNotification):
             self.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
             self.data[ATTR_RUNTIME_MINUTES] = notification.runtime_minutes

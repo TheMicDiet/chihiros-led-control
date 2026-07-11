@@ -49,8 +49,8 @@ WEEKDAY_VALUES = [weekday.value for weekday in WeekdaySelect]
 BRIGHTNESS_VALUE_SCHEMA = vol.All(vol.Coerce(int), vol.Range(min=0, max=100))
 LEVELS_SCHEMA = {str: BRIGHTNESS_VALUE_SCHEMA}
 SCHEDULE_SELECTOR_SCHEMA = {
-    vol.Optional(ATTR_ENTRY_ID): str,
-    vol.Optional(ATTR_ADDRESS): str,
+    vol.Exclusive(ATTR_ENTRY_ID, "device"): vol.All(str, vol.Length(min=1)),
+    vol.Exclusive(ATTR_ADDRESS, "device"): vol.All(str, vol.Length(min=1)),
 }
 SCHEDULE_PERIOD_SCHEMA = {
     vol.Required(ATTR_START): str,

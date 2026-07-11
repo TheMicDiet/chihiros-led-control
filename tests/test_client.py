@@ -187,14 +187,15 @@ def test_notification_handler_stores_and_publishes_schedule_snapshot() -> None:
 
 def test_set_brightness_sends_all_true_wrgb_channels() -> None:
     """Brightness commands can set red, green, blue, and white in one call."""
-    sent_commands: list[bytes] = []
+    sent_commands: list[list[bytes]] = []
 
     async def run() -> None:
         device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test WRGB", (), WRGB_CHANNELS))  # type: ignore[arg-type]
 
         async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
             del retry
-            sent_commands.append(bytes(command))
+            assert isinstance(command, list)
+            sent_commands.append([bytes(item) for item in command])
 
         device._send_command = capture_command  # type: ignore[method-assign]
 
@@ -202,24 +203,27 @@ def test_set_brightness_sends_all_true_wrgb_channels() -> None:
 
     asyncio.run(run())
 
-    assert [command[6:8] for command in sent_commands] == [
-        bytes([0, 10]),
-        bytes([1, 20]),
-        bytes([2, 30]),
-        bytes([3, 40]),
+    assert [[command[6:8] for command in batch] for batch in sent_commands] == [
+        [
+            bytes([0, 10]),
+            bytes([1, 20]),
+            bytes([2, 30]),
+            bytes([3, 40]),
+        ]
     ]
 
 
 def test_set_brightness_accepts_channel_mapping() -> None:
     """Brightness commands can target a named channel."""
-    sent_commands: list[bytes] = []
+    sent_commands: list[list[bytes]] = []
 
     async def run() -> None:
         device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test WRGB", (), WRGB_CHANNELS))  # type: ignore[arg-type]
 
         async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
             del retry
-            sent_commands.append(bytes(command))
+            assert isinstance(command, list)
+            sent_commands.append([bytes(item) for item in command])
 
         device._send_command = capture_command  # type: ignore[method-assign]
 
@@ -227,7 +231,27 @@ def test_set_brightness_accepts_channel_mapping() -> None:
 
     asyncio.run(run())
 
-    assert [command[6:8] for command in sent_commands] == [bytes([3, 40])]
+    assert [[command[6:8] for command in batch] for batch in sent_commands] == [[bytes([3, 40])]]
+
+
+def test_notification_callback_failure_does_not_block_other_subscribers() -> None:
+    """One failing notification subscriber does not prevent later subscribers."""
+    received: list[RuntimeNotification] = []
+
+    async def run() -> None:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+
+        def fail(_notification: RuntimeNotification) -> None:
+            raise RuntimeError("subscriber failed")
+
+        device.add_notification_callback(fail)
+        device.add_notification_callback(received.append)
+        notification = RuntimeNotification(firmware_version=1, runtime_minutes=2, raw=b"test")
+        device._notify_callbacks(notification)  # noqa: SLF001
+
+    asyncio.run(run())
+
+    assert len(received) == 1
 
 
 def test_add_setting_sends_four_channel_brightness() -> None:

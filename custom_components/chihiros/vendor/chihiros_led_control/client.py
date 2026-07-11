@@ -139,19 +139,6 @@ class ChihirosDevice:
             color_id = colors[color]
         return color_id
 
-    async def _set_channel_brightness(
-        self,
-        brightness: int,
-        color: str | int,
-    ) -> None:
-        """Set brightness of one color channel."""
-        color_id = self._color_id(color)
-        if color_id is None:
-            self._logger.warning("Color not supported: `%s`", color)
-            return
-        cmd = commands.create_set_brightness_command(self.get_next_msg_id(), color_id, brightness)
-        await self._send_command(cmd, 3)
-
     def _validate_brightness_levels(self, brightness: Sequence[int]) -> None:
         """Validate brightness levels."""
         if not brightness:
@@ -199,8 +186,12 @@ class ChihirosDevice:
 
     async def set_brightness(self, brightness: int | Sequence[int] | Mapping[str | int, int]) -> None:
         """Set light brightness."""
-        for color_id, brightness_level in self._normalize_brightness(brightness).items():
-            await self._set_channel_brightness(brightness_level, color_id)
+        brightness_by_channel = self._normalize_brightness(brightness)
+        commands_to_send = [
+            commands.create_set_brightness_command(self.get_next_msg_id(), color_id, brightness_level)
+            for color_id, brightness_level in brightness_by_channel.items()
+        ]
+        await self._send_command(commands_to_send, 3)
 
     def _primary_schedule_color(self) -> str:
         """Return the single channel used by plain auto schedules."""
@@ -407,7 +398,10 @@ class ChihirosDevice:
     def _notify_callbacks(self, notification: ParsedNotification) -> None:
         """Notify subscribers about a parsed device notification."""
         for callback in tuple(self._notification_callbacks):
-            callback(notification)
+            try:
+                callback(notification)
+            except Exception:
+                self._logger.exception("Notification callback failed for %s", self.name)
 
     def _disconnected(self, client: BleakClientWithServiceCache) -> None:
         """Handle disconnected callback."""
