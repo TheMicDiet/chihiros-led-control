@@ -7,6 +7,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+pytest.importorskip("homeassistant", reason="Home Assistant test group is not installed")
+
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.chihiros import (
