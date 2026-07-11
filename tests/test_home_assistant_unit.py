@@ -23,6 +23,7 @@ from custom_components.chihiros import (
     ATTR_WEEKDAYS,
     _async_add_schedule_period,
     _async_refresh_status,
+    _async_replace_schedule,
     _brightness_from_service_data,
     _ensure_light_device,
     _parse_schedule_time,
@@ -40,6 +41,27 @@ from custom_components.chihiros.vendor.chihiros_led_control.models import DOSING
 from custom_components.chihiros.vendor.chihiros_led_control.protocol import RuntimeNotification, SchedulePoint
 
 pytestmark = pytest.mark.unit
+
+
+async def test_schedule_replacement_clears_partial_schedule_after_failure() -> None:
+    """A failed period write triggers a cleanup reset and a clear service error."""
+    events: list[str] = []
+
+    class Device:
+        name = "Test light"
+
+        async def reset_settings(self) -> None:
+            events.append("reset")
+
+        async def add_setting(self, *_args: object, **_kwargs: object) -> None:
+            events.append("add")
+            raise RuntimeError("radio lost")
+
+    data = SimpleNamespace(device=Device())
+    period = {ATTR_START: "08:00", ATTR_END: "18:00", ATTR_BRIGHTNESS: 50, ATTR_RAMP_UP_MINUTES: 0}
+    with pytest.raises(HomeAssistantError, match="cannot be restored"):
+        await _async_replace_schedule(data, [period])
+    assert events == ["reset", "add", "reset"]
 
 
 def _data(*, colors: dict[str, int] | None = None, dosing: bool = False) -> SimpleNamespace:

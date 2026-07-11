@@ -46,6 +46,14 @@ SCHEDULE_SNAPSHOT_PREFIX = [
 ]
 
 
+def framed(values: list[int]) -> bytearray:
+    """Add the declared length and checksum used by inbound frames."""
+    frame = bytearray(values)
+    frame[2] = len(frame) - 4
+    frame.append(calculate_checksum(frame) ^ 0xFF)
+    return frame
+
+
 def test_next_message_id_skips_reserved_lower_byte() -> None:
     """Message ids skip reserved lower byte 90."""
     assert next_message_id((0, 89)) == (0, 91)
@@ -125,6 +133,13 @@ def test_manual_dose_command_encoding_large_volume() -> None:
     assert command[6:-1] == bytearray([2, 0, 0, 1, 34])
 
 
+def test_manual_dose_command_preserves_reserved_volume_bytes() -> None:
+    """Dosing frames preserve 0x5A in either volume byte."""
+    for volume_ml, expected in ((9.0, (0, 90)), (25.6, (1, 0)), (34.6, (1, 90))):
+        command = commands.create_manual_dose_command((0, 6), 0, volume_ml)
+        assert tuple(command[-3:-1]) == expected
+
+
 def test_query_status_command_encoding() -> None:
     """Status query commands request runtime/status notifications."""
     assert commands.create_query_status_command((0, 1)) == commands.create_base_auth_command((0, 1))
@@ -173,6 +188,18 @@ def test_parse_runtime_notification() -> None:
     assert notification == RuntimeNotification(firmware_version=23, runtime_minutes=511, raw=bytes(frame))
 
 
+def test_parse_notification_rejects_bad_length_and_checksum() -> None:
+    """Inbound frames must match their declared length and checksum."""
+    valid = bytearray.fromhex("5b170a00010a01ffffffffff13888c")
+    bad_length = bytearray(valid)
+    bad_length[2] -= 1
+    bad_checksum = bytearray(valid)
+    bad_checksum[-1] ^= 1
+    assert parse_notification(bad_length) is None
+    assert parse_notification(bad_checksum) is None
+    assert parse_notification(bytes([0x5B, 0, 2, 0, 0, 0, 0])) is None
+
+
 def test_parse_schedule_snapshot_notification_requires_channel_context() -> None:
     """Schedule snapshot notifications need model channel context."""
     notification = parse_notification(
@@ -207,7 +234,7 @@ def test_parse_schedule_snapshot_notification_requires_channel_context() -> None
 def test_parse_schedule_snapshot_notification_for_single_channel_model() -> None:
     """Single-channel schedule snapshots use the model channel name."""
     notification = parse_notification(
-        bytearray([*SCHEDULE_SNAPSHOT_PREFIX, 0x08, 0x00, 0x32]),
+        framed([*SCHEDULE_SNAPSHOT_PREFIX, 0x08, 0x00, 0x32]),
         WHITE_CHANNELS,
     )
 
@@ -220,7 +247,7 @@ def test_parse_schedule_snapshot_notification_for_single_channel_model() -> None
 def test_parse_schedule_snapshot_notification_for_rgb_model() -> None:
     """RGB schedule snapshots apply each schedule level to all named channels."""
     notification = parse_notification(
-        bytearray(
+        framed(
             [
                 *SCHEDULE_SNAPSHOT_PREFIX,
                 0x08,
@@ -246,7 +273,7 @@ def test_parse_schedule_snapshot_notification_for_rgb_model() -> None:
 def test_parse_schedule_snapshot_notification_for_true_wrgb_model() -> None:
     """True WRGB schedule snapshots apply each schedule level to all named channels."""
     notification = parse_notification(
-        bytearray(
+        framed(
             [
                 *SCHEDULE_SNAPSHOT_PREFIX,
                 0x08,
@@ -271,9 +298,13 @@ def test_parse_schedule_snapshot_notification_for_true_wrgb_model() -> None:
 
 def test_parse_captured_schedule_snapshot_notification_for_true_wrgb_model() -> None:
     """A captured WRGB response decodes its three-byte time and level records."""
-    frame = bytearray.fromhex(
-        "5B 15 30 00 01 FE 01 0C 0B 02 04 04 16 09 00 01 3B 02 04 02 16 00 01 0C 0B "
-        "09 00 00 09 01 05 10 3B 05 11 00 00 11 01 41 15 3B 41 16 00 00 00 00 00 00"
+    frame = framed(
+        list(
+            bytes.fromhex(
+                "5B 15 30 00 01 FE 01 0C 0B 02 04 04 16 09 00 01 3B 02 04 02 16 00 01 0C 0B "
+                "09 00 00 09 01 05 10 3B 05 11 00 00 11 01 41 15 3B 41 16 00 00 00 00 00 00"
+            )
+        )
     )
 
     notification = parse_notification(frame, WRGB_CHANNELS)
@@ -295,7 +326,7 @@ def test_parse_captured_schedule_snapshot_notification_for_true_wrgb_model() -> 
 def test_parse_schedule_snapshot_notification_skips_metadata_prefix() -> None:
     """Schedule snapshots skip status metadata before hour/minute/level data points."""
     notification = parse_notification(
-        bytearray(
+        framed(
             [
                 *SCHEDULE_SNAPSHOT_PREFIX,
                 0x0D,

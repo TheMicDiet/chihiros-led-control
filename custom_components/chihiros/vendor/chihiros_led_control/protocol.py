@@ -121,7 +121,11 @@ def parse_notification(
     color_channels: Mapping[str, int] | None = None,
 ) -> ParsedNotification | None:
     """Parse known Chihiros notification payloads."""
-    if len(data) < 7 or data[0] != 0x5B:
+    if len(data) < 8 or data[0] != 0x5B:
+        return None
+    if data[2] + 5 != len(data):
+        return None
+    if calculate_checksum(data[:-1]) ^ 0xFF != data[-1]:
         return None
 
     firmware_version = data[1]

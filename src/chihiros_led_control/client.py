@@ -20,7 +20,6 @@ from bleak_retry_connector import (
     BleakError,  # type: ignore
     BleakNotFoundError,
     establish_connection,
-    retry_bluetooth_connection_error,
 )
 
 from . import commands
@@ -66,6 +65,7 @@ class ChihirosDevice:
         self._write_char: BleakGATTCharacteristic | None = None
         self._connect_lock: asyncio.Lock = asyncio.Lock()
         self._expected_disconnect = False
+        self._unexpected_disconnect = asyncio.Event()
         self._msg_id = next_message_id()
         self._notification_callbacks: set[NotificationCallback] = set()
         self.last_runtime_notification: RuntimeNotification | None = None
@@ -286,79 +286,42 @@ class ChihirosDevice:
         notification_wait: float = COMMAND_NOTIFICATION_WAIT,
     ) -> None:
         """Send commands to the device."""
-        try:
-            await self._ensure_connected()
-            commands_to_send: list[bytes]
-            if isinstance(command, list):
-                commands_to_send = command
-            else:
-                commands_to_send = [bytes(command)]
-            await self._send_command_while_connected(commands_to_send, retry)
-            if notification_wait:
-                await asyncio.sleep(notification_wait)
-        finally:
-            await self._execute_disconnect()
-
-    async def _send_command_while_connected(self, commands_to_send: list[bytes], retry: int | None = None) -> None:
-        """Send commands while connected."""
-        self._logger.debug(
-            "%s: Sending commands %s",
-            self.name,
-            [command.hex() for command in commands_to_send],
-        )
+        commands_to_send = command if isinstance(command, list) else [bytes(command)]
+        attempts = DEFAULT_ATTEMPTS if retry is None else retry
+        if attempts < 1:
+            raise ValueError("retry must be at least 1")
+        self._logger.debug("%s: Sending commands %s", self.name, [item.hex() for item in commands_to_send])
         if self._operation_lock.locked():
-            self._logger.debug(
-                "%s: Operation already in progress, waiting; RSSI: %s",
-                self.name,
-                self.rssi,
-            )
+            self._logger.debug("%s: Operation already in progress, waiting; RSSI: %s", self.name, self.rssi)
         async with self._operation_lock:
+            await self._send_command_locked(commands_to_send, attempts, notification_wait)
+
+    async def _send_command_locked(
+        self, commands_to_send: list[bytes], attempts: int, notification_wait: float
+    ) -> None:
+        """Run complete connection transactions, reconnecting for each retry."""
+        for attempt in range(1, attempts + 1):
             try:
-                await self._send_command_locked(commands_to_send)
+                await self._ensure_connected()
+                await self._execute_command_locked(commands_to_send)
+                if notification_wait:
+                    await asyncio.sleep(notification_wait)
                 return
-            except BleakNotFoundError:
-                self._logger.error(
-                    "%s: device not found, no longer in range, or poor RSSI: %s",
-                    self.name,
-                    self.rssi,
-                    exc_info=True,
-                )
+            except CharacteristicMissingError:
+                self._logger.debug("%s: characteristic missing; RSSI: %s", self.name, self.rssi, exc_info=True)
                 raise
-            except CharacteristicMissingError as ex:
+            except BLEAK_EXCEPTIONS as ex:
+                if isinstance(ex, BleakNotFoundError):
+                    self._logger.error("%s: device not found or poor RSSI: %s", self.name, self.rssi, exc_info=True)
                 self._logger.debug(
-                    "%s: characteristic missing: %s; RSSI: %s",
-                    self.name,
-                    ex,
-                    self.rssi,
-                    exc_info=True,
+                    "%s: communication attempt %s/%s failed: %s", self.name, attempt, attempts, ex, exc_info=True
                 )
-                raise
-            except BLEAK_EXCEPTIONS:
-                self._logger.debug("%s: communication failed", self.name, exc_info=True)
-                raise
-
-        raise RuntimeError("Unreachable")
-
-    @retry_bluetooth_connection_error(DEFAULT_ATTEMPTS)
-    async def _send_command_locked(self, commands_to_send: list[bytes]) -> None:
-        """Send commands and retry transient Bluetooth failures."""
-        try:
-            await self._execute_command_locked(commands_to_send)
-        except BleakDBusError as ex:
-            await asyncio.sleep(BLEAK_BACKOFF_TIME)
-            self._logger.debug(
-                "%s: RSSI: %s; backing off %ss; disconnecting due to error: %s",
-                self.name,
-                self.rssi,
-                BLEAK_BACKOFF_TIME,
-                ex,
-            )
-            await self._execute_disconnect()
-            raise
-        except BleakError as ex:
-            self._logger.debug("%s: RSSI: %s; disconnecting due to error: %s", self.name, self.rssi, ex)
-            await self._execute_disconnect()
-            raise
+                if attempt == attempts:
+                    raise
+                if isinstance(ex, BleakDBusError):
+                    await asyncio.sleep(BLEAK_BACKOFF_TIME)
+            finally:
+                await self._execute_disconnect()
 
     async def _execute_command_locked(self, commands_to_send: list[bytes]) -> None:
         """Write commands to the BLE characteristic."""
@@ -369,6 +332,8 @@ class ChihirosDevice:
             raise CharacteristicMissingError("Write characteristic missing")
         for command in commands_to_send:
             await self._client.write_gatt_char(self._write_char, command, False)
+            if self._unexpected_disconnect.is_set():
+                raise BleakError("Device unexpectedly disconnected during command batch")
 
     def _notification_handler(self, _sender: BleakGATTCharacteristic, data: bytearray) -> None:
         """Handle notification responses."""
@@ -413,6 +378,7 @@ class ChihirosDevice:
             self.name,
             self.rssi,
         )
+        self._unexpected_disconnect.set()
 
     def _resolve_characteristics(self, services: BleakGATTServiceCollection) -> bool:
         """Resolve UART characteristics."""
@@ -442,6 +408,7 @@ class ChihirosDevice:
                 self._reset_disconnect_timer()
                 return
             self._logger.debug("%s: Connecting; RSSI: %s", self.name, self.rssi)
+            self._unexpected_disconnect.clear()
             client = await establish_connection(
                 BleakClientWithServiceCache,
                 self._ble_device,
@@ -533,7 +500,10 @@ class ChihirosDevice:
                 await client.stop_notify(read_char)
             except BleakError:
                 self._logger.debug("%s: Failed to stop notifications", self.name, exc_info=True)
-        await client.disconnect()
+        try:
+            await client.disconnect()
+        except BleakError:
+            self._logger.debug("%s: Failed to disconnect", self.name, exc_info=True)
 
 
 class ChihirosDosingPump(ChihirosDevice):

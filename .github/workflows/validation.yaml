@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test-library:
-    name: Library tests
+  pre-commit:
+    name: Pre-commit checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -27,6 +27,29 @@ jobs:
           enable-cache: true
       - name: Set up Python
         run: uv python install 3.14
+      - name: Install lint dependencies
+        run: uv --cache-dir .uv-cache sync --frozen --group lint
+      - name: Run pre-commit checks
+        env:
+          SKIP: sync-vendor-check
+        run: uv --cache-dir .uv-cache run --frozen --group lint pre-commit run --all-files
+
+  test-library:
+    name: Library tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python-version: ["3.13.2", "3.14"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install ${{ matrix.python-version }}
       - name: Install test dependencies
         run: uv --cache-dir .uv-cache sync --frozen --group test
       - name: Run library tests with coverage
@@ -42,7 +65,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-library
+          name: coverage-library-${{ matrix.python-version }}
           path: coverage-library.xml
           if-no-files-found: ignore
 

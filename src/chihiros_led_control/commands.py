@@ -45,7 +45,7 @@ def create_manual_dose_command(msg_id: tuple[int, int], pump_idx: int, volume_ml
     if pump_idx < 0 or pump_idx > 3:
         raise ValueError("Pump index must be between 0 and 3")
     high, low = split_dose_volume_ml(volume_ml)
-    return create_command_encoding(165, 27, msg_id, [pump_idx, 0, 0, high, low])
+    return create_command_encoding(165, 27, msg_id, [pump_idx, 0, 0, high, low], avoid_reserved_byte=False)
 
 
 def create_set_time_command(msg_id: tuple[int, int], timestamp: datetime.datetime | None = None) -> bytearray:

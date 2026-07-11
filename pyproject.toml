@@ -21,13 +21,10 @@ classifiers = [
 ]
 keywords = ["chihiros", "bluetooth", "lib"]
 
-requires-python = ">=3.14.2"
+requires-python = ">=3.13.2"
 dependencies = [
     "bleak>=2",
     "bleak-retry-connector==4.6.1",
-    "click<8.2",
-    "rich==13.9.4",
-    "typer==0.15.2",
 ]
 
 [project.optional-dependencies]
@@ -39,9 +36,12 @@ cli = [
 
 [dependency-groups]
 test = [
-    "pytest==9.0.3",
+    "click<8.2",
+    "pytest==9.0.0",
     "pytest-asyncio",
-    "pytest-cov==7.1.0",
+    "pytest-cov==7.0.0",
+    "rich==13.9.4",
+    "typer==0.15.2",
 ]
 dev = [
     {include-group = "ha-test"},
@@ -57,7 +57,7 @@ ha-test = [
     "aiousbwatcher",
     "homeassistant",
     "pyserial",
-    "pytest-homeassistant-custom-component==0.13.346",
+    "pytest-homeassistant-custom-component==0.13.299",
     "serialx[esphome]",
 ]
 
@@ -78,6 +78,9 @@ where = ["src"]
 include = [
   "chihiros_led_control*",
 ]
+
+[tool.setuptools.package-data]
+chihiros_led_control = ["py.typed"]
 
 [tool.setuptools_scm]
 
