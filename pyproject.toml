@@ -21,13 +21,10 @@ classifiers = [
 ]
 keywords = ["chihiros", "bluetooth", "lib"]
 
-requires-python = ">=3.14.2"
+requires-python = ">=3.13.2"
 dependencies = [
     "bleak>=2",
     "bleak-retry-connector==4.6.1",
-    "click<8.2",
-    "rich==13.9.4",
-    "typer==0.15.2",
 ]
 
 [project.optional-dependencies]
@@ -39,11 +36,18 @@ cli = [
 
 [dependency-groups]
 test = [
-    "pytest==9.0.3",
+    "click<8.2",
+    "pytest==9.0.0",
     "pytest-asyncio",
+    "pytest-cov==7.0.0",
+    "rich==13.9.4",
+    "typer==0.15.2",
 ]
 dev = [
-    {include-group = "test"},
+    {include-group = "ha-test"},
+    {include-group = "lint"},
+]
+lint = [
     "doc8==1.1.1",
     "pre-commit==3.7.1",
     "ruff==0.15.16",
@@ -53,6 +57,7 @@ ha-test = [
     "aiousbwatcher",
     "homeassistant",
     "pyserial",
+    "pytest-homeassistant-custom-component==0.13.299",
     "serialx[esphome]",
 ]
 
@@ -84,12 +89,23 @@ chihirosctl = "chihiros_led_control.cli:app"
 default-groups = []
 
 [tool.pytest.ini_options]
-addopts = [
-    "-p",
-    "no:homeassistant",
-]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["."]
+markers = [
+    "integration: tests that load the integration through Home Assistant",
+    "unit: isolated tests that do not load a Home Assistant config entry",
+]
+
+[tool.coverage.run]
+branch = true
+omit = [
+    "custom_components/chihiros/vendor/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
 
 [tool.ruff]
 line-length = 120

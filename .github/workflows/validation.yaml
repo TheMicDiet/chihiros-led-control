@@ -1,52 +1,132 @@
 name: HA Validation
 
-permissions:
-  contents: read
-
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test-library:
-    runs-on: "ubuntu-latest"
+  pre-commit:
+    name: Pre-commit checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: "actions/checkout@v4"
+        uses: actions/checkout@v4
       - name: Set up uv
-        uses: "astral-sh/setup-uv@v8.2.0"
+        uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
       - name: Set up Python
         run: uv python install 3.14
-      - name: Install test dependencies
-        run: uv sync --group test
-      - name: Run tests
-        run: uv run --group test pytest
+      - name: Install lint dependencies
+        run: uv --cache-dir .uv-cache sync --frozen --group lint
+      - name: Run pre-commit checks
+        env:
+          SKIP: sync-vendor-check
+        run: uv --cache-dir .uv-cache run --frozen --group lint pre-commit run --all-files
 
-  check-vendor-sync:
-    runs-on: "ubuntu-latest"
+  test-library:
+    name: Library tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python-version: ["3.13.2", "3.14"]
     steps:
       - name: Checkout repository
-        uses: "actions/checkout@v4"
+        uses: actions/checkout@v4
       - name: Set up uv
-        uses: "astral-sh/setup-uv@v8.2.0"
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install ${{ matrix.python-version }}
+      - name: Install test dependencies
+        run: uv --cache-dir .uv-cache sync --frozen --group test
+      - name: Run library tests with coverage
+        run: >-
+          uv --cache-dir .uv-cache run --frozen --group test pytest
+          --ignore=tests/test_home_assistant_integration.py
+          --ignore=tests/test_home_assistant_unit.py
+          --cov=chihiros_led_control
+          --cov-report=term-missing
+          --cov-report=xml:coverage-library.xml
+          --cov-fail-under=68
+      - name: Upload library coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-library-${{ matrix.python-version }}
+          path: coverage-library.xml
+          if-no-files-found: ignore
+
+  test-home-assistant:
+    name: Home Assistant tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.14
+      - name: Install Home Assistant test dependencies
+        run: uv --cache-dir .uv-cache sync --frozen --group ha-test
+      - name: Run Home Assistant tests with coverage
+        run: >-
+          uv --cache-dir .uv-cache run --frozen --group ha-test pytest
+          tests/test_home_assistant_unit.py
+          tests/test_home_assistant_integration.py
+          --cov=custom_components/chihiros
+          --cov-report=term-missing
+          --cov-report=xml:coverage-home-assistant.xml
+          --cov-fail-under=75
+      - name: Upload Home Assistant coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-home-assistant
+          path: coverage-home-assistant.xml
+          if-no-files-found: ignore
+
+  check-vendor-sync:
+    name: Vendored library is current
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
       - name: Set up Python
         run: uv python install 3.14
       - name: Check vendored library
-        run: uv run --group test python scripts/sync_vendor.py --check
+        run: uv --cache-dir .uv-cache run --no-project python scripts/sync_vendor.py --check
 
   validate-hacs:
-    runs-on: "ubuntu-latest"
+    name: HACS and Hassfest validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: "actions/checkout@v4"
+        uses: actions/checkout@v4
       - name: HACS validation
-        uses: "hacs/action@main"
+        uses: hacs/action@main
         with:
-          category: "integration"
+          category: integration
       - name: Hassfest validation
-        uses: "home-assistant/actions/hassfest@master"
+        uses: home-assistant/actions/hassfest@master

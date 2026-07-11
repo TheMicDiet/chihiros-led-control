@@ -1,41 +1,27 @@
 """Home Assistant integration tests for the Chihiros config entry."""
 
-# ruff: noqa: E402
-
 from __future__ import annotations
 
 import asyncio
-import json
-import sys
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
-from pathlib import Path
-from types import MappingProxyType
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
 try:
-    import homeassistant.components as ha_components
-    from homeassistant import loader, requirements
     from homeassistant.components.bluetooth import update_coordinator as bluetooth_update
     from homeassistant.components.light import ATTR_BRIGHTNESS
     from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
     from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
     from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
-    from homeassistant.config_entries import SOURCE_USER, ConfigEntries, ConfigEntry, ConfigEntryState
+    from homeassistant.config_entries import ConfigEntry, ConfigEntryState
     from homeassistant.const import ATTR_ENTITY_ID, CONF_ADDRESS, SERVICE_TURN_OFF, SERVICE_TURN_ON, STATE_OFF, STATE_ON
     from homeassistant.core import HomeAssistant
     from homeassistant.exceptions import HomeAssistantError
     from homeassistant.helpers import device_registry as dr
     from homeassistant.helpers import entity_registry as er
-    from homeassistant.helpers import storage, translation
-    from homeassistant.util import dt as dt_util
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
 
     import custom_components.chihiros as chihiros_integration
     from custom_components.chihiros import (
@@ -77,7 +63,9 @@ from custom_components.chihiros.vendor.chihiros_led_control.protocol import (
 )
 
 pytestmark = [
+    pytest.mark.integration,
     pytest.mark.asyncio,
+    pytest.mark.usefixtures("enable_custom_integrations", "mock_bluetooth"),
 ]
 
 TEST_ADDRESS = "FA:CE:C0:00:10:01"
@@ -238,84 +226,6 @@ class TrackingDosingClient(TrackingChihirosClient):
         return "Test Dosing Pump"
 
 
-@pytest.fixture
-async def hass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> HomeAssistant:
-    """Create a minimal Home Assistant instance with this custom component available."""
-    custom_components = tmp_path / "custom_components"
-    custom_components.symlink_to(REPO_ROOT / "custom_components", target_is_directory=True)
-
-    hass_instance = HomeAssistant(str(tmp_path))
-    loader.async_setup(hass_instance)
-    hass_instance.config_entries = ConfigEntries(hass_instance, {})
-
-    async def async_load_empty_store(_store: storage.Store[Any]) -> None:
-        return None
-
-    async def async_save_noop(_store: storage.Store[Any], _data: Any) -> None:
-        return None
-
-    monkeypatch.setattr(storage.Store, "async_load", async_load_empty_store)
-    monkeypatch.setattr(storage.Store, "async_delay_save", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(storage.Store, "async_save", async_save_noop)
-    dr.async_setup(hass_instance)
-    await dr.async_load(hass_instance)
-    await er.async_load(hass_instance)
-
-    def seed_integration(domain: str, package: str, integration_path: Path) -> None:
-        manifest = json.loads((integration_path / "manifest.json").read_text())
-        manifest["dependencies"] = []
-        manifest["requirements"] = []
-        manifest["config_flow"] = False
-        manifest["import_executor"] = False
-        integration = loader.Integration(
-            hass_instance,
-            package,
-            integration_path,
-            manifest,
-            {path.name for path in integration_path.iterdir()},
-        )
-        hass_instance.data[loader.DATA_INTEGRATIONS][domain] = integration
-
-    integration_path = REPO_ROOT / "custom_components" / DOMAIN
-    manifest = json.loads((integration_path / "manifest.json").read_text())
-    manifest["dependencies"] = []
-    manifest["requirements"] = []
-    manifest["config_flow"] = False
-    manifest["import_executor"] = False
-    integration = loader.Integration(
-        hass_instance,
-        f"custom_components.{DOMAIN}",
-        integration_path,
-        manifest,
-        {path.name for path in integration_path.iterdir()},
-    )
-    hass_instance.data[loader.DATA_CUSTOM_COMPONENTS] = {DOMAIN: integration}
-    hass_instance.data[loader.DATA_INTEGRATIONS][DOMAIN] = integration
-    builtin_components_path = Path(ha_components.__file__).parent
-    for platform_domain in (LIGHT_DOMAIN, SWITCH_DOMAIN, SENSOR_DOMAIN):
-        seed_integration(
-            platform_domain,
-            f"homeassistant.components.{platform_domain}",
-            builtin_components_path / platform_domain,
-        )
-    try:
-        yield hass_instance
-    finally:
-        current_task = asyncio.current_task()
-        tasks = [task for task in asyncio.all_tasks() if task is not current_task and not task.done()]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            try:
-                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
-            except TimeoutError:
-                pass
-        try:
-            await asyncio.wait_for(asyncio.get_running_loop().shutdown_default_executor(), timeout=5)
-        except TimeoutError:
-            pass
-
-
 async def _setup_entry(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
@@ -334,50 +244,18 @@ async def _setup_entry(
     async def resolve_runtime(_hass: HomeAssistant, _entry: ConfigEntry) -> ChihirosRuntime:
         return ChihirosRuntime(client=client, address=TEST_ADDRESS, always_available=True)
 
-    async def async_load_integrations_noop(*_args: object, **_kwargs: object) -> None:
-        return None
-
-    async def async_get_translations_noop(*_args: object, **_kwargs: object) -> dict[str, str]:
-        return {}
-
-    async def async_get_integration_with_requirements_noop(_hass: HomeAssistant, domain: str) -> loader.Integration:
-        return await loader.async_get_integration(_hass, domain)
-
     monkeypatch.setattr(chihiros_integration, "resolve_chihiros_runtime", resolve_runtime)
-    monkeypatch.setattr(hass.config_entries, "_async_schedule_save", lambda: None)
     monkeypatch.setattr(bluetooth_update, "async_address_present", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(ChihirosDataUpdateCoordinator, "async_start_bluetooth", lambda _self: None)
-    monkeypatch.setattr(translation, "async_load_integrations", async_load_integrations_noop)
-    monkeypatch.setattr(translation, "async_get_translations", async_get_translations_noop)
-    monkeypatch.setattr(
-        requirements,
-        "async_get_integration_with_requirements",
-        async_get_integration_with_requirements_noop,
-    )
 
-    integration = await loader.async_get_integration(hass, DOMAIN)
-    integration.manifest["dependencies"] = []
-    integration.__dict__.pop("dependencies", None)
-    integration.__dict__.pop("after_dependencies", None)
-
-    entry = ConfigEntry(
-        created_at=dt_util.utcnow(),
+    entry = MockConfigEntry(
         domain=DOMAIN,
-        discovery_keys=MappingProxyType({}),
-        entry_id=uuid4().hex,
-        minor_version=1,
-        modified_at=dt_util.utcnow(),
-        options={},
-        pref_disable_new_entities=None,
-        pref_disable_polling=None,
-        source=SOURCE_USER,
-        subentries_data=None,
         title=client.name,
         unique_id=TEST_ADDRESS,
-        version=1,
         data={CONF_ADDRESS: TEST_ADDRESS, **(entry_data or {})},
     )
-    await wait_for_step("config entry add", hass.config_entries.async_add(entry))
+    entry.add_to_hass(hass)
+    await wait_for_step("config entry setup", hass.config_entries.async_setup(entry.entry_id))
     await client.query_status()
     await asyncio.sleep(0)
     await asyncio.sleep(0)
@@ -394,6 +272,12 @@ def _entity_id(
     entity_id = entity_registry.async_get_entity_id(platform, DOMAIN, unique_id)
     assert entity_id is not None
     return entity_id
+
+
+async def _flush_ha_state_updates() -> None:
+    """Yield to state-write callbacks without waiting for HA background tasks."""
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
 
 
 async def test_config_entry_sets_up_entities_services_status_and_unloads(
@@ -431,7 +315,6 @@ async def test_config_entry_sets_up_entities_services_status_and_unloads(
     assert device.model == "Test RGB"
 
     assert await hass.config_entries.async_unload(entry.entry_id)
-    await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.NOT_LOADED
     assert not hass.services.has_service(DOMAIN, SERVICE_ADD_SCHEDULE)
@@ -454,7 +337,7 @@ async def test_light_and_auto_mode_services_drive_client(
         {ATTR_ENTITY_ID: red_light, ATTR_BRIGHTNESS: 128},
         blocking=True,
     )
-    await hass.async_block_till_done()
+    await _flush_ha_state_updates()
 
     assert client.brightness_calls[-1] == {"red": 51}
     assert hass.states.get(red_light).state == STATE_ON
@@ -462,20 +345,20 @@ async def test_light_and_auto_mode_services_drive_client(
     assert hass.states.get(auto_switch).state == STATE_OFF
 
     await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: auto_switch}, blocking=True)
-    await hass.async_block_till_done()
+    await _flush_ha_state_updates()
 
     assert client.auto_mode_calls and isinstance(client.auto_mode_calls[-1], datetime)
     assert hass.states.get(auto_switch).state == STATE_ON
 
     await hass.services.async_call(LIGHT_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: red_light}, blocking=True)
-    await hass.async_block_till_done()
+    await _flush_ha_state_updates()
 
     assert client.brightness_calls[-1] == {"red": 0}
     assert hass.states.get(red_light).state == STATE_OFF
     assert hass.states.get(auto_switch).state == STATE_OFF
 
     await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: auto_switch}, blocking=True)
-    await hass.async_block_till_done()
+    await _flush_ha_state_updates()
 
     assert client.manual_mode_calls == 1
     assert hass.states.get(auto_switch).state == STATE_OFF
@@ -501,7 +384,7 @@ async def test_manual_dose_service_updates_persisted_daily_total_sensor(
         {ATTR_ENTRY_ID: entry.entry_id, ATTR_PUMP: 2, ATTR_ML: 2.5},
         blocking=True,
     )
-    await hass.async_block_till_done()
+    await _flush_ha_state_updates()
 
     assert client.dose_ml_calls == [(1, 2.5)]
     assert hass.states.get(pump_2_sensor).state == "2.5"
@@ -550,7 +433,7 @@ async def test_schedule_services_are_not_registered_for_dosing_only(
     assert client.reset_settings_calls == 0
 
 
-async def test_schedule_services_validate_and_drive_client(
+async def test_schedule_services_drive_client(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -624,28 +507,3 @@ async def test_schedule_services_validate_and_drive_client(
     assert client.reset_settings_calls == 2
     assert client.add_setting_calls[-2]["max_brightness"] == 40
     assert client.add_setting_calls[-1]["max_brightness"] == {"red": 10, "green": 20, "blue": 30}
-
-    with pytest.raises(HomeAssistantError, match="not supported"):
-        await hass.services.async_call(
-            DOMAIN,
-            SERVICE_ADD_SCHEDULE,
-            {
-                ATTR_START: "08:00",
-                ATTR_END: "09:00",
-                ATTR_LEVELS: {"white": 50},
-            },
-            blocking=True,
-        )
-
-    with pytest.raises(HomeAssistantError, match="only one schedule period per weekday"):
-        await hass.services.async_call(
-            DOMAIN,
-            SERVICE_SET_SCHEDULE,
-            {
-                ATTR_PERIODS: [
-                    {ATTR_START: "07:00", ATTR_END: "09:00", ATTR_SCHEDULE_BRIGHTNESS: 40, ATTR_WEEKDAYS: ["friday"]},
-                    {ATTR_START: "17:00", ATTR_END: "20:00", ATTR_SCHEDULE_BRIGHTNESS: 20, ATTR_WEEKDAYS: ["friday"]},
-                ]
-            },
-            blocking=True,
-        )

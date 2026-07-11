@@ -121,6 +121,10 @@ def parse_notification(
     color_channels: Mapping[str, int] | None = None,
 ) -> ParsedNotification | None:
     """Parse known Chihiros notification payloads."""
+    # Notification framing differs between device generations. Some devices do
+    # not provide a reliable declared length or trailing checksum, so parse the
+    # known header and mode fields defensively instead of rejecting the entire
+    # diagnostic payload.
     if len(data) < 7 or data[0] != 0x5B:
         return None
 
