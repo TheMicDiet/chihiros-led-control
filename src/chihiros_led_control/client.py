@@ -516,4 +516,6 @@ class ChihirosDosingPump(ChihirosDevice):
             commands.create_dose_auth_2_command(self.get_next_msg_id()),
             commands.create_manual_dose_command(self.get_next_msg_id(), pump_idx, volume_ml),
         ]
-        await self._send_command(commands_to_send, 3)
+        # A disconnect after the final write is ambiguous: the pump may already
+        # have accepted the dose. Never replay this non-idempotent transaction.
+        await self._send_command(commands_to_send, retry=1)

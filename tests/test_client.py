@@ -104,14 +104,15 @@ def test_query_status_sends_runtime_status_query() -> None:
 def test_dosing_pump_manual_dose_sends_auth_and_dose_batch() -> None:
     """Manual dosing sends dose auth frames before the one-shot dose command."""
     sent_batches: list[list[bytes]] = []
+    retry_attempts: list[int | None] = []
 
     async def run() -> None:
         device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
 
         async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del retry
             assert isinstance(command, list)
             sent_batches.append([bytes(item) for item in command])
+            retry_attempts.append(retry)
 
         device._send_command = capture_command  # type: ignore[method-assign]
 
@@ -121,6 +122,7 @@ def test_dosing_pump_manual_dose_sends_auth_and_dose_batch() -> None:
 
     assert [command[5:7] for command in sent_batches[0]] == [bytes([4, 4]), bytes([4, 5]), bytes([27, 1])]
     assert sent_batches[0][2][6:-1] == bytes([1, 0, 0, 0, 20])
+    assert retry_attempts == [1]
 
 
 def test_send_command_disconnects_after_command_batch() -> None:
