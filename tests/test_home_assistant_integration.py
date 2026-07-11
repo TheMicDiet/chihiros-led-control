@@ -5,14 +5,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
@@ -21,23 +18,18 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 try:
-    import homeassistant.components as ha_components
-    from homeassistant import loader, requirements
     from homeassistant.components.bluetooth import update_coordinator as bluetooth_update
-    from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN
     from homeassistant.components.light import ATTR_BRIGHTNESS
     from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
-    from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
     from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
     from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
-    from homeassistant.config_entries import SOURCE_USER, ConfigEntries, ConfigEntry, ConfigEntryState
+    from homeassistant.config_entries import ConfigEntry, ConfigEntryState
     from homeassistant.const import ATTR_ENTITY_ID, CONF_ADDRESS, SERVICE_TURN_OFF, SERVICE_TURN_ON, STATE_OFF, STATE_ON
     from homeassistant.core import HomeAssistant
     from homeassistant.exceptions import HomeAssistantError
     from homeassistant.helpers import device_registry as dr
     from homeassistant.helpers import entity_registry as er
-    from homeassistant.helpers import storage, translation
-    from homeassistant.util import dt as dt_util
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
 
     import custom_components.chihiros as chihiros_integration
     from custom_components.chihiros import (
@@ -80,6 +72,7 @@ from custom_components.chihiros.vendor.chihiros_led_control.protocol import (
 
 pytestmark = [
     pytest.mark.asyncio,
+    pytest.mark.usefixtures("enable_custom_integrations", "mock_bluetooth"),
 ]
 
 TEST_ADDRESS = "FA:CE:C0:00:10:01"
@@ -240,81 +233,6 @@ class TrackingDosingClient(TrackingChihirosClient):
         return "Test Dosing Pump"
 
 
-@pytest.fixture
-async def hass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> HomeAssistant:
-    """Create a minimal Home Assistant instance with this custom component available."""
-    hass_instance = HomeAssistant(str(tmp_path))
-
-    async def async_add_executor_job_inline(target: Callable[..., Any], *args: Any) -> Any:
-        return target(*args)
-
-    monkeypatch.setattr(hass_instance, "async_add_executor_job", async_add_executor_job_inline)
-    loader.async_setup(hass_instance)
-    hass_instance.config_entries = ConfigEntries(hass_instance, {})
-
-    async def async_load_empty_store(_store: storage.Store[Any]) -> None:
-        return None
-
-    async def async_save_noop(_store: storage.Store[Any], _data: Any) -> None:
-        return None
-
-    monkeypatch.setattr(storage.Store, "async_load", async_load_empty_store)
-    monkeypatch.setattr(storage.Store, "async_delay_save", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(storage.Store, "async_save", async_save_noop)
-    dr.async_setup(hass_instance)
-    await dr.async_load(hass_instance)
-    await er.async_load(hass_instance)
-
-    def seed_integration(domain: str, package: str, integration_path: Path) -> None:
-        manifest = json.loads((integration_path / "manifest.json").read_text())
-        manifest["dependencies"] = []
-        manifest["requirements"] = []
-        manifest["config_flow"] = False
-        manifest["import_executor"] = False
-        integration = loader.Integration(
-            hass_instance,
-            package,
-            integration_path,
-            manifest,
-            {path.name for path in integration_path.iterdir()},
-        )
-        hass_instance.data[loader.DATA_INTEGRATIONS][domain] = integration
-
-    integration_path = REPO_ROOT / "custom_components" / DOMAIN
-    manifest = json.loads((integration_path / "manifest.json").read_text())
-    manifest["dependencies"] = []
-    manifest["requirements"] = []
-    manifest["config_flow"] = False
-    manifest["import_executor"] = False
-    integration = loader.Integration(
-        hass_instance,
-        f"custom_components.{DOMAIN}",
-        integration_path,
-        manifest,
-        {path.name for path in integration_path.iterdir()},
-    )
-    hass_instance.data[loader.DATA_CUSTOM_COMPONENTS] = {DOMAIN: integration}
-    hass_instance.data[loader.DATA_INTEGRATIONS][DOMAIN] = integration
-    builtin_components_path = Path(ha_components.__file__).parent
-    for platform_domain in (LIGHT_DOMAIN, SWITCH_DOMAIN, SENSOR_DOMAIN, NUMBER_DOMAIN, BUTTON_DOMAIN):
-        seed_integration(
-            platform_domain,
-            f"homeassistant.components.{platform_domain}",
-            builtin_components_path / platform_domain,
-        )
-    try:
-        yield hass_instance
-    finally:
-        tasks = [
-            task
-            for task in hass_instance._tasks | hass_instance._background_tasks  # noqa: SLF001
-            if not task.done()
-        ]
-        for task in tasks:
-            task.cancel()
-        await asyncio.sleep(0)
-
-
 async def _setup_entry(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
@@ -333,50 +251,18 @@ async def _setup_entry(
     async def resolve_runtime(_hass: HomeAssistant, _entry: ConfigEntry) -> ChihirosRuntime:
         return ChihirosRuntime(client=client, address=TEST_ADDRESS, always_available=True)
 
-    async def async_load_integrations_noop(*_args: object, **_kwargs: object) -> None:
-        return None
-
-    async def async_get_translations_noop(*_args: object, **_kwargs: object) -> dict[str, str]:
-        return {}
-
-    async def async_get_integration_with_requirements_noop(_hass: HomeAssistant, domain: str) -> loader.Integration:
-        return await loader.async_get_integration(_hass, domain)
-
     monkeypatch.setattr(chihiros_integration, "resolve_chihiros_runtime", resolve_runtime)
-    monkeypatch.setattr(hass.config_entries, "_async_schedule_save", lambda: None)
     monkeypatch.setattr(bluetooth_update, "async_address_present", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(ChihirosDataUpdateCoordinator, "async_start_bluetooth", lambda _self: None)
-    monkeypatch.setattr(translation, "async_load_integrations", async_load_integrations_noop)
-    monkeypatch.setattr(translation, "async_get_translations", async_get_translations_noop)
-    monkeypatch.setattr(
-        requirements,
-        "async_get_integration_with_requirements",
-        async_get_integration_with_requirements_noop,
-    )
 
-    integration = await loader.async_get_integration(hass, DOMAIN)
-    integration.manifest["dependencies"] = []
-    integration.__dict__.pop("dependencies", None)
-    integration.__dict__.pop("after_dependencies", None)
-
-    entry = ConfigEntry(
-        created_at=dt_util.utcnow(),
+    entry = MockConfigEntry(
         domain=DOMAIN,
-        discovery_keys=MappingProxyType({}),
-        entry_id=uuid4().hex,
-        minor_version=1,
-        modified_at=dt_util.utcnow(),
-        options={},
-        pref_disable_new_entities=None,
-        pref_disable_polling=None,
-        source=SOURCE_USER,
-        subentries_data=None,
         title=client.name,
         unique_id=TEST_ADDRESS,
-        version=1,
         data={CONF_ADDRESS: TEST_ADDRESS, **(entry_data or {})},
     )
-    await wait_for_step("config entry add", hass.config_entries.async_add(entry))
+    entry.add_to_hass(hass)
+    await wait_for_step("config entry setup", hass.config_entries.async_setup(entry.entry_id))
     await client.query_status()
     await asyncio.sleep(0)
     await asyncio.sleep(0)

@@ -43,7 +43,7 @@ test = [
     "pytest-asyncio",
 ]
 dev = [
-    {include-group = "test"},
+    {include-group = "ha-test"},
     "doc8==1.1.1",
     "pre-commit==3.7.1",
     "ruff==0.15.16",
@@ -53,6 +53,7 @@ ha-test = [
     "aiousbwatcher",
     "homeassistant",
     "pyserial",
+    "pytest-homeassistant-custom-component==0.13.346",
     "serialx[esphome]",
 ]
 
@@ -84,10 +85,6 @@ chihirosctl = "chihiros_led_control.cli:app"
 default-groups = []
 
 [tool.pytest.ini_options]
-addopts = [
-    "-p",
-    "no:homeassistant",
-]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
