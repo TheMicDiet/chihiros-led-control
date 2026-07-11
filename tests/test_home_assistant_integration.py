@@ -24,8 +24,10 @@ try:
     import homeassistant.components as ha_components
     from homeassistant import loader, requirements
     from homeassistant.components.bluetooth import update_coordinator as bluetooth_update
+    from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN
     from homeassistant.components.light import ATTR_BRIGHTNESS
     from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
+    from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
     from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
     from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
     from homeassistant.config_entries import SOURCE_USER, ConfigEntries, ConfigEntry, ConfigEntryState
@@ -241,10 +243,12 @@ class TrackingDosingClient(TrackingChihirosClient):
 @pytest.fixture
 async def hass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> HomeAssistant:
     """Create a minimal Home Assistant instance with this custom component available."""
-    custom_components = tmp_path / "custom_components"
-    custom_components.symlink_to(REPO_ROOT / "custom_components", target_is_directory=True)
-
     hass_instance = HomeAssistant(str(tmp_path))
+
+    async def async_add_executor_job_inline(target: Callable[..., Any], *args: Any) -> Any:
+        return target(*args)
+
+    monkeypatch.setattr(hass_instance, "async_add_executor_job", async_add_executor_job_inline)
     loader.async_setup(hass_instance)
     hass_instance.config_entries = ConfigEntries(hass_instance, {})
 
@@ -292,7 +296,7 @@ async def hass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> HomeAssistant
     hass_instance.data[loader.DATA_CUSTOM_COMPONENTS] = {DOMAIN: integration}
     hass_instance.data[loader.DATA_INTEGRATIONS][DOMAIN] = integration
     builtin_components_path = Path(ha_components.__file__).parent
-    for platform_domain in (LIGHT_DOMAIN, SWITCH_DOMAIN, SENSOR_DOMAIN):
+    for platform_domain in (LIGHT_DOMAIN, SWITCH_DOMAIN, SENSOR_DOMAIN, NUMBER_DOMAIN, BUTTON_DOMAIN):
         seed_integration(
             platform_domain,
             f"homeassistant.components.{platform_domain}",
@@ -301,19 +305,14 @@ async def hass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> HomeAssistant
     try:
         yield hass_instance
     finally:
-        current_task = asyncio.current_task()
-        tasks = [task for task in asyncio.all_tasks() if task is not current_task and not task.done()]
+        tasks = [
+            task
+            for task in hass_instance._tasks | hass_instance._background_tasks  # noqa: SLF001
+            if not task.done()
+        ]
         for task in tasks:
             task.cancel()
-        if tasks:
-            try:
-                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
-            except TimeoutError:
-                pass
-        try:
-            await asyncio.wait_for(asyncio.get_running_loop().shutdown_default_executor(), timeout=5)
-        except TimeoutError:
-            pass
+        await asyncio.sleep(0)
 
 
 async def _setup_entry(
@@ -396,6 +395,12 @@ def _entity_id(
     return entity_id
 
 
+async def _flush_ha_state_updates() -> None:
+    """Yield to state-write callbacks without waiting for HA background tasks."""
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+
 async def test_config_entry_sets_up_entities_services_status_and_unloads(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
@@ -431,7 +436,6 @@ async def test_config_entry_sets_up_entities_services_status_and_unloads(
     assert device.model == "Test RGB"
 
     assert await hass.config_entries.async_unload(entry.entry_id)
-    await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.NOT_LOADED
     assert not hass.services.has_service(DOMAIN, SERVICE_ADD_SCHEDULE)
@@ -454,7 +458,7 @@ async def test_light_and_auto_mode_services_drive_client(
         {ATTR_ENTITY_ID: red_light, ATTR_BRIGHTNESS: 128},
         blocking=True,
     )
-    await hass.async_block_till_done()
+    await _flush_ha_state_updates()
 
     assert client.brightness_calls[-1] == {"red": 51}
     assert hass.states.get(red_light).state == STATE_ON
@@ -462,20 +466,20 @@ async def test_light_and_auto_mode_services_drive_client(
     assert hass.states.get(auto_switch).state == STATE_OFF
 
     await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: auto_switch}, blocking=True)
-    await hass.async_block_till_done()
+    await _flush_ha_state_updates()
 
     assert client.auto_mode_calls and isinstance(client.auto_mode_calls[-1], datetime)
     assert hass.states.get(auto_switch).state == STATE_ON
 
     await hass.services.async_call(LIGHT_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: red_light}, blocking=True)
-    await hass.async_block_till_done()
+    await _flush_ha_state_updates()
 
     assert client.brightness_calls[-1] == {"red": 0}
     assert hass.states.get(red_light).state == STATE_OFF
     assert hass.states.get(auto_switch).state == STATE_OFF
 
     await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: auto_switch}, blocking=True)
-    await hass.async_block_till_done()
+    await _flush_ha_state_updates()
 
     assert client.manual_mode_calls == 1
     assert hass.states.get(auto_switch).state == STATE_OFF
@@ -501,7 +505,7 @@ async def test_manual_dose_service_updates_persisted_daily_total_sensor(
         {ATTR_ENTRY_ID: entry.entry_id, ATTR_PUMP: 2, ATTR_ML: 2.5},
         blocking=True,
     )
-    await hass.async_block_till_done()
+    await _flush_ha_state_updates()
 
     assert client.dose_ml_calls == [(1, 2.5)]
     assert hass.states.get(pump_2_sensor).state == "2.5"
