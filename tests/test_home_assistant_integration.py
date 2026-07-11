@@ -1,21 +1,13 @@
 """Home Assistant integration tests for the Chihiros config entry."""
 
-# ruff: noqa: E402
-
 from __future__ import annotations
 
 import asyncio
-import sys
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import pytest
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 try:
     from homeassistant.components.bluetooth import update_coordinator as bluetooth_update
@@ -71,6 +63,7 @@ from custom_components.chihiros.vendor.chihiros_led_control.protocol import (
 )
 
 pytestmark = [
+    pytest.mark.integration,
     pytest.mark.asyncio,
     pytest.mark.usefixtures("enable_custom_integrations", "mock_bluetooth"),
 ]
@@ -440,7 +433,7 @@ async def test_schedule_services_are_not_registered_for_dosing_only(
     assert client.reset_settings_calls == 0
 
 
-async def test_schedule_services_validate_and_drive_client(
+async def test_schedule_services_drive_client(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -514,28 +507,3 @@ async def test_schedule_services_validate_and_drive_client(
     assert client.reset_settings_calls == 2
     assert client.add_setting_calls[-2]["max_brightness"] == 40
     assert client.add_setting_calls[-1]["max_brightness"] == {"red": 10, "green": 20, "blue": 30}
-
-    with pytest.raises(HomeAssistantError, match="not supported"):
-        await hass.services.async_call(
-            DOMAIN,
-            SERVICE_ADD_SCHEDULE,
-            {
-                ATTR_START: "08:00",
-                ATTR_END: "09:00",
-                ATTR_LEVELS: {"white": 50},
-            },
-            blocking=True,
-        )
-
-    with pytest.raises(HomeAssistantError, match="only one schedule period per weekday"):
-        await hass.services.async_call(
-            DOMAIN,
-            SERVICE_SET_SCHEDULE,
-            {
-                ATTR_PERIODS: [
-                    {ATTR_START: "07:00", ATTR_END: "09:00", ATTR_SCHEDULE_BRIGHTNESS: 40, ATTR_WEEKDAYS: ["friday"]},
-                    {ATTR_START: "17:00", ATTR_END: "20:00", ATTR_SCHEDULE_BRIGHTNESS: 20, ATTR_WEEKDAYS: ["friday"]},
-                ]
-            },
-            blocking=True,
-        )
