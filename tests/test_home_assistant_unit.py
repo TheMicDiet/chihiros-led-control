@@ -38,7 +38,11 @@ from custom_components.chihiros.discovery import ChihirosDiscovery, discovery_ti
 from custom_components.chihiros.dosing import PUMP_COUNT, _coerce_total, is_dosing_capable, normalize_pump_count
 from custom_components.chihiros.fake import FAKE_DEVICES, create_fake_device, is_fake_address
 from custom_components.chihiros.vendor.chihiros_led_control.models import DOSING_PUMP
-from custom_components.chihiros.vendor.chihiros_led_control.protocol import RuntimeNotification, SchedulePoint
+from custom_components.chihiros.vendor.chihiros_led_control.protocol import (
+    FanStatusNotification,
+    RuntimeNotification,
+    SchedulePoint,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -232,6 +236,17 @@ def test_schedule_and_notification_debug_conversion() -> None:
         "parsed_type": "runtime",
     }
 
+    fan_notification = FanStatusNotification(
+        27, 600, 25, bytes.fromhex("5b 1b 10 00 01 0b 02 58 19 00 01 00 00 00 00 00 48 22")
+    )
+    assert _notification_to_debug_dict(fan_notification, "fan_status") == {
+        "firmware_version": 27,
+        "frame": "5b 1b 10 00 01 0b 02 58 19 00 01 00 00 00 00 00 48 22",
+        "payload": "02 58 19 00 01 00 00 00 00 00 48 22",
+        "mode": "0x0b",
+        "parsed_type": "fan_status",
+    }
+
 
 @pytest.mark.asyncio
 async def test_fake_device_supports_all_brightness_shapes_and_callbacks() -> None:
@@ -252,6 +267,34 @@ async def test_fake_device_supports_all_brightness_shapes_and_callbacks() -> Non
     assert device.model_name == FAKE_DEVICES[0].model.name
     assert device.colors == dict(FAKE_DEVICES[0].model.color_channels)
     assert is_fake_address(device.address)
+
+
+@pytest.mark.asyncio
+async def test_fake_fan_device_publishes_fan_status() -> None:
+    """The fan-equipped fake device behaves like the fan client surface."""
+    fan_device_info = next(device for device in FAKE_DEVICES if device.model.has_fan)
+    device = create_fake_device(fan_device_info.address)
+    notifications: list[object] = []
+    device.add_notification_callback(notifications.append)
+
+    await device.set_fan_speed(50)
+
+    assert device.last_fan_status_notification == FanStatusNotification(
+        firmware_version=27, fan_rpm=1000, temperature_celsius=25
+    )
+    assert notifications == [device.last_fan_status_notification]
+
+    with pytest.raises(ValueError, match="between 0 and 100"):
+        await device.set_fan_speed(101)
+
+
+@pytest.mark.asyncio
+async def test_fake_device_without_fan_rejects_fan_speed() -> None:
+    """Fake devices without a fan reject fan speed commands."""
+    device = create_fake_device(FAKE_DEVICES[0].address)
+
+    with pytest.raises(ValueError, match="fan control"):
+        await device.set_fan_speed(50)
 
 
 def test_discovery_helpers_for_fake_device() -> None:

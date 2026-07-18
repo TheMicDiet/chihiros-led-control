@@ -11,6 +11,7 @@ from datetime import datetime
 from .dosing import normalize_pump_count
 from .vendor.chihiros_led_control.models import DOSING_PUMP, RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
 from .vendor.chihiros_led_control.protocol import (
+    FanStatusNotification,
     ParsedNotification,
     RuntimeNotification,
     SchedulePoint,
@@ -50,6 +51,11 @@ FAKE_DEVICES = (
         address=f"{FAKE_ADDRESS_PREFIX}:00:00:04",
         name="DYDOSE-fake",
         model=DOSING_PUMP,
+    ),
+    FakeChihirosDeviceInfo(
+        address=f"{FAKE_ADDRESS_PREFIX}:00:00:05",
+        name="DYVVD3-fake",
+        model=DeviceModel("Fake WRGB VIVID III", ("DYVVD3",), WRGB_CHANNELS, has_fan=True),
     ),
 )
 FAKE_DEVICES_BY_ADDRESS = {device.address: device for device in FAKE_DEVICES}
@@ -92,7 +98,9 @@ class FakeChihirosDevice:
         self._brightness = {color: 0 for color in self.model.color_channels}
         self._dosed_ml = [0.0] * self.pump_count
         self._auto_mode = False
+        self._fan_speed = 0
         self.last_runtime_notification: RuntimeNotification | None = None
+        self.last_fan_status_notification: FanStatusNotification | None = None
         self.last_schedule_snapshot_notification: ScheduleSnapshotNotification | None = None
 
     @property
@@ -176,6 +184,21 @@ class FakeChihirosDevice:
         """Enable fake manual mode."""
         self._auto_mode = False
         await self.turn_on()
+
+    async def set_fan_speed(self, speed_percent: int) -> None:
+        """Set fake fan speed and publish a fake fan status notification."""
+        await asyncio.sleep(0)
+        if not self.model.has_fan:
+            raise ValueError(f"Model does not support fan control: {self.model.name}")
+        if speed_percent < 0 or speed_percent > 100:
+            raise ValueError("Fan speed must be between 0 and 100 percent")
+        self._fan_speed = speed_percent
+        self.last_fan_status_notification = FanStatusNotification(
+            firmware_version=27,
+            fan_rpm=speed_percent * 20,
+            temperature_celsius=25,
+        )
+        self._notify_callbacks(self.last_fan_status_notification)
 
     async def add_setting(
         self,

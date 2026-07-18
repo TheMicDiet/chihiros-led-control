@@ -27,6 +27,7 @@ from .const import UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
 from .exceptions import CharacteristicMissingError
 from .models import FALLBACK, DeviceModel
 from .protocol import (
+    FanStatusNotification,
     ParsedNotification,
     RuntimeNotification,
     ScheduleSnapshotNotification,
@@ -69,6 +70,7 @@ class ChihirosDevice:
         self._msg_id = next_message_id()
         self._notification_callbacks: set[NotificationCallback] = set()
         self.last_runtime_notification: RuntimeNotification | None = None
+        self.last_fan_status_notification: FanStatusNotification | None = None
         self.last_schedule_snapshot_notification: ScheduleSnapshotNotification | None = None
         self.loop = asyncio.get_running_loop()
 
@@ -221,6 +223,13 @@ class ChihirosDevice:
         cmd = commands.create_query_status_command(self.get_next_msg_id())
         await self._send_command(cmd, 3, notification_wait=STATUS_NOTIFICATION_WAIT)
 
+    async def set_fan_speed(self, speed_percent: int) -> None:
+        """Set the fan speed percentage on fan-equipped models."""
+        if not self.model.has_fan:
+            raise ValueError(f"Model does not support fan control: {self.model.name}")
+        cmd = commands.create_set_fan_speed_command(self.get_next_msg_id(), speed_percent)
+        await self._send_command(cmd, 3)
+
     async def add_setting(
         self,
         sunrise: datetime,
@@ -345,6 +354,17 @@ class ChihirosDevice:
                 self.name,
                 parsed.firmware_version,
                 parsed.runtime_minutes,
+            )
+            self._notify_callbacks(parsed)
+            return
+        if isinstance(parsed, FanStatusNotification):
+            self.last_fan_status_notification = parsed
+            self._logger.debug(
+                "%s: Fan status notification received; firmware=%s fan_rpm=%s temperature_celsius=%s",
+                self.name,
+                parsed.firmware_version,
+                parsed.fan_rpm,
+                parsed.temperature_celsius,
             )
             self._notify_callbacks(parsed)
             return

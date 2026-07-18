@@ -5,6 +5,7 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 ## Supported Devices
 - [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
 - [Chihiros WRGB II](https://www.chihirosaquaticstudio.com/products/chihiros-wrgb-ii-led-built-in-bluetooth) (Regular, Pro, Slim; Pro is true WRGB)
+- Chihiros WRGB VIVID III (true WRGB, including fan speed control and fan RPM/temperature sensors)
 - Chihiros Tiny Terrarium Egg
 - Chihiros C II (RGB, White)
 - Chihiros Universal WRGB

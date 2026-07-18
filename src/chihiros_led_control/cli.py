@@ -61,6 +61,12 @@ def set_brightness(device_address: str, brightness: Annotated[list[int], typer.A
 
 
 @app.command()
+def set_fan_speed(device_address: str, speed_percent: int) -> None:
+    """Set fan speed percentage on fan-equipped devices."""
+    _run_device_func(device_address, lambda dev: dev.set_fan_speed(speed_percent))
+
+
+@app.command()
 def add_setting(
     device_address: str,
     sunrise: Annotated[datetime, typer.Argument(formats=["%H:%M"])],
