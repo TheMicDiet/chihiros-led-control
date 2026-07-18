@@ -7,6 +7,7 @@ import datetime
 from chihiros_led_control import commands
 from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS
 from chihiros_led_control.protocol import (
+    FanStatusNotification,
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
@@ -145,6 +146,23 @@ def test_query_status_command_encoding() -> None:
     assert commands.create_query_status_command((0, 1)) == commands.create_base_auth_command((0, 1))
 
 
+def test_set_fan_speed_command_matches_captured_frames() -> None:
+    """Fan speed commands match frames captured from a WRGB VIVID III."""
+    assert commands.create_set_fan_speed_command((0, 0xC7), 100) == bytearray.fromhex("5A 01 06 00 C7 0F 64 AB")
+    assert commands.create_set_fan_speed_command((0, 0xC5), 53) == bytearray.fromhex("5A 01 06 00 C5 0F 35 F8")
+    assert commands.create_set_fan_speed_command((0, 0xCB), 0) == bytearray.fromhex("5A 01 06 00 CB 0F 00 C3")
+
+
+def test_set_fan_speed_command_validates_range() -> None:
+    """Fan speed commands reject out-of-range percentages."""
+    for speed in (-1, 101):
+        try:
+            commands.create_set_fan_speed_command((0, 1), speed)
+        except ValueError:
+            continue
+        raise AssertionError(f"Expected ValueError for fan speed {speed}")
+
+
 def test_auto_setting_command_accepts_four_channel_brightness() -> None:
     """Auto schedule commands can encode true WRGB brightness values."""
     command = commands.create_add_auto_setting_command(
@@ -203,6 +221,27 @@ def test_parse_notification_rejects_short_or_unknown_frames() -> None:
     """Inbound frames still require the Chihiros header and mode fields."""
     assert parse_notification(bytes([0x5B, 0, 2, 0, 0, 0, 0])) is None
     assert parse_notification(bytes([0x00, 0, 3, 0, 0, 0, 0, 0])) is None
+
+
+def test_parse_fan_status_notification() -> None:
+    """Fan status notifications expose firmware, fan RPM, and temperature."""
+    frame = bytearray.fromhex("5b 1b 10 00 01 0b 02 58 19 00 01 00 00 00 00 00 48 22")
+    notification = parse_notification(frame)
+
+    assert notification == FanStatusNotification(
+        firmware_version=27, fan_rpm=600, temperature_celsius=25, raw=bytes(frame)
+    )
+
+
+def test_parse_fan_status_notification_tolerates_trailing_counter() -> None:
+    """Fan status notifications parse regardless of the trailing uptime counter byte."""
+    running = bytearray.fromhex("5b 1b 10 00 01 0b 07 bc 19 00 01 00 00 00 00 00 57 22")
+    idle = bytearray.fromhex("5b 1b 10 00 01 0b 00 1e 18 00 01 00 00 00 00 00 00 22")
+
+    assert parse_notification(running) == FanStatusNotification(
+        firmware_version=27, fan_rpm=1980, temperature_celsius=25
+    )
+    assert parse_notification(idle) == FanStatusNotification(firmware_version=27, fan_rpm=30, temperature_celsius=24)
 
 
 def test_parse_schedule_snapshot_notification_requires_channel_context() -> None:

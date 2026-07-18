@@ -135,7 +135,7 @@ Other observed `0x5a / 0x05` first parameters:
 | `4` | Stop/exit demo in the old app |
 | `5` | Reset auto settings |
 | `6` | Temporary/new-firmware demo in the old app |
-| `11` / `0x0b` | First-connect/manual setup command, exact meaning unknown |
+| `11` / `0x0b` | First-connect/manual setup command; sent by the app before manual slider control on the WRGB VIVID III, likely switches to manual mode |
 | `18` | Enable auto mode |
 
 ## Auto Schedule Settings
@@ -188,6 +188,12 @@ selects every weekday, and `0x71` is the valid XOR checksum.
 
 Only one setting can be configured per day, so settings cannot conflict. There
 is a maximum of 7 settings.
+
+Single-channel A2 devices also have a distinct point-based custom-curve
+protocol using a four-parameter `0x5a / 0x06` command. It is not interchangeable
+with the `0xa5 / 0x19` schedule described above. See
+[A2 Custom Schedule Protocol](a2-custom-schedule-protocol.md) for the captured
+setup sequence, point encoding, and remaining unknowns.
 
 ## Weekday Bitmask
 
@@ -290,10 +296,40 @@ snapshot as a status payload whose checksum/trailer is not yet confirmed.
 | Command ID | Mode | Parameters | Meaning |
 | ---: | ---: | --- | --- |
 | `0x5a` / `90` | `0x04` / `4` | `[1]` | Query LED runtime/status |
-| `0x5a` / `90` | `0x06` / `6` | `[color, time_index, level]` | Old 48-point auto curve update; `time_index` is `0..47` in 30-minute steps |
+| `0x5a` / `90` | `0x06` / `6` | `[color, time_index, level]` | Old 48-point auto curve variant; `time_index` is `0..47` in 30-minute steps |
+| `0x5a` / `90` | `0x06` / `6` | `[channel, hour, minute, level]` | A2 custom-curve point variant; see [the capture note](a2-custom-schedule-protocol.md) |
 | `0x5a` / `90` | `0x07` / `7` | `[color, brightness]` | Manual brightness |
 | `0x5a` / `90` | `0x09` / `9` | `[year - 2000, month, date_field, hour, minute, second]` | Set device time |
+| `0x5a` / `90` | `0x0f` / `15` | `[speed_percent]` | Fan speed, `0` to `100`; confirmed on WRGB VIVID III |
 | `0xa5` / `165` | `0x19` / `25` | 14 bytes | Add, update, or delete auto schedule |
+
+## Fan Status Notifications
+
+Fan-equipped devices such as the WRGB VIVID III (advertised name prefix
+`DYVVD3`) push a periodic status notification roughly every three seconds while
+connected. It uses the `0x5b` header with mode `0x0b`:
+
+```text
+5b 1b 10 00 01 0b 02 58 19 00 01 00 00 00 00 00 48 22
+```
+
+| Offset | Name | Observed meaning |
+| ---: | --- | --- |
+| `1` | Firmware/protocol version | `0x1b` / `27` on the captured VIVID III |
+| `6..7` | Fan RPM | Big-endian measured fan speed; `0x0258 = 600` rpm at 25%, about `1980` rpm at 100% |
+| `8` | Temperature | Whole degrees Celsius |
+| `16` | Uptime counter | Increments between periodic notifications |
+
+The trailing byte is not a valid XOR checksum for this mode, so parsers should
+treat bytes after offset `8` as opaque. Fan speed is set with the
+`0x5a / 0x0f` command listed above; measured RPM follows the set percentage.
+
+The VIVID III also sends a constant `0x5b` notification with mode `0x36` after
+each auth/status query. Its payload is static and its meaning is unknown; it
+can be ignored.
+
+Captured WRGB VIVID III channel order matches other true WRGB models: channel
+`0` red, `1` green, `2` blue, `3` white.
 
 ## Observed Command Families
 

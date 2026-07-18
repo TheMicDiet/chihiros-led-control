@@ -8,9 +8,14 @@ from typing import Any
 from homeassistant.components.bluetooth.passive_update_coordinator import (
     PassiveBluetoothCoordinatorEntity,
 )
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorEntityDescription
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfVolume
+from homeassistant.const import REVOLUTIONS_PER_MINUTE, UnitOfTemperature, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -19,6 +24,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .coordinator import (
+    ATTR_FAN_RPM,
+    ATTR_FAN_TEMPERATURE_CELSIUS,
     ATTR_FIRMWARE_VERSION,
     ATTR_LAST_NOTIFICATION,
     ATTR_SCHEDULE_POINTS,
@@ -45,6 +52,24 @@ SENSOR_DESCRIPTIONS = (
     SensorEntityDescription(
         key=ATTR_LAST_NOTIFICATION,
         name="Last Notification",
+    ),
+)
+
+FAN_SENSOR_DESCRIPTIONS = (
+    SensorEntityDescription(
+        key=ATTR_FAN_RPM,
+        name="Fan Speed",
+        native_unit_of_measurement=REVOLUTIONS_PER_MINUTE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
+    ),
+    SensorEntityDescription(
+        key=ATTR_FAN_TEMPERATURE_CELSIUS,
+        name="Temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
     ),
 )
 
@@ -76,6 +101,16 @@ async def async_setup_entry(
         )
         for description in SENSOR_DESCRIPTIONS
     )
+    if chihiros_data.device.model.has_fan:
+        async_add_entities(
+            ChihirosNotificationSensor(
+                chihiros_data.coordinator,
+                chihiros_data.device,
+                description,
+                entity_category=None,
+            )
+            for description in FAN_SENSOR_DESCRIPTIONS
+        )
     hass.async_create_task(_async_request_initial_status(chihiros_data.coordinator))
 
 
@@ -101,6 +136,7 @@ class ChihirosNotificationSensor(
         coordinator: ChihirosDataUpdateCoordinator,
         device: ChihirosClient,
         description: SensorEntityDescription,
+        entity_category: EntityCategory | None = EntityCategory.DIAGNOSTIC,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
@@ -111,6 +147,8 @@ class ChihirosNotificationSensor(
         self._attr_device_info = chihiros_device_info(device, coordinator.address)
         self._attr_device_class = description.device_class
         self._attr_native_unit_of_measurement = description.native_unit_of_measurement
+        self._attr_state_class = description.state_class
+        self._attr_entity_category = entity_category
 
     @property
     def available(self) -> bool:

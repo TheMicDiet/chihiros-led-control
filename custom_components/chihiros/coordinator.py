@@ -13,6 +13,7 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 
 from .runtime import ChihirosClient
 from .vendor.chihiros_led_control.protocol import (
+    FanStatusNotification,
     ParsedNotification,
     RuntimeNotification,
     SchedulePoint,
@@ -26,6 +27,8 @@ ATTR_RUNTIME_NOTIFICATION = "runtime_notification"
 ATTR_RUNTIME_NOTIFICATION_PAYLOAD = "runtime_notification_payload"
 ATTR_LAST_NOTIFICATION = "last_notification"
 ATTR_SCHEDULE_POINTS = "schedule_points"
+ATTR_FAN_RPM = "fan_rpm"
+ATTR_FAN_TEMPERATURE_CELSIUS = "fan_temperature_celsius"
 
 
 class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
@@ -103,6 +106,11 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
             self.data[ATTR_RUNTIME_NOTIFICATION] = notification.raw.hex(" ")
             self.data[ATTR_RUNTIME_NOTIFICATION_PAYLOAD] = notification.raw[6:].hex(" ")
             self.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "runtime")
+        elif isinstance(notification, FanStatusNotification):
+            self.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
+            self.data[ATTR_FAN_RPM] = notification.fan_rpm
+            self.data[ATTR_FAN_TEMPERATURE_CELSIUS] = notification.temperature_celsius
+            self.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "fan_status")
         elif isinstance(notification, ScheduleSnapshotNotification):
             self.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
             self.data[ATTR_SCHEDULE_POINTS] = tuple(_schedule_point_to_dict(point) for point in notification.points)
@@ -135,7 +143,7 @@ def _schedule_point_to_dict(point: SchedulePoint) -> dict[str, Any]:
 
 
 def _notification_to_debug_dict(
-    notification: RuntimeNotification | ScheduleSnapshotNotification,
+    notification: RuntimeNotification | FanStatusNotification | ScheduleSnapshotNotification,
     parsed_type: str,
 ) -> dict[str, Any]:
     """Return a Home Assistant-friendly raw notification diagnostic payload."""

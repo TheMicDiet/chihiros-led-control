@@ -13,7 +13,12 @@ from bleak_retry_connector import BleakError
 from chihiros_led_control.client import ChihirosDevice, ChihirosDosingPump
 from chihiros_led_control.exceptions import CharacteristicMissingError
 from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
-from chihiros_led_control.protocol import RuntimeNotification, ScheduleSnapshotNotification, calculate_checksum
+from chihiros_led_control.protocol import (
+    FanStatusNotification,
+    RuntimeNotification,
+    ScheduleSnapshotNotification,
+    calculate_checksum,
+)
 
 
 class FakeBLEDevice:
@@ -371,6 +376,58 @@ def test_notification_handler_stores_and_publishes_schedule_snapshot() -> None:
     device = asyncio.run(run())
     assert isinstance(device.last_schedule_snapshot_notification, ScheduleSnapshotNotification)
     assert received == [device.last_schedule_snapshot_notification]
+
+
+def test_notification_handler_stores_and_publishes_fan_status() -> None:
+    """Parsed fan status notifications are stored and sent to subscribers."""
+    received: list[FanStatusNotification] = []
+    frame = bytearray.fromhex("5b 1b 10 00 01 0b 02 58 19 00 01 00 00 00 00 00 48 22")
+
+    async def run() -> ChihirosDevice:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WRGB_CHANNELS, has_fan=True))  # type: ignore[arg-type]
+        device.add_notification_callback(received.append)
+        device._notification_handler(None, frame)  # type: ignore[arg-type]
+        return device
+
+    device = asyncio.run(run())
+    assert device.last_fan_status_notification == FanStatusNotification(
+        firmware_version=27,
+        fan_rpm=600,
+        temperature_celsius=25,
+        raw=bytes(frame),
+    )
+    assert received == [device.last_fan_status_notification]
+
+
+def test_set_fan_speed_sends_captured_command_shape() -> None:
+    """Fan speed commands use mode 0x0F with the speed percentage parameter."""
+    sent_commands: list[bytes] = []
+
+    async def run() -> None:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WRGB_CHANNELS, has_fan=True))  # type: ignore[arg-type]
+
+        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+            del retry
+            sent_commands.append(bytes(command))
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+
+        await device.set_fan_speed(100)
+
+    asyncio.run(run())
+
+    assert sent_commands[0][5:7] == bytes([15, 100])
+
+
+def test_set_fan_speed_rejects_models_without_fan() -> None:
+    """Fan control is limited to fan-equipped models."""
+
+    async def run() -> None:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="fan"):
+            await device.set_fan_speed(50)
+
+    asyncio.run(run())
 
 
 def test_set_brightness_sends_all_true_wrgb_channels() -> None:

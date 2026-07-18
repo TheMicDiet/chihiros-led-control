@@ -116,3 +116,10 @@ def create_reset_auto_settings_command(msg_id: tuple[int, int]) -> bytearray:
 def create_switch_to_auto_mode_command(msg_id: tuple[int, int]) -> bytearray:
     """Create a switch to auto mode command."""
     return create_command_encoding(90, 5, msg_id, [18, 255, 255])
+
+
+def create_set_fan_speed_command(msg_id: tuple[int, int], speed_percent: int) -> bytearray:
+    """Create a fan speed command for fan-equipped LED devices such as the WRGB VIVID III."""
+    if speed_percent < 0 or speed_percent > 100:
+        raise ValueError("Fan speed must be between 0 and 100 percent")
+    return create_command_encoding(90, 15, msg_id, [speed_percent])
