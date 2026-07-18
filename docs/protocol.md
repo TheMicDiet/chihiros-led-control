@@ -189,6 +189,12 @@ selects every weekday, and `0x71` is the valid XOR checksum.
 Only one setting can be configured per day, so settings cannot conflict. There
 is a maximum of 7 settings.
 
+Single-channel A2 devices also have a distinct point-based custom-curve
+protocol using a four-parameter `0x5a / 0x06` command. It is not interchangeable
+with the `0xa5 / 0x19` schedule described above. See
+[A2 Custom Schedule Protocol](a2-custom-schedule-protocol.md) for the captured
+setup sequence, point encoding, and remaining unknowns.
+
 ## Weekday Bitmask
 
 Weekdays are encoded as a 7-bit mask:
@@ -290,7 +296,8 @@ snapshot as a status payload whose checksum/trailer is not yet confirmed.
 | Command ID | Mode | Parameters | Meaning |
 | ---: | ---: | --- | --- |
 | `0x5a` / `90` | `0x04` / `4` | `[1]` | Query LED runtime/status |
-| `0x5a` / `90` | `0x06` / `6` | `[color, time_index, level]` | Old 48-point auto curve update; `time_index` is `0..47` in 30-minute steps |
+| `0x5a` / `90` | `0x06` / `6` | `[color, time_index, level]` | Old 48-point auto curve variant; `time_index` is `0..47` in 30-minute steps |
+| `0x5a` / `90` | `0x06` / `6` | `[channel, hour, minute, level]` | A2 custom-curve point variant; see [the capture note](a2-custom-schedule-protocol.md) |
 | `0x5a` / `90` | `0x07` / `7` | `[color, brightness]` | Manual brightness |
 | `0x5a` / `90` | `0x09` / `9` | `[year - 2000, month, date_field, hour, minute, second]` | Set device time |
 | `0xa5` / `165` | `0x19` / `25` | 14 bytes | Add, update, or delete auto schedule |
