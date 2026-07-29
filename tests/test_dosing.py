@@ -19,6 +19,10 @@ from custom_components.chihiros.dosing import (
     normalize_pump_count,
 )
 
+pytestmark = [
+    pytest.mark.integration,
+]
+
 
 def test_normalize_pump_count_defaults_invalid_values() -> None:
     """Unsupported or non-numeric values fall back to the default pump count."""
