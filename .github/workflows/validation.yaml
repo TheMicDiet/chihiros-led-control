@@ -57,6 +57,11 @@ jobs:
           uv --cache-dir .uv-cache run --frozen --group test pytest
           --ignore=tests/test_home_assistant_integration.py
           --ignore=tests/test_home_assistant_unit.py
+          --ignore=tests/test_light_rgb.py
+          --ignore=tests/test_fan.py
+          --ignore=tests/test_coordinator.py
+          --ignore=tests/test_dosing.py
+          --ignore=tests/test_sensor.py
           --cov=chihiros_led_control
           --cov-report=term-missing
           --cov-report=xml:coverage-library.xml
@@ -89,6 +94,11 @@ jobs:
           uv --cache-dir .uv-cache run --frozen --group ha-test pytest
           tests/test_home_assistant_unit.py
           tests/test_home_assistant_integration.py
+          tests/test_light_rgb.py
+          tests/test_fan.py
+          tests/test_coordinator.py
+          tests/test_dosing.py
+          tests/test_sensor.py
           --cov=custom_components/chihiros
           --cov-report=term-missing
           --cov-report=xml:coverage-home-assistant.xml
