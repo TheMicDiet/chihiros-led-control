@@ -11,8 +11,19 @@ import pytest
 
 try:
     from homeassistant.components.bluetooth import update_coordinator as bluetooth_update
+    from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN
+    from homeassistant.components.button import SERVICE_PRESS
     from homeassistant.components.light import ATTR_BRIGHTNESS
     from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
+    from homeassistant.components.number import (
+        ATTR_VALUE as ATTR_NUMBER_VALUE,
+    )
+    from homeassistant.components.number import (
+        DOMAIN as NUMBER_DOMAIN,
+    )
+    from homeassistant.components.number import (
+        SERVICE_SET_VALUE,
+    )
     from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
     from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
     from homeassistant.config_entries import ConfigEntry, ConfigEntryState
@@ -504,3 +515,123 @@ async def test_schedule_services_drive_client(
     assert client.reset_settings_calls == 2
     assert client.add_setting_calls[-2]["max_brightness"] == 40
     assert client.add_setting_calls[-1]["max_brightness"] == {"red": 10, "green": 20, "blue": 30}
+
+
+async def test_dosing_button_press_triggers_dose_with_configured_volume(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pressing a pump's dose button doses the volume configured on its number."""
+    dosing_client = TrackingDosingClient()
+    entry, client = await _setup_entry(hass, monkeypatch, dosing_client)
+    assert isinstance(client, TrackingDosingClient)
+    entity_registry = er.async_get(hass)
+    pump_1_number = _entity_id(entity_registry, NUMBER_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_1_dose_volume")
+    pump_1_button = _entity_id(entity_registry, BUTTON_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_1_dose")
+
+    # Configure pump 1's dose volume to 3.0 mL.
+    await hass.services.async_call(
+        NUMBER_DOMAIN,
+        SERVICE_SET_VALUE,
+        {ATTR_ENTITY_ID: pump_1_number, ATTR_NUMBER_VALUE: 3.0},
+        blocking=True,
+    )
+    await _flush_ha_state_updates()
+
+    await hass.services.async_call(BUTTON_DOMAIN, SERVICE_PRESS, {ATTR_ENTITY_ID: pump_1_button}, blocking=True)
+    await _flush_ha_state_updates()
+
+    assert client.dose_ml_calls == [(0, 3.0)]
+    # The dosing total sensor reflects the dosed volume.
+    pump_1_sensor = _entity_id(entity_registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_1_dosed_today")
+    assert hass.states.get(pump_1_sensor).state == "3.0"
+
+
+async def test_dosing_number_set_value_updates_runtime_volume(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setting a pump dose volume number updates the persisted runtime volume."""
+    dosing_client = TrackingDosingClient()
+    entry, client = await _setup_entry(hass, monkeypatch, dosing_client)
+    assert isinstance(client, TrackingDosingClient)
+    entity_registry = er.async_get(hass)
+    pump_1_number = _entity_id(entity_registry, NUMBER_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_1_dose_volume")
+
+    # Initial value is the integration default of 1.0 mL per pump.
+    assert hass.states.get(pump_1_number).state == "1.0"
+
+    await hass.services.async_call(
+        NUMBER_DOMAIN,
+        SERVICE_SET_VALUE,
+        {ATTR_ENTITY_ID: pump_1_number, ATTR_NUMBER_VALUE: 5.5},
+        blocking=True,
+    )
+    await _flush_ha_state_updates()
+
+    assert hass.states.get(pump_1_number).state == "5.5"
+    assert hass.data[DOMAIN][entry.entry_id].dosing_volumes[0] == 5.5
+
+
+async def test_dosing_number_restore_skips_out_of_range_and_invalid(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restoring an out-of-range or non-numeric value leaves the default in place."""
+    dosing_client = TrackingDosingClient()
+    entry, client = await _setup_entry(hass, monkeypatch, dosing_client)
+    assert isinstance(client, TrackingDosingClient)
+    entity_registry = er.async_get(hass)
+    pump_1_number = _entity_id(entity_registry, NUMBER_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_1_dose_volume")
+    pump_2_number = _entity_id(entity_registry, NUMBER_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_dose_volume")
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await _flush_ha_state_updates()
+
+    # Prime restore: out-of-range for pump 1, garbage string for pump 2.
+    from homeassistant.core import State
+    from homeassistant.helpers.restore_state import StoredState
+    from homeassistant.helpers.restore_state import async_get as async_get_restore_data
+    from homeassistant.util import dt as dt_util
+
+    restore_data = async_get_restore_data(hass)
+    restore_data.last_states[pump_1_number] = StoredState(State(pump_1_number, "9999.0"), None, dt_util.utcnow())
+    restore_data.last_states[pump_2_number] = StoredState(State(pump_2_number, "not a number"), None, dt_util.utcnow())
+
+    await hass.config_entries.async_setup(entry.entry_id)
+    await _flush_ha_state_updates()
+    assert entry.state is ConfigEntryState.LOADED
+
+    # Both rejected restores keep the integration default of 1.0 mL.
+    assert hass.states.get(pump_1_number).state == "1.0"
+    assert hass.states.get(pump_2_number).state == "1.0"
+
+
+async def test_dosing_number_restore_valid_value(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restoring a valid in-range volume is applied on reload."""
+    dosing_client = TrackingDosingClient()
+    entry, client = await _setup_entry(hass, monkeypatch, dosing_client)
+    assert isinstance(client, TrackingDosingClient)
+    entity_registry = er.async_get(hass)
+    pump_3_number = _entity_id(entity_registry, NUMBER_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_3_dose_volume")
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await _flush_ha_state_updates()
+
+    from homeassistant.core import State
+    from homeassistant.helpers.restore_state import StoredState
+    from homeassistant.helpers.restore_state import async_get as async_get_restore_data
+    from homeassistant.util import dt as dt_util
+
+    restore_data = async_get_restore_data(hass)
+    restore_data.last_states[pump_3_number] = StoredState(State(pump_3_number, "3.25"), None, dt_util.utcnow())
+
+    await hass.config_entries.async_setup(entry.entry_id)
+    await _flush_ha_state_updates()
+    assert entry.state is ConfigEntryState.LOADED
+
+    # Restored value is rounded to one decimal place.
+    assert hass.states.get(pump_3_number).state == "3.2"
