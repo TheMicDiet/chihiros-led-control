@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -15,6 +14,8 @@ try:
         ATTR_BRIGHTNESS,
         ATTR_RGB_COLOR,
         ATTR_RGBW_COLOR,
+    )
+    from homeassistant.components.light import (
         DOMAIN as LIGHT_DOMAIN,
     )
     from homeassistant.config_entries import ConfigEntry, ConfigEntryState
@@ -35,8 +36,8 @@ except ImportError as err:
 
 from custom_components.chihiros.vendor.chihiros_led_control.models import (
     RGB_CHANNELS,
-    WRGB_CHANNELS,
     WHITE_CHANNELS,
+    WRGB_CHANNELS,
     DeviceModel,
 )
 from custom_components.chihiros.vendor.chihiros_led_control.protocol import ParsedNotification

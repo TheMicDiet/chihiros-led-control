@@ -292,17 +292,13 @@ async def test_config_entry_sets_up_entities_services_status_and_unloads(
     for service in (SERVICE_ADD_SCHEDULE, SERVICE_REMOVE_SCHEDULE, SERVICE_RESET_SCHEDULE, SERVICE_SET_SCHEDULE):
         assert hass.services.has_service(DOMAIN, service)
 
-    red_light = _entity_id(entity_registry, LIGHT_DOMAIN, f"{TEST_ADDRESS}_red")
-    green_light = _entity_id(entity_registry, LIGHT_DOMAIN, f"{TEST_ADDRESS}_green")
-    blue_light = _entity_id(entity_registry, LIGHT_DOMAIN, f"{TEST_ADDRESS}_blue")
+    rgb_light = _entity_id(entity_registry, LIGHT_DOMAIN, f"{TEST_ADDRESS}_rgb")
     auto_switch = _entity_id(entity_registry, SWITCH_DOMAIN, f"{TEST_ADDRESS}_auto_mode")
     firmware_sensor = _entity_id(entity_registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_firmware_version")
     schedule_sensor = _entity_id(entity_registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_schedule_points")
     notification_sensor = _entity_id(entity_registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_last_notification")
 
-    assert hass.states.get(red_light) is not None
-    assert hass.states.get(green_light) is not None
-    assert hass.states.get(blue_light) is not None
+    assert hass.states.get(rgb_light) is not None
     assert hass.states.get(auto_switch).state == STATE_OFF
     assert hass.states.get(firmware_sensor).state == "23"
     assert hass.states.get(schedule_sensor).state == "08:00 15%; 12:00 70%"
@@ -328,20 +324,21 @@ async def test_light_and_auto_mode_services_drive_client(
     """Drive light and switch behavior through Home Assistant services."""
     _entry, client = await _setup_entry(hass, monkeypatch)
     entity_registry = er.async_get(hass)
-    red_light = _entity_id(entity_registry, LIGHT_DOMAIN, f"{TEST_ADDRESS}_red")
+    rgb_light = _entity_id(entity_registry, LIGHT_DOMAIN, f"{TEST_ADDRESS}_rgb")
     auto_switch = _entity_id(entity_registry, SWITCH_DOMAIN, f"{TEST_ADDRESS}_auto_mode")
 
     await hass.services.async_call(
         LIGHT_DOMAIN,
         SERVICE_TURN_ON,
-        {ATTR_ENTITY_ID: red_light, ATTR_BRIGHTNESS: 128},
+        {ATTR_ENTITY_ID: rgb_light, ATTR_BRIGHTNESS: 128},
         blocking=True,
     )
     await _flush_ha_state_updates()
 
-    assert client.brightness_calls[-1] == {"red": 51}
-    assert hass.states.get(red_light).state == STATE_ON
-    assert hass.states.get(red_light).attributes[ATTR_BRIGHTNESS] == 128
+    # Brightness scales the default white (255,255,255) equally across RGB channels.
+    assert client.brightness_calls[-1] == {"red": 51, "green": 51, "blue": 51}
+    assert hass.states.get(rgb_light).state == STATE_ON
+    assert hass.states.get(rgb_light).attributes[ATTR_BRIGHTNESS] == 128
     assert hass.states.get(auto_switch).state == STATE_OFF
 
     await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: auto_switch}, blocking=True)
@@ -350,11 +347,11 @@ async def test_light_and_auto_mode_services_drive_client(
     assert client.auto_mode_calls and isinstance(client.auto_mode_calls[-1], datetime)
     assert hass.states.get(auto_switch).state == STATE_ON
 
-    await hass.services.async_call(LIGHT_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: red_light}, blocking=True)
+    await hass.services.async_call(LIGHT_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: rgb_light}, blocking=True)
     await _flush_ha_state_updates()
 
-    assert client.brightness_calls[-1] == {"red": 0}
-    assert hass.states.get(red_light).state == STATE_OFF
+    assert client.brightness_calls[-1] == {"red": 0, "green": 0, "blue": 0}
+    assert hass.states.get(rgb_light).state == STATE_OFF
     assert hass.states.get(auto_switch).state == STATE_OFF
 
     await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: auto_switch}, blocking=True)

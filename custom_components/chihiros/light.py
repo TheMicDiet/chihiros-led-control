@@ -40,20 +40,25 @@ async def async_setup_entry(
     """Set up the light platform for LEDBLE."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
     _LOGGER.debug("Setup chihiros entry: %s", chihiros_data.device.address)
-    for color in chihiros_data.device.colors:
-        _LOGGER.debug("Setup chihiros light entity: %s - %s", chihiros_data.device.address, color)
-        async_add_entities(
-            [
-                ChihirosLightEntity(
-                    chihiros_data.coordinator,
-                    chihiros_data.device,
-                    color=color,
-                )
-            ]
-        )
-
     channels = chihiros_data.device.colors
     has_rgb = "red" in channels and "green" in channels and "blue" in channels
+    # RGB/WRGB devices expose a single unified entity that writes every colour
+    # channel in one BLE transaction, so per-channel entities are not created for
+    # them (per-channel writes collide on the wire). White-only and partial
+    # colour models still get one brightness entity per channel.
+    if not has_rgb:
+        for color in channels:
+            _LOGGER.debug("Setup chihiros light entity: %s - %s", chihiros_data.device.address, color)
+            async_add_entities(
+                [
+                    ChihirosLightEntity(
+                        chihiros_data.coordinator,
+                        chihiros_data.device,
+                        color=color,
+                    )
+                ]
+            )
+
     if has_rgb:
         _LOGGER.debug("Setup chihiros RGB light entity: %s", chihiros_data.device.address)
         async_add_entities(
@@ -247,13 +252,11 @@ class ChihirosRGBLightEntity(
             self._attr_rgb_color = (r, g, b)
             await self._set_rgb_brightness((r, g, b, w), self._attr_brightness)
         elif ATTR_RGB_COLOR in kwargs:
+            # Home Assistant converts rgb_color -> rgbw_color (white=0) for
+            # RGBW entities, so this branch is only reached on pure RGB models.
             r, g, b = (int(c) for c in kwargs[ATTR_RGB_COLOR])
             self._attr_rgb_color = (r, g, b)
-            if self._has_white:
-                # Only update RGB channels; leave white unchanged.
-                await self._set_rgb_brightness((r, g, b), self._attr_brightness)
-            else:
-                await self._set_rgb_brightness((r, g, b), self._attr_brightness)
+            await self._set_rgb_brightness((r, g, b), self._attr_brightness)
         else:
             if self._has_white:
                 color = self._attr_rgbw_color or (255, 255, 255, 255)
