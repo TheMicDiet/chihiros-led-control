@@ -135,9 +135,13 @@ class ChihirosLightEntity(
             await self._set_entity_brightness(brightness)
             self._attr_brightness = hass_brightness
         else:
-            _LOGGER.debug("Turning on: %s", self.name)
-            await self._set_entity_brightness(100)
-            self._attr_brightness = 255
+            # Restore the last known brightness instead of snapping to full,
+            # so toggling off/on keeps the previous level.
+            hass_brightness = self._attr_brightness or 255
+            brightness = max(1, math.ceil((hass_brightness / 255) * 100))
+            _LOGGER.debug("Turning on: %s to %s", self.name, brightness)
+            await self._set_entity_brightness(brightness)
+            self._attr_brightness = hass_brightness
         self._attr_is_on = True
         self.schedule_update_ha_state()
         _LOGGER.debug("Turned on: %s", self.name)
@@ -147,19 +151,16 @@ class ChihirosLightEntity(
         _LOGGER.debug("Turning off: %s", self.name)
         await self._set_entity_brightness(0)
         self._attr_is_on = False
-        self._attr_brightness = 0
+        # Keep _attr_brightness at its last level so toggling back on restores it.
         self.schedule_update_ha_state()
         _LOGGER.debug("Turned off: %s", self.name)
 
     async def _set_entity_brightness(self, brightness: int) -> None:
-        """Set brightness and keep Home Assistant availability in sync."""
+        """Set brightness and raise on BLE failure."""
         try:
             await self._device.set_brightness({self._color: brightness})
         except Exception as ex:
-            self._attr_available = False
-            self.schedule_update_ha_state()
             raise HomeAssistantError(f"Failed to set brightness for {self.name}") from ex
-        self._attr_available = True
         self.coordinator.async_set_auto_mode(False)
 
 
@@ -243,28 +244,29 @@ class ChihirosRGBLightEntity(
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Instruct the light to turn on."""
-        master_brightness = kwargs.get(ATTR_BRIGHTNESS, self._attr_brightness or 255)
-        self._attr_brightness = int(master_brightness)
+        master_brightness = int(kwargs.get(ATTR_BRIGHTNESS, self._attr_brightness or 255))
 
         if ATTR_RGBW_COLOR in kwargs and self._has_white:
-            r, g, b, w = (int(c) for c in kwargs[ATTR_RGBW_COLOR])
-            self._attr_rgbw_color = (r, g, b, w)
-            self._attr_rgb_color = (r, g, b)
-            await self._set_rgb_brightness((r, g, b, w), self._attr_brightness)
+            color: tuple[int, ...] = tuple(int(c) for c in kwargs[ATTR_RGBW_COLOR])
         elif ATTR_RGB_COLOR in kwargs:
             # Home Assistant converts rgb_color -> rgbw_color (white=0) for
             # RGBW entities, so this branch is only reached on pure RGB models.
-            r, g, b = (int(c) for c in kwargs[ATTR_RGB_COLOR])
-            self._attr_rgb_color = (r, g, b)
-            await self._set_rgb_brightness((r, g, b), self._attr_brightness)
+            color = tuple(int(c) for c in kwargs[ATTR_RGB_COLOR])
+        elif self._has_white:
+            color = self._attr_rgbw_color or (255, 255, 255, 255)
         else:
-            if self._has_white:
-                color = self._attr_rgbw_color or (255, 255, 255, 255)
-                await self._set_rgb_brightness(color, self._attr_brightness)
-            else:
-                color = self._attr_rgb_color or (255, 255, 255)
-                await self._set_rgb_brightness(color, self._attr_brightness)
+            color = self._attr_rgb_color or (255, 255, 255)
 
+        # Write to the device before persisting any state attributes, so a
+        # failed write never leaves the reported state out of sync with the
+        # physical light.
+        await self._set_rgb_brightness(color, master_brightness)
+        self._attr_brightness = master_brightness
+        if self._has_white:
+            self._attr_rgbw_color = color
+            self._attr_rgb_color = color[:3]
+        else:
+            self._attr_rgb_color = color
         self._attr_is_on = True
         self.schedule_update_ha_state()
         _LOGGER.debug("Turned on: %s", self.name)
@@ -276,12 +278,9 @@ class ChihirosRGBLightEntity(
         try:
             await self._device.set_brightness(channels)
         except Exception as ex:
-            self._attr_available = False
-            self.schedule_update_ha_state()
             raise HomeAssistantError(f"Failed to turn off {self.name}") from ex
-        self._attr_available = True
         self._attr_is_on = False
-        self._attr_brightness = 0
+        # Keep _attr_brightness at its last level so toggling back on restores it.
         self.coordinator.async_set_auto_mode(False)
         self.schedule_update_ha_state()
         _LOGGER.debug("Turned off: %s", self.name)
@@ -318,8 +317,5 @@ class ChihirosRGBLightEntity(
         try:
             await self._device.set_brightness(channels)
         except Exception as ex:
-            self._attr_available = False
-            self.schedule_update_ha_state()
             raise HomeAssistantError(f"Failed to set brightness for {self.name}") from ex
-        self._attr_available = True
         self.coordinator.async_set_auto_mode(False)

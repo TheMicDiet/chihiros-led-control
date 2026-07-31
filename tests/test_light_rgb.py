@@ -492,17 +492,85 @@ async def test_rgb_scale_channel_zero_value(
     assert state.attributes[ATTR_RGB_COLOR] == (0, 128, 255)
 
 
-# --- error paths ---
-
-
-async def test_rgb_turn_on_set_brightness_failure_raises_and_marks_unavailable(
+async def test_rgb_toggle_off_on_restores_last_brightness(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A BLE failure during turn_on raises HomeAssistantError and clears availability."""
+    """Turning on without brightness after a turn-off restores the last level."""
     _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
     registry = er.async_get(hass)
     entity_id = _entity_id(registry, "rgb")
+
+    await hass.services.async_call(
+        LIGHT_DOMAIN,
+        SERVICE_TURN_ON,
+        {ATTR_ENTITY_ID: entity_id, ATTR_RGB_COLOR: [255, 0, 0], ATTR_BRIGHTNESS: 128},
+        blocking=True,
+    )
+    await _flush()
+    await hass.services.async_call(LIGHT_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: entity_id}, blocking=True)
+    await _flush()
+
+    await hass.services.async_call(LIGHT_DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: entity_id}, blocking=True)
+    await _flush()
+
+    # scale_channel(255, 128) = ceil(128/255*100) = 51
+    assert client.brightness_calls[-1] == {"red": 51, "green": 0, "blue": 0}
+    state = hass.states.get(entity_id)
+    assert state.state == STATE_ON
+    assert state.attributes[ATTR_BRIGHTNESS] == 128
+    assert state.attributes[ATTR_RGB_COLOR] == (255, 0, 0)
+
+
+async def test_rgbw_toggle_off_on_restores_rgbw_color_and_brightness(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Turning on without color after a turn-off restores rgbw color and level."""
+    _entry, client = await _setup(hass, monkeypatch, WRGB_MODEL)
+    registry = er.async_get(hass)
+    entity_id = _entity_id(registry, "rgbw")
+
+    await hass.services.async_call(
+        LIGHT_DOMAIN,
+        SERVICE_TURN_ON,
+        {ATTR_ENTITY_ID: entity_id, ATTR_RGBW_COLOR: [255, 0, 0, 0], ATTR_BRIGHTNESS: 128},
+        blocking=True,
+    )
+    await _flush()
+    await hass.services.async_call(LIGHT_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: entity_id}, blocking=True)
+    await _flush()
+
+    await hass.services.async_call(LIGHT_DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: entity_id}, blocking=True)
+    await _flush()
+
+    assert client.brightness_calls[-1] == {"red": 51, "green": 0, "blue": 0, "white": 0}
+    state = hass.states.get(entity_id)
+    assert state.state == STATE_ON
+    assert state.attributes[ATTR_BRIGHTNESS] == 128
+    assert state.attributes[ATTR_RGBW_COLOR] == (255, 0, 0, 0)
+
+
+# --- error paths ---
+
+
+async def test_rgb_turn_on_set_brightness_failure_keeps_state_consistent(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed color change raises and keeps the previously applied state."""
+    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
+    registry = er.async_get(hass)
+    entity_id = _entity_id(registry, "rgb")
+
+    # Establish a known on state first.
+    await hass.services.async_call(
+        LIGHT_DOMAIN,
+        SERVICE_TURN_ON,
+        {ATTR_ENTITY_ID: entity_id, ATTR_RGB_COLOR: [255, 0, 0], ATTR_BRIGHTNESS: 128},
+        blocking=True,
+    )
+    await _flush()
 
     client.set_brightness_exception = RuntimeError("ble write failed")
 
@@ -510,20 +578,24 @@ async def test_rgb_turn_on_set_brightness_failure_raises_and_marks_unavailable(
         await hass.services.async_call(
             LIGHT_DOMAIN,
             SERVICE_TURN_ON,
-            {ATTR_ENTITY_ID: entity_id, ATTR_RGB_COLOR: [255, 0, 0]},
+            {ATTR_ENTITY_ID: entity_id, ATTR_RGB_COLOR: [0, 255, 0]},
             blocking=True,
         )
     await _flush()
 
-    # is_on must not have flipped to ON after the failed write
-    assert hass.states.get(entity_id).state != STATE_ON
+    # The entity must still report the previously applied color and brightness
+    # instead of the color that was never written to the device.
+    state = hass.states.get(entity_id)
+    assert state.state == STATE_ON
+    assert state.attributes[ATTR_BRIGHTNESS] == 128
+    assert state.attributes[ATTR_RGB_COLOR] == (255, 0, 0)
 
 
-async def test_rgb_turn_off_set_brightness_failure_raises_and_marks_unavailable(
+async def test_rgb_turn_off_set_brightness_failure_keeps_state_on(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A BLE failure during turn_off raises HomeAssistantError and clears availability."""
+    """A BLE failure during turn_off raises HomeAssistantError and keeps the entity on."""
     _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
     registry = er.async_get(hass)
     entity_id = _entity_id(registry, "rgb")
@@ -548,8 +620,11 @@ async def test_rgb_turn_off_set_brightness_failure_raises_and_marks_unavailable(
         )
     await _flush()
 
-    # is_on must not have flipped to off after the failed write
-    assert hass.states.get(entity_id).state == STATE_ON
+    # is_on and the reported brightness/color must be unchanged after the failed write
+    state = hass.states.get(entity_id)
+    assert state.state == STATE_ON
+    assert state.attributes[ATTR_BRIGHTNESS] == 255
+    assert state.attributes[ATTR_RGB_COLOR] == (255, 0, 0)
 
 
 # --- white-only per-channel entity (ChihirosLightEntity) ---
@@ -641,14 +716,23 @@ async def test_white_turn_off_zeros_channel(
     assert state.state == STATE_OFF
 
 
-async def test_white_turn_on_set_brightness_failure_raises_homeassistant_error(
+async def test_white_turn_on_set_brightness_failure_keeps_state_consistent(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A per-channel entity raises HomeAssistantError and clears availability on BLE failure."""
+    """A failed brightness change raises and keeps the previously applied level."""
     _entry, client = await _setup(hass, monkeypatch, WHITE_MODEL)
     registry = er.async_get(hass)
     entity_id = _entity_id(registry, "white")
+
+    # Establish a known on state first.
+    await hass.services.async_call(
+        LIGHT_DOMAIN,
+        SERVICE_TURN_ON,
+        {ATTR_ENTITY_ID: entity_id, ATTR_BRIGHTNESS: 128},
+        blocking=True,
+    )
+    await _flush()
 
     client.set_brightness_exception = RuntimeError("ble write failed")
 
@@ -656,13 +740,44 @@ async def test_white_turn_on_set_brightness_failure_raises_homeassistant_error(
         await hass.services.async_call(
             LIGHT_DOMAIN,
             SERVICE_TURN_ON,
-            {ATTR_ENTITY_ID: entity_id, ATTR_BRIGHTNESS: 128},
+            {ATTR_ENTITY_ID: entity_id, ATTR_BRIGHTNESS: 200},
             blocking=True,
         )
     await _flush()
 
-    # is_on must not have flipped to ON after the failed turn_on
-    assert hass.states.get(entity_id).state != STATE_ON
+    # Brightness must remain at the previously applied level.
+    state = hass.states.get(entity_id)
+    assert state.state == STATE_ON
+    assert state.attributes[ATTR_BRIGHTNESS] == 128
+
+
+async def test_white_toggle_off_on_restores_last_brightness(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Turning on without brightness after a turn-off restores the last level."""
+    _entry, client = await _setup(hass, monkeypatch, WHITE_MODEL)
+    registry = er.async_get(hass)
+    entity_id = _entity_id(registry, "white")
+
+    await hass.services.async_call(
+        LIGHT_DOMAIN,
+        SERVICE_TURN_ON,
+        {ATTR_ENTITY_ID: entity_id, ATTR_BRIGHTNESS: 200},
+        blocking=True,
+    )
+    await _flush()
+    await hass.services.async_call(LIGHT_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: entity_id}, blocking=True)
+    await _flush()
+
+    await hass.services.async_call(LIGHT_DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: entity_id}, blocking=True)
+    await _flush()
+
+    # ceil(200/255*100) = 79
+    assert client.brightness_calls[-1] == {"white": 79}
+    state = hass.states.get(entity_id)
+    assert state.state == STATE_ON
+    assert state.attributes[ATTR_BRIGHTNESS] == 200
 
 
 # --- restore-state tests ---
