@@ -82,15 +82,19 @@ async def async_setup_entry(
     """Set up notification sensors for Chihiros LED Control."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
     if chihiros_data.dosing_totals:
-        async_add_entities(
-            ChihirosDosingDailyTotalSensor(
-                chihiros_data.coordinator,
-                chihiros_data.device,
-                chihiros_data.dosing_totals,
-                pump_idx,
+        totals = chihiros_data.dosing_totals
+        entities: list[SensorEntity] = []
+        for pump_idx in range(totals.pump_count):
+            entities.append(
+                ChihirosDosingDailyTotalSensor(chihiros_data.coordinator, chihiros_data.device, totals, pump_idx)
             )
-            for pump_idx in range(chihiros_data.dosing_totals.pump_count)
-        )
+            entities.append(
+                ChihirosDosingLifetimeTotalSensor(chihiros_data.coordinator, chihiros_data.device, totals, pump_idx)
+            )
+            entities.append(
+                ChihirosDosingLifetimeCyclesSensor(chihiros_data.coordinator, chihiros_data.device, totals, pump_idx)
+            )
+        async_add_entities(entities)
         return
 
     async_add_entities(
@@ -194,10 +198,38 @@ class ChihirosNotificationSensor(
             raise HomeAssistantError(f"Failed to request status for {self._device.name}") from ex
 
 
-class ChihirosDosingDailyTotalSensor(SensorEntity):
-    """Sensor for locally tracked manual dosing total for today."""
+class ChihirosDosingSensorBase(SensorEntity):
+    """Shared base for locally tracked dosing counters."""
 
     _attr_should_poll = False
+
+    def __init__(
+        self,
+        coordinator: ChihirosDataUpdateCoordinator,
+        device: ChihirosClient,
+        totals: DosingDailyTotals,
+        pump_idx: int,
+        unique_id_suffix: str,
+        name_suffix: str,
+    ) -> None:
+        """Initialize the dosing counter sensor."""
+        self._device = device
+        self._totals = totals
+        self._pump_idx = pump_idx
+        self._attr_name = chihiros_entity_name(device, name_suffix)
+        self._attr_unique_id = chihiros_unique_id(coordinator.address, unique_id_suffix)
+        self._attr_device_info = chihiros_device_info(device, coordinator.address)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to dosing total updates."""
+        self.async_on_remove(
+            async_dispatcher_connect(self.hass, self._totals.address_signal, self.async_write_ha_state)
+        )
+
+
+class ChihirosDosingDailyTotalSensor(ChihirosDosingSensorBase):
+    """Sensor for locally tracked manual dosing total for today."""
+
     _attr_device_class = SensorDeviceClass.VOLUME
     _attr_native_unit_of_measurement = UnitOfVolume.MILLILITERS
     _attr_suggested_display_precision = 1
@@ -209,25 +241,84 @@ class ChihirosDosingDailyTotalSensor(SensorEntity):
         totals: DosingDailyTotals,
         pump_idx: int,
     ) -> None:
-        """Initialize the dosing total sensor."""
-        self._device = device
-        self._totals = totals
-        self._pump_idx = pump_idx
+        """Initialize the daily dosing total sensor."""
         pump_number = pump_idx + 1
-        self._attr_name = chihiros_entity_name(device, f"Pump {pump_number} dosed today")
-        self._attr_unique_id = chihiros_unique_id(coordinator.address, f"dosing_pump_{pump_number}_dosed_today")
-        self._attr_device_info = chihiros_device_info(device, coordinator.address)
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to dosing total updates."""
-        self.async_on_remove(
-            async_dispatcher_connect(self.hass, self._totals.address_signal, self.async_write_ha_state)
+        super().__init__(
+            coordinator,
+            device,
+            totals,
+            pump_idx,
+            f"dosing_pump_{pump_number}_dosed_today",
+            f"Pump {pump_number} dosed today",
         )
 
     @property
     def native_value(self) -> float:
         """Return today's tracked total."""
         return self._totals.total_ml(self._pump_idx)
+
+
+class ChihirosDosingLifetimeTotalSensor(ChihirosDosingSensorBase):
+    """Sensor for the lifetime dosed volume of one pump."""
+
+    _attr_device_class = SensorDeviceClass.VOLUME
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfVolume.MILLILITERS
+    _attr_suggested_display_precision = 1
+
+    def __init__(
+        self,
+        coordinator: ChihirosDataUpdateCoordinator,
+        device: ChihirosClient,
+        totals: DosingDailyTotals,
+        pump_idx: int,
+    ) -> None:
+        """Initialize the lifetime dosing volume sensor."""
+        pump_number = pump_idx + 1
+        super().__init__(
+            coordinator,
+            device,
+            totals,
+            pump_idx,
+            f"dosing_pump_{pump_number}_total_ml",
+            f"Pump {pump_number} total ml",
+        )
+
+    @property
+    def native_value(self) -> float:
+        """Return the lifetime tracked total volume."""
+        return self._totals.lifetime_ml(self._pump_idx)
+
+
+class ChihirosDosingLifetimeCyclesSensor(ChihirosDosingSensorBase):
+    """Sensor for the lifetime dose count of one pump."""
+
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = "cycles"
+    _attr_suggested_display_precision = 0
+
+    def __init__(
+        self,
+        coordinator: ChihirosDataUpdateCoordinator,
+        device: ChihirosClient,
+        totals: DosingDailyTotals,
+        pump_idx: int,
+    ) -> None:
+        """Initialize the lifetime dosing cycles sensor."""
+        pump_number = pump_idx + 1
+        super().__init__(
+            coordinator,
+            device,
+            totals,
+            pump_idx,
+            f"dosing_pump_{pump_number}_total_cycles",
+            f"Pump {pump_number} total cycles",
+        )
+
+    @property
+    def native_value(self) -> int:
+        """Return the lifetime tracked dose count."""
+        return self._totals.lifetime_cycles(self._pump_idx)
 
 
 def _format_schedule_state(points: tuple[dict[str, Any], ...]) -> str:

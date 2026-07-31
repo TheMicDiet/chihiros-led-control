@@ -12,7 +12,7 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 - Chihiros Z Light TINY
 - Chihiros Commander 1
 - Chihiros Commander 4
-- Chihiros dosing pump (`DYDOSE*`) with first Home Assistant support for manual dosing and daily dose totals
+- Chihiros dosing pump (`DYDOSE*`) with first Home Assistant support for manual dosing, daily dose totals, and lifetime pump cycle/ml counters
 - other LED models might work as well but are not tested
 
 
@@ -109,7 +109,15 @@ written, so `set_schedule` accepts at most one period per weekday. After writing
 a schedule, enable the `Auto Mode` switch to run it.
 
 Dosing pumps expose one manual dose button, one dose-volume number control, and
-one locally tracked daily total sensor per pump channel. The first setup asks
+the following locally tracked sensors per pump channel:
+
+- `dosed today` (volume in mL, reset at local midnight)
+- `total ml` (cumulative lifetime volume, `total_increasing`)
+- `total cycles` (cumulative lifetime dose count, `total_increasing`)
+
+The lifetime `total ml` and `total cycles` sensors are `total_increasing`, so they
+can be fed directly into the Home Assistant `utility_meter` to derive daily,
+weekly, monthly, or yearly consumption sensors. The first setup asks
 whether the pump has two or four channels. Manual doses can also be triggered
 from automations with `chihiros.dose_ml`:
 
