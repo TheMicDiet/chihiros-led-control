@@ -119,11 +119,8 @@ class ChihirosFanEntity(
         await self.async_set_percentage(0)
 
     async def _set_fan_speed(self, percentage: int) -> None:
-        """Send the fan speed command and keep availability in sync."""
+        """Send the fan speed command and raise on BLE failure."""
         try:
             await self._device.set_fan_speed(percentage)
         except Exception as ex:
-            self._attr_available = False
-            self.schedule_update_ha_state()
             raise HomeAssistantError(f"Failed to set fan speed for {self.name}") from ex
-        self._attr_available = True
