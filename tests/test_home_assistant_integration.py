@@ -382,9 +382,13 @@ async def test_manual_dose_service_updates_persisted_daily_total_sensor(
     assert isinstance(client, TrackingDosingClient)
     entity_registry = er.async_get(hass)
     pump_2_sensor = _entity_id(entity_registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_dosed_today")
+    pump_2_lifetime_ml = _entity_id(entity_registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_total_ml")
+    pump_2_lifetime_cycles = _entity_id(entity_registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_total_cycles")
 
     assert hass.services.has_service(DOMAIN, SERVICE_DOSE_ML)
     assert hass.states.get(pump_2_sensor).state == "0.0"
+    assert hass.states.get(pump_2_lifetime_ml).state == "0.0"
+    assert hass.states.get(pump_2_lifetime_cycles).state == "0"
 
     await hass.services.async_call(
         DOMAIN,
@@ -396,6 +400,21 @@ async def test_manual_dose_service_updates_persisted_daily_total_sensor(
 
     assert client.dose_ml_calls == [(1, 2.5)]
     assert hass.states.get(pump_2_sensor).state == "2.5"
+    assert hass.states.get(pump_2_lifetime_ml).state == "2.5"
+    assert hass.states.get(pump_2_lifetime_cycles).state == "1"
+
+    # A second dose adds onto the lifetime counters and cycles increment per dose.
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_DOSE_ML,
+        {ATTR_ENTRY_ID: entry.entry_id, ATTR_PUMP: 2, ATTR_ML: 1.0},
+        blocking=True,
+    )
+    await _flush_ha_state_updates()
+
+    assert hass.states.get(pump_2_sensor).state == "3.5"
+    assert hass.states.get(pump_2_lifetime_ml).state == "3.5"
+    assert hass.states.get(pump_2_lifetime_cycles).state == "2"
 
 
 async def test_two_channel_dosing_pump_creates_two_sensors_and_rejects_pump_three(
@@ -413,6 +432,14 @@ async def test_two_channel_dosing_pump_creates_two_sensors_and_rejects_pump_thre
         SENSOR_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_dosing_pump_3_dosed_today"
     )
     assert pump_3_sensor is None
+    pump_3_total_ml = entity_registry.async_get_entity_id(
+        SENSOR_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_dosing_pump_3_total_ml"
+    )
+    pump_3_total_cycles = entity_registry.async_get_entity_id(
+        SENSOR_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_dosing_pump_3_total_cycles"
+    )
+    assert pump_3_total_ml is None
+    assert pump_3_total_cycles is None
 
     with pytest.raises(HomeAssistantError, match="has 2 pumps"):
         await hass.services.async_call(

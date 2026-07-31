@@ -15,7 +15,9 @@ from custom_components.chihiros.dosing import (
     PUMP_COUNT,
     SIGNAL_DOSING_TOTALS_UPDATED,
     DosingDailyTotals,
+    _coerce_cycles_list,
     _coerce_total,
+    _coerce_total_list,
     normalize_pump_count,
 )
 
@@ -41,6 +43,21 @@ def test_coerce_total_tolerates_garbage() -> None:
     assert _coerce_total("nope") == 0.0
 
 
+def test_coerce_total_list_handles_garbage_and_short_lists() -> None:
+    """_coerce_total_list returns a fixed-length list safeguarding against bad/short stored data."""
+    assert _coerce_total_list(None, 2) == [0.0, 0.0]
+    assert _coerce_total_list([1.5, "2.7", "bad"], 2) == [1.5, 2.7]
+    assert _coerce_total_list([4.0], 3) == [4.0, 0.0, 0.0]
+
+
+def test_coerce_cycles_list_handles_garbage_and_short_lists() -> None:
+    """_coerce_cycles_list rounds stored counts and defaults missing/invalid entries to 0."""
+    assert _coerce_cycles_list(None, 2) == [0, 0]
+    assert _coerce_cycles_list([1, "2", "bad"], 2) == [1, 2]
+    assert _coerce_cycles_list([3.6], 3) == [4, 0, 0]
+    assert _coerce_cycles_list([1, 2, 3, 4], 2) == [1, 2]
+
+
 @pytest.mark.asyncio
 async def test_async_load_restores_today_totals(hass: Any) -> None:
     """A stored dict for today restores per-pump totals using _coerce_total."""
@@ -50,6 +67,8 @@ async def test_async_load_restores_today_totals(hass: Any) -> None:
         return {
             "date": dt_util.now().date().isoformat(),
             "totals_ml": [1.5, "2.7", "bad"],
+            "lifetime_ml": [10.0, "20.5"],
+            "lifetime_cycles": [3, "4"],
         }
 
     totals._store.async_load = _load  # type: ignore[assignment]
@@ -58,10 +77,18 @@ async def test_async_load_restores_today_totals(hass: Any) -> None:
 
     assert totals.total_ml(0) == 1.5
     assert totals.total_ml(1) == 2.7
+    assert totals.lifetime_ml(0) == 10.0
+    assert totals.lifetime_ml(1) == round(20.5, 1)
+    assert totals.lifetime_cycles(0) == 3
+    assert totals.lifetime_cycles(1) == 4
     # The stored list has a third entry; pump_count=2 so only two are read,
     # and out-of-range indices return the coerced stored value (or 0.0).
     with pytest.raises(ValueError, match="Pump index must be between 0 and 1"):
         totals.total_ml(2)
+    with pytest.raises(ValueError, match="Pump index must be between 0 and 1"):
+        totals.lifetime_ml(2)
+    with pytest.raises(ValueError, match="Pump index must be between 0 and 1"):
+        totals.lifetime_cycles(2)
 
 
 @pytest.mark.asyncio
@@ -71,7 +98,12 @@ async def test_async_load_stale_date_resets_totals(hass: Any) -> None:
     totals = DosingDailyTotals(hass, "FA:CE:C0:FF:00:02", pump_count=2)
 
     async def _load() -> dict[str, Any]:
-        return {"date": "1999-01-01", "totals_ml": [9.9, 8.8]}
+        return {
+            "date": "1999-01-01",
+            "totals_ml": [9.9, 8.8],
+            "lifetime_ml": [12.3, 4.5],
+            "lifetime_cycles": [7, 1],
+        }
 
     totals._store.async_load = _load  # type: ignore[assignment]
 
@@ -84,9 +116,16 @@ async def test_async_load_stale_date_resets_totals(hass: Any) -> None:
 
     assert totals.total_ml(0) == 0.0
     assert totals.total_ml(1) == 0.0
-    # async_reset persists the zeroed totals for today.
+    # Lifetime counters are preserved across the daily reset.
+    assert totals.lifetime_ml(0) == round(12.3, 1)
+    assert totals.lifetime_ml(1) == round(4.5, 1)
+    assert totals.lifetime_cycles(0) == 7
+    assert totals.lifetime_cycles(1) == 1
+    # async_reset persists the zeroed totals for today while keeping lifetime data.
     assert saved and saved[0]["date"] == dt_util.now().date().isoformat()
     assert saved[0]["totals_ml"] == [0.0, 0.0]
+    assert saved[0]["lifetime_ml"] == [round(12.3, 1), round(4.5, 1)]
+    assert saved[0]["lifetime_cycles"] == [7, 1]
 
 
 @pytest.mark.asyncio
@@ -106,7 +145,13 @@ async def test_async_add_dose_accumulates_and_persists(hass: Any) -> None:
 
     assert totals.total_ml(0) == 3.6
     assert totals.total_ml(1) == 0.0
+    assert totals.lifetime_ml(0) == 3.6
+    assert totals.lifetime_ml(1) == 0.0
+    assert totals.lifetime_cycles(0) == 2
+    assert totals.lifetime_cycles(1) == 0
     assert any(entry["totals_ml"][0] == 3.6 for entry in saved)
+    assert saved[-1]["lifetime_ml"] == [3.6, 0.0]
+    assert saved[-1]["lifetime_cycles"] == [2, 0]
     with pytest.raises(ValueError, match="Pump index must be between 0 and 1"):
         await totals.async_add_dose(5, 1.0)
 
@@ -134,12 +179,17 @@ async def test_midnight_reset_resets_totals_and_reschedules(hass: Any) -> None:
     await totals.async_load()
     await totals.async_add_dose(0, 5.0)
     assert totals.total_ml(0) == 5.0
+    assert totals.lifetime_ml(0) == 5.0
+    assert totals.lifetime_cycles(0) == 1
 
     first_reset_handle = totals._unsub_midnight_reset
 
     await totals._async_midnight_reset(dt_util.utcnow() + timedelta(days=1))
 
     assert totals.total_ml(0) == 0.0
+    # Lifetime counters survive the daily reset.
+    assert totals.lifetime_ml(0) == 5.0
+    assert totals.lifetime_cycles(0) == 1
     # The reset re-schedules a fresh midnight callback.
     assert totals._unsub_midnight_reset is not None
     assert totals._unsub_midnight_reset is not first_reset_handle

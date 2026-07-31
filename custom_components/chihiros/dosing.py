@@ -33,6 +33,8 @@ class DosingDailyTotals:
     _store: Store[dict[str, Any]] = field(init=False)
     _date: str = field(init=False)
     _totals: list[float] = field(init=False)
+    _lifetime_ml: list[float] = field(init=False)
+    _lifetime_cycles: list[int] = field(init=False)
     _unsub_midnight_reset: Any = None
 
     def __post_init__(self) -> None:
@@ -41,6 +43,8 @@ class DosingDailyTotals:
         self.pump_count = normalize_pump_count(self.pump_count)
         self._date = self._today()
         self._totals = [0.0] * self.pump_count
+        self._lifetime_ml = [0.0] * self.pump_count
+        self._lifetime_cycles = [0] * self.pump_count
 
     @property
     def address_signal(self) -> str:
@@ -51,14 +55,13 @@ class DosingDailyTotals:
         """Load today's totals from Home Assistant storage."""
         stored = await self._store.async_load()
         if isinstance(stored, dict):
+            self._lifetime_ml = _coerce_total_list(stored.get("lifetime_ml"), self.pump_count)
+            self._lifetime_cycles = _coerce_cycles_list(stored.get("lifetime_cycles"), self.pump_count)
             stored_date = stored.get("date")
             stored_totals = stored.get("totals_ml")
             if stored_date == self._today() and isinstance(stored_totals, list):
                 self._date = stored_date
-                self._totals = [
-                    _coerce_total(stored_totals[index] if index < len(stored_totals) else 0.0)
-                    for index in range(self.pump_count)
-                ]
+                self._totals = _coerce_total_list(stored_totals, self.pump_count)
             else:
                 await self.async_reset()
         self._schedule_midnight_reset()
@@ -69,11 +72,23 @@ class DosingDailyTotals:
         self._validate_pump_idx(pump_idx)
         return self._totals[pump_idx]
 
+    def lifetime_ml(self, pump_idx: int) -> float:
+        """Return the lifetime dosed volume for a zero-based pump index."""
+        self._validate_pump_idx(pump_idx)
+        return self._lifetime_ml[pump_idx]
+
+    def lifetime_cycles(self, pump_idx: int) -> int:
+        """Return the lifetime dose count for a zero-based pump index."""
+        self._validate_pump_idx(pump_idx)
+        return self._lifetime_cycles[pump_idx]
+
     async def async_add_dose(self, pump_idx: int, volume_ml: float) -> None:
         """Add a successful manual dose to today's local total."""
         self._ensure_today_sync()
         self._validate_pump_idx(pump_idx)
         self._totals[pump_idx] = round(self._totals[pump_idx] + volume_ml, 1)
+        self._lifetime_ml[pump_idx] = round(self._lifetime_ml[pump_idx] + volume_ml, 1)
+        self._lifetime_cycles[pump_idx] += 1
         await self.async_save()
         async_dispatcher_send(self.hass, self.address_signal)
 
@@ -86,7 +101,14 @@ class DosingDailyTotals:
 
     async def async_save(self) -> None:
         """Persist totals to Home Assistant storage."""
-        await self._store.async_save({"date": self._date, "totals_ml": self._totals})
+        await self._store.async_save(
+            {
+                "date": self._date,
+                "totals_ml": self._totals,
+                "lifetime_ml": self._lifetime_ml,
+                "lifetime_cycles": self._lifetime_cycles,
+            }
+        )
 
     def async_close(self) -> None:
         """Cancel scheduled callbacks."""
@@ -141,3 +163,26 @@ def _coerce_total(value: object) -> float:
         return round(float(value), 1)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _coerce_total_list(values: object, pump_count: int) -> list[float]:
+    """Coerce a stored list of per-pump totals into a fixed-length float list."""
+    if not isinstance(values, list):
+        return [0.0] * pump_count
+    return [_coerce_total(values[index]) if index < len(values) else 0.0 for index in range(pump_count)]
+
+
+def _coerce_cycles_list(values: object, pump_count: int) -> list[int]:
+    """Coerce a stored list of per-pump cycle counts into a fixed-length int list."""
+    if not isinstance(values, list):
+        return [0] * pump_count
+    coerced: list[int] = []
+    for index in range(pump_count):
+        if index >= len(values):
+            coerced.append(0)
+            continue
+        try:
+            coerced.append(int(round(float(values[index]))))
+        except (TypeError, ValueError):
+            coerced.append(0)
+    return coerced
