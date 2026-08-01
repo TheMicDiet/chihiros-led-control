@@ -2,13 +2,19 @@
 
 This repository contains a python **CLI** script as well as a **Home Assistant integration** that can be used to control Chihiros LEDs for aquariums via bluetooth without the vendor app. It also includes first Home Assistant support for Chihiros dosing pumps. For this purpose, the protocol to control the devices has been reversed engineered with the help of decompiling the old *Magic App* as well as sniffing and analyzing of bluetooth packages that are sent by the new *My Chihiros App*. The new app is based on flutter and only contains a binary that can not easily be analyzed.
 
-## Disclaimer
-
-This project is an independent, unofficial, community-developed project and is not affiliated with, endorsed by, sponsored by, or otherwise associated with Chihiros Aquatic Studio.
-
-“Chihiros” and any other product names or trademarks referenced by this project belong to their respective owners.
-
-This software is provided “as is” and without warranties of any kind, whether express or implied. You use it entirely at your own risk. The authors and contributors are not responsible for any damage, loss, injury, equipment malfunction, data loss, or other consequences resulting from the use of this project, including damage to aquarium equipment, livestock, or other property.
+> [!WARNING]
+> This is an independent, unofficial, community-developed project. It is not
+> affiliated with, endorsed by, sponsored by, or otherwise associated with
+> Chihiros Aquatic Studio.
+>
+> “Chihiros” and any other product names or trademarks referenced by this
+> project belong to their respective owners.
+>
+> This software is provided “as is” and without warranties of any kind, whether
+> express or implied. You use it entirely at your own risk. The authors and
+> contributors are not responsible for any damage, loss, injury, equipment
+> malfunction, data loss, or other consequences resulting from the use of this
+> project, including damage to aquarium equipment, livestock, or other property.
 
 ## Supported Devices
 - [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
