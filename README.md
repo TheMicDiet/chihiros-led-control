@@ -210,6 +210,12 @@ Assistant integration lives in `custom_components/chihiros/` and imports the
 vendored runtime copy from `custom_components/chihiros/vendor/` so HACS installs
 do not require the top-level package.
 
+Want to help add support for a device that is not listed yet? See
+[docs/capturing-ble-traffic.md](docs/capturing-ble-traffic.md) for
+step-by-step instructions on recording the Bluetooth traffic between the
+official My Chihiros app and the device. Captures like these are how new
+device protocols get reverse-engineered.
+
 Set up the development environment with uv:
 
 ```bash
