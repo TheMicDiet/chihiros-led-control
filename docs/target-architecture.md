@@ -1,4 +1,4 @@
-# Plugin architecture (lean target)
+# Target architecture
 
 ## Decision summary
 
