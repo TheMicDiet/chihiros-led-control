@@ -2,7 +2,8 @@
 
 ## Decision summary
 
-Split the code into three layers, from small to large:
+This document defines the target architecture: a clean-break redesign of the
+project, split into three layers from small to large:
 
 1. **Core** (`core/`) — everything device families genuinely share: the BLE
    transport, the connect-per-transaction session (standard connection
@@ -17,9 +18,9 @@ Split the code into three layers, from small to large:
 3. **Hosts** — the Home Assistant integration and the CLI. Thin adapters that
    only consume core capabilities; no host logic lives in the core.
 
-The word *plugin* still exists, but it means exactly one thing: an object in
-a statically collected tuple that matches discoveries, resolves stored model
-IDs, enumerates its models, and creates devices. There is no registry, no
+The family seam is deliberately small. A family plugin object matches
+discoveries, resolves stored model IDs, enumerates its models, and creates
+devices — that is the whole plugin mechanism. There is no registry, no
 registration API, no runtime plugin machinery. The seam is kept because the
 development fake device needs it (and it keeps the door open for real
 third-party plugins later: entry-point loading would be a ~15-line addition
@@ -28,11 +29,11 @@ to the tuple constructor). Everything a heavier design adds around that seam
 rejection, per-plugin host protocols — is deliberately absent (see
 "Deliberately absent").
 
-This is a clean-break redesign. Existing public imports, config entries,
-entity unique IDs, service details, and internal module layout are not design
-constraints. The one-time cost is documented: existing HACS users lose entity
-registry entries and restored state once, and automations referencing old
-service names must be updated (release notes).
+Existing public imports, config entries, entity unique IDs, service details,
+and internal module layout are not design constraints. The one-time cost is
+documented: existing HACS users lose entity registry entries and restored
+state once, and automations referencing old service names must be updated
+(release notes).
 
 ## Non-negotiable requirements
 
