@@ -360,9 +360,13 @@ class ChihirosDevice:
         self,
         command: list[bytes] | bytes | bytearray,
         retry: int | None = None,
-        notification_wait: float = COMMAND_NOTIFICATION_WAIT,
+        notification_wait: float | None = None,
     ) -> None:
-        """Send commands to the device."""
+        """Send commands to the device.
+
+        ``notification_wait`` defaults to :data:`COMMAND_NOTIFICATION_WAIT` and
+        is resolved at call time so callers (and tests) can override it.
+        """
         commands_to_send = command if isinstance(command, list) else [bytes(command)]
         attempts = DEFAULT_ATTEMPTS if retry is None else retry
         if attempts < 1:
@@ -370,6 +374,8 @@ class ChihirosDevice:
         self._logger.debug("%s: Sending commands %s", self.name, [item.hex() for item in commands_to_send])
         if self._operation_lock.locked():
             self._logger.debug("%s: Operation already in progress, waiting; RSSI: %s", self.name, self.rssi)
+        if notification_wait is None:
+            notification_wait = COMMAND_NOTIFICATION_WAIT
         async with self._operation_lock:
             await self._send_command_locked(commands_to_send, attempts, notification_wait)
 

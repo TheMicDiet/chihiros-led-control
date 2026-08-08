@@ -30,6 +30,8 @@ EXCLUDED_SUFFIXES = {
 }
 EXCLUDED_NAMES = {
     "cli.py",
+    # Scripted-transport test harness; the HA integration does not use it.
+    "testing.py",
     "PKG-INFO",
 }
 
