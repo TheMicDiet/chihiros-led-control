@@ -57,7 +57,13 @@ FAKE_DEVICES = (
     FakeChihirosDeviceInfo(
         address=f"{FAKE_ADDRESS_PREFIX}:00:00:05",
         name="DYVVD3-fake",
-        model=DeviceModel("Fake WRGB VIVID III", ("DYVVD3",), WRGB_CHANNELS, has_fan=True),
+        model=DeviceModel(
+            "Fake WRGB VIVID III",
+            ("DYVVD3",),
+            WRGB_CHANNELS,
+            has_fan=True,
+            min_fan_speed=25,
+        ),
     ),
 )
 FAKE_DEVICES_BY_ADDRESS = {device.address: device for device in FAKE_DEVICES}

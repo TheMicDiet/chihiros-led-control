@@ -244,6 +244,14 @@ async def test_fan_set_percentage_turn_on_and_turn_off_drive_client(
     assert state.state == STATE_OFF
     assert state.attributes[ATTR_PERCENTAGE] == 0
 
+    # Turning on without a requested percentage restores the previous manual speed.
+    await entity.async_turn_on()
+    await _flush()
+    assert client.fan_speed_calls == [50, 50, 0, 50]
+    state = hass.states.get(entity_id)
+    assert state.state == STATE_ON
+    assert state.attributes[ATTR_PERCENTAGE] == 50
+
 
 async def test_fan_turn_off_service_disables_fan(
     hass: HomeAssistant,

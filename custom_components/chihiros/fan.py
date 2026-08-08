@@ -75,6 +75,7 @@ class ChihirosFanEntity(
         self._attr_unique_id = chihiros_unique_id(self._address, "fan")
         self._attr_device_info = chihiros_device_info(self._device, self._address)
         self._attr_percentage = 0
+        self._last_manual_percentage = 0
         self._attr_preset_mode = "Manual"
 
     async def async_added_to_hass(self) -> None:
@@ -82,6 +83,8 @@ class ChihirosFanEntity(
         await super().async_added_to_hass()
         if last_state := await self.async_get_last_state():
             self._attr_percentage = last_state.attributes.get("percentage") or 0
+            if self._attr_percentage > 0:
+                self._last_manual_percentage = self._attr_percentage
             preset = last_state.attributes.get("preset_mode")
             if preset in self._attr_preset_modes:
                 self._attr_preset_mode = preset
@@ -124,6 +127,8 @@ class ChihirosFanEntity(
             applied_percentage = minimum
         await self._set_fan_speed(applied_percentage)
         self._attr_percentage = applied_percentage
+        if applied_percentage > 0:
+            self._last_manual_percentage = applied_percentage
         self._attr_preset_mode = "Manual"
         self.schedule_update_ha_state()
 
@@ -154,7 +159,7 @@ class ChihirosFanEntity(
             await self.async_set_preset_mode(preset_mode)
             return
         if percentage is None:
-            percentage = self._attr_percentage or 100
+            percentage = self._last_manual_percentage or 100
         await self.async_set_percentage(percentage)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
