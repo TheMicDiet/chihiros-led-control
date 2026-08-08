@@ -297,6 +297,26 @@ async def test_fake_device_without_fan_rejects_fan_speed() -> None:
         await device.set_fan_speed(50)
 
 
+@pytest.mark.asyncio
+async def test_fake_devices_cover_new_led_families() -> None:
+    """The development roster exposes the LED families added for 2.8.59 alignment."""
+    by_code = {code: info for info in FAKE_DEVICES for code in info.model.advertised_codes}
+    for code in ("DYA", "DYC", "DYARGB", "DYREE", "DYRGBV", "DYSEA", "DYONE", "DYTWO", "DYNLED"):
+        assert code in by_code, f"no fake device advertises {code}"
+    assert dict(by_code["DYTWO"].model.color_channels) == {"white": 0, "warm": 1}
+    assert by_code["DYNLED"].model.needs_device_type is True
+
+
+@pytest.mark.asyncio
+async def test_every_fake_device_accepts_brightness_writes() -> None:
+    """Every fake device handles brightness writes for its advertised channels."""
+    for info in FAKE_DEVICES:
+        device = create_fake_device(info.address)
+        await device.set_brightness({color: 40 for color in device.colors})
+        await device.query_status()
+        assert device.address == info.address
+
+
 def test_discovery_helpers_for_fake_device() -> None:
     """Fake discovery metadata maps cleanly to config entry data and labels."""
     discovery = ChihirosDiscovery.from_fake(FAKE_DEVICES[0])

@@ -9,7 +9,15 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .dosing import normalize_pump_count
-from .vendor.chihiros_led_control.models import DOSING_PUMP, RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
+from .vendor.chihiros_led_control.models import (
+    COMMANDER_CHANNELS,
+    DOSING_PUMP,
+    RGB_CHANNELS,
+    WHITE_CHANNELS,
+    WRGB_CHANNELS,
+    X300_CHANNELS,
+    DeviceModel,
+)
 from .vendor.chihiros_led_control.protocol import (
     DosingDailyNotification,
     DosingTotalsNotification,
@@ -63,6 +71,56 @@ FAKE_DEVICES = (
             WRGB_CHANNELS,
             has_fan=True,
             min_fan_speed=25,
+        ),
+    ),
+    FakeChihirosDeviceInfo(
+        address=f"{FAKE_ADDRESS_PREFIX}:00:00:06",
+        name="DYA-fake",
+        model=DeviceModel("Fake A Series", ("DYA",), WHITE_CHANNELS),
+    ),
+    FakeChihirosDeviceInfo(
+        address=f"{FAKE_ADDRESS_PREFIX}:00:00:07",
+        name="DYC-fake",
+        model=DeviceModel("Fake New C", ("DYC",), WHITE_CHANNELS),
+    ),
+    FakeChihirosDeviceInfo(
+        address=f"{FAKE_ADDRESS_PREFIX}:00:00:08",
+        name="DYARGB-fake",
+        model=DeviceModel("Fake RGB+APLUS", ("DYARGB",), RGB_CHANNELS),
+    ),
+    FakeChihirosDeviceInfo(
+        address=f"{FAKE_ADDRESS_PREFIX}:00:00:09",
+        name="DYREE-fake",
+        model=DeviceModel("Fake RGB VIVID", ("DYREE",), RGB_CHANNELS),
+    ),
+    FakeChihirosDeviceInfo(
+        address=f"{FAKE_ADDRESS_PREFIX}:00:00:0A",
+        name="DYRGBV-fake",
+        model=DeviceModel("Fake RGB VIVID II", ("DYRGBV",), RGB_CHANNELS),
+    ),
+    FakeChihirosDeviceInfo(
+        address=f"{FAKE_ADDRESS_PREFIX}:00:00:0B",
+        name="DYSEA-fake",
+        model=DeviceModel("Fake SEA_LED", ("DYSEA",), WRGB_CHANNELS),
+    ),
+    FakeChihirosDeviceInfo(
+        address=f"{FAKE_ADDRESS_PREFIX}:00:00:0C",
+        name="DYONE-fake",
+        model=DeviceModel("Fake Commander X", ("DYONE",), WHITE_CHANNELS),
+    ),
+    FakeChihirosDeviceInfo(
+        address=f"{FAKE_ADDRESS_PREFIX}:00:00:0D",
+        name="DYTWO-fake",
+        model=DeviceModel("Fake X300", ("DYTWO",), X300_CHANNELS),
+    ),
+    FakeChihirosDeviceInfo(
+        address=f"{FAKE_ADDRESS_PREFIX}:00:00:0E",
+        name="DYNLED-fake",
+        model=DeviceModel(
+            "Fake Commander 4",
+            ("DYNLED",),
+            COMMANDER_CHANNELS,
+            needs_device_type=True,
         ),
     ),
 )
