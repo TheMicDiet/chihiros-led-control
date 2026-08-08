@@ -142,8 +142,12 @@ class ChihirosFanEntity(
                 raise HomeAssistantError(f"Failed to enable fan auto mode for {self.name}") from ex
             self._attr_preset_mode = "Auto"
         else:
-            # Manual: re-apply the last speed so the fan leaves auto control.
-            await self._set_fan_speed(self._attr_percentage or 100)
+            # Manual: re-apply the last manual speed so the fan leaves auto
+            # control. The percentage attribute is stale while auto mode is
+            # active, so prefer the last explicitly set manual speed.
+            percentage = self._last_manual_percentage or self._attr_percentage or 100
+            await self._set_fan_speed(percentage)
+            self._attr_percentage = percentage
             self._attr_preset_mode = "Manual"
         self.schedule_update_ha_state()
 

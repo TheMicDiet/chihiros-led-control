@@ -467,6 +467,16 @@ class ChihirosDevice:
             self._notify_callbacks(parsed)
             return
         if isinstance(parsed, Vivid3FanStatusNotification):
+            if not self.model.has_fan:
+                # The 0xB6/0x16 frame shape is the VIVID3 fan readout; other
+                # newer-generation devices (e.g. dosing pumps) must not be
+                # interpreted as fan telemetry.
+                self._logger.debug(
+                    "%s: Ignoring fan readout frame on non-fan model %s",
+                    self.name,
+                    self.model.name,
+                )
+                return
             self.last_vivid3_fan_status_notification = parsed
             self._logger.debug(
                 "%s: VIVID3 fan notification received; fan_rpm=%s temperature_celsius=%s",

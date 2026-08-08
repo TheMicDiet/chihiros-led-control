@@ -677,6 +677,22 @@ def test_notification_handler_stores_and_publishes_vivid3_fan_status() -> None:
     assert received == [device.last_vivid3_fan_status_notification]
 
 
+def test_notification_handler_ignores_vivid3_fan_readout_on_non_fan_model() -> None:
+    """0xB6/0x16 fan readout frames are ignored on models without a fan."""
+    received: list[Vivid3FanStatusNotification] = []
+    frame = bytearray([0xB6, 0x00, 0x00, 0x00, 0x01, 0x16, 0x02, 0x58, 25])
+
+    async def run() -> ChihirosDevice:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), RGB_CHANNELS))  # type: ignore[arg-type]
+        device.add_notification_callback(received.append)
+        device._notification_handler(None, frame)  # type: ignore[arg-type]
+        return device
+
+    device = asyncio.run(run())
+    assert device.last_vivid3_fan_status_notification is None
+    assert received == []
+
+
 def test_set_fan_auto_sends_auto_mode_command() -> None:
     """Fan auto mode sends the vendor app's autoFan frame and tracks the mode."""
     sent_commands: list[bytes] = []

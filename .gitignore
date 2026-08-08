@@ -169,4 +169,3 @@ scripts/deploy_gigapi.py
 
 # Local scratch (agent review loops)
 tmp/
-tmp/

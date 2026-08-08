@@ -480,6 +480,121 @@ async def test_fan_manual_preset_reapplies_speed(
     assert state.attributes[ATTR_PRESET_MODE] == "Manual"
 
 
+async def test_fan_manual_preset_after_auto_restores_last_manual_speed(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Leaving Auto for Manual re-applies the last manual speed, not full speed."""
+    from homeassistant.components.fan import ATTR_PRESET_MODE, SERVICE_SET_PRESET_MODE
+
+    _entry, client, _coordinator = await _setup(hass, monkeypatch, FAN_MODEL)
+    registry = er.async_get(hass)
+    entity_id = _entity_id(registry)
+
+    await hass.services.async_call(
+        FAN_DOMAIN,
+        SERVICE_SET_PERCENTAGE,
+        {ATTR_ENTITY_ID: entity_id, ATTR_PERCENTAGE: 60},
+        blocking=True,
+    )
+    await _flush()
+
+    # Fan off (percentage 0) then auto; the stale percentage must not turn the
+    # fan on at 100% when the user switches back to manual.
+    await hass.services.async_call(
+        FAN_DOMAIN,
+        SERVICE_TURN_OFF,
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
+    await _flush()
+
+    await hass.services.async_call(
+        FAN_DOMAIN,
+        SERVICE_SET_PRESET_MODE,
+        {ATTR_ENTITY_ID: entity_id, ATTR_PRESET_MODE: "Auto"},
+        blocking=True,
+    )
+    await _flush()
+
+    await hass.services.async_call(
+        FAN_DOMAIN,
+        SERVICE_SET_PRESET_MODE,
+        {ATTR_ENTITY_ID: entity_id, ATTR_PRESET_MODE: "Manual"},
+        blocking=True,
+    )
+    await _flush()
+
+    assert client.fan_speed_calls == [60, 0, 60]
+    state = hass.states.get(entity_id)
+    assert state.attributes[ATTR_PRESET_MODE] == "Manual"
+    assert state.attributes[ATTR_PERCENTAGE] == 60
+
+
+async def test_fan_temp_numbers_restore_pair_on_reload(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restored fan temperatures are re-applied once with the stored pair."""
+    from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
+
+    _entry, client, _coordinator = await _setup(hass, monkeypatch, FAN_MODEL)
+    registry = er.async_get(hass)
+    start_id = registry.async_get_entity_id(NUMBER_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_fan_start_temp")
+    stop_id = registry.async_get_entity_id(NUMBER_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_fan_stop_temp")
+    assert start_id is not None
+    assert stop_id is not None
+
+    def _prime() -> None:
+        _prime_restore_state(hass, start_id, State(start_id, "38.0"))
+        _prime_restore_state(hass, stop_id, State(stop_id, "36.0"))
+
+    await _reload_entry(hass, _entry, prime=_prime)
+
+    # A single deferred write re-applies the full stored pair (both halves
+    # restored, not the device defaults).
+    assert client.fan_temp_calls == [(38, 36)]
+    assert hass.states.get(start_id).state == "38.0"
+    assert hass.states.get(stop_id).state == "36.0"
+
+
+async def test_fan_temp_numbers_restore_preserves_hysteresis_on_reload(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A restored pair that violates the hysteresis gap is normalized on reload."""
+    from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
+
+    _entry, client, _coordinator = await _setup(hass, monkeypatch, FAN_MODEL)
+    registry = er.async_get(hass)
+    start_id = registry.async_get_entity_id(NUMBER_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_fan_start_temp")
+    stop_id = registry.async_get_entity_id(NUMBER_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_fan_stop_temp")
+    assert start_id is not None
+    assert stop_id is not None
+
+    def _prime() -> None:
+        _prime_restore_state(hass, start_id, State(start_id, "30.0"))
+        _prime_restore_state(hass, stop_id, State(stop_id, "28.0"))
+
+    await _reload_entry(hass, _entry, prime=_prime)
+
+    assert client.fan_temp_calls == [(30, 28)]
+    assert hass.states.get(start_id).state == "30.0"
+    assert hass.states.get(stop_id).state == "28.0"
+
+
+async def test_fan_temp_numbers_do_not_restore_without_last_state(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh setup writes no fan temperatures until a value is changed."""
+    _entry, client, _coordinator = await _setup(hass, monkeypatch, FAN_MODEL)
+
+    await _flush()
+
+    assert client.fan_temp_calls == []
+
+
 async def test_fan_temp_numbers_drive_client_and_enforce_hysteresis(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,

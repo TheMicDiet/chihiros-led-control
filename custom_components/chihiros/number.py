@@ -9,9 +9,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature, UnitOfVolume
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.helpers.restore_state import async_get as async_get_restore_data
 
 from .const import DOMAIN
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
@@ -110,6 +112,8 @@ class ChihirosFanTempNumberBase(NumberEntity, RestoreEntity):
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_mode = NumberMode.BOX
 
+    _partner_unique_id_suffix = ""
+
     def __init__(self, device: ChihirosClient) -> None:
         """Initialize the fan temperature number."""
         self._device = device
@@ -124,12 +128,11 @@ class ChihirosFanTempNumberBase(NumberEntity, RestoreEntity):
             except ValueError:
                 value = None
             if value is not None and self.native_min_value <= value <= self.native_max_value:
-                pair = self._restored_temperature_pair(int(value))
-                try:
-                    await self._device.set_fan_start_stop_temp(*pair)
-                    self._restored_value = float(self._restored_value_from_pair(pair))
-                except Exception:
-                    _LOGGER.debug("Failed to restore fan temperature for %s", self.name, exc_info=True)
+                self._restored_value = float(value)
+        if self._restored_value is not None:
+            # Re-applying the pair writes to the device, so defer it past
+            # entity setup instead of blocking it on BLE I/O.
+            self.hass.async_create_task(self._restore_temperatures())
         self.async_on_remove(
             async_dispatcher_connect(self.hass, _fan_temp_signal(self._device.address), self._async_temp_updated)
         )
@@ -151,13 +154,45 @@ class ChihirosFanTempNumberBase(NumberEntity, RestoreEntity):
         """Return this number's device-side value."""
         raise NotImplementedError
 
-    def _restored_temperature_pair(self, value: int) -> tuple[int, int]:
-        """Return the complete fan temperature pair for a restored value."""
+    def _restored_temperature_pair(self) -> tuple[int, int] | None:
+        """Return the complete fan temperature pair to restore, or None."""
         raise NotImplementedError
 
-    def _restored_value_from_pair(self, pair: tuple[int, int]) -> int:
-        """Return this entity's value from a complete restored pair."""
-        raise NotImplementedError
+    def _partner_restored_value(self) -> float | None:
+        """Return the paired number's restored value from the restore store, if any."""
+        partner_unique_id = chihiros_unique_id(self._device.address, self._partner_unique_id_suffix)
+        registry = er.async_get(self.hass)
+        partner_entity_id = registry.async_get_entity_id("number", DOMAIN, partner_unique_id)
+        if partner_entity_id is None:
+            return None
+        stored_state = async_get_restore_data(self.hass).last_states.get(partner_entity_id)
+        if stored_state is None:
+            return None
+        try:
+            value = float(stored_state.state.state)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if not self._attr_native_min_value <= value <= self._attr_native_max_value:
+            return None
+        return value
+
+    async def _restore_temperatures(self) -> None:
+        """Re-apply the restored fan temperature pair to the device.
+
+        Only the stop-temperature number performs the write so the pair is
+        derived from both restored values; it is always added after the start
+        number and can read the start value from the restore store.
+        """
+        pair = self._restored_temperature_pair()
+        if pair is None:
+            return
+        try:
+            await self._device.set_fan_start_stop_temp(*pair)
+        except Exception:
+            _LOGGER.debug("Failed to restore fan temperature for %s", self.name, exc_info=True)
+            return
+        self._restored_value = None
+        async_dispatcher_send(self.hass, _fan_temp_signal(self._device.address))
 
     async def _apply_temps(self, start_temp: int, stop_temp: int) -> None:
         """Persist both fan temperatures on the device and notify the paired number."""
@@ -178,21 +213,15 @@ class ChihirosFanStartTempNumber(ChihirosFanTempNumberBase):
         self._attr_name = chihiros_entity_name(device, "Fan start temp")
         self._attr_unique_id = chihiros_unique_id(device.address, "fan_start_temp")
         self._attr_device_info = chihiros_device_info(device, device.address)
+        self._partner_unique_id_suffix = "fan_stop_temp"
 
     def _current_value(self) -> float:
         """Return the fan start temperature stored on the device client."""
         return float(self._device.fan_start_temp)
 
-    def _restored_temperature_pair(self, value: int) -> tuple[int, int]:
-        """Return restored start temperature with a valid stop temperature."""
-        stop_temp = min(self._device.fan_stop_temp, value - FAN_TEMP_HYSTERESIS)
-        return max(self._attr_native_min_value + FAN_TEMP_HYSTERESIS, value), max(
-            self._attr_native_min_value, stop_temp
-        )
-
-    def _restored_value_from_pair(self, pair: tuple[int, int]) -> int:
-        """Return the restored start temperature."""
-        return pair[0]
+    def _restored_temperature_pair(self) -> tuple[int, int] | None:
+        """Defer the restore write to the stop temperature number."""
+        return None
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the fan start temperature, keeping the stop temperature below it."""
@@ -211,20 +240,29 @@ class ChihirosFanStopTempNumber(ChihirosFanTempNumberBase):
         self._attr_name = chihiros_entity_name(device, "Fan stop temp")
         self._attr_unique_id = chihiros_unique_id(device.address, "fan_stop_temp")
         self._attr_device_info = chihiros_device_info(device, device.address)
+        self._partner_unique_id_suffix = "fan_start_temp"
 
     def _current_value(self) -> float:
         """Return the fan stop temperature stored on the device client."""
         return float(self._device.fan_stop_temp)
 
-    def _restored_temperature_pair(self, value: int) -> tuple[int, int]:
-        """Return restored stop temperature with a valid start temperature."""
-        stop_temp = min(self._attr_native_max_value - FAN_TEMP_HYSTERESIS, value)
-        start_temp = max(self._device.fan_start_temp, stop_temp + FAN_TEMP_HYSTERESIS)
-        return min(self._attr_native_max_value, start_temp), stop_temp
+    def _restored_temperature_pair(self) -> tuple[int, int] | None:
+        """Return the restored start/stop pair, or None when nothing remains to restore.
 
-    def _restored_value_from_pair(self, pair: tuple[int, int]) -> int:
-        """Return the restored stop temperature."""
-        return pair[1]
+        The start half comes from the paired start number's restored value so
+        the write uses the user's stored pair instead of the device defaults;
+        the start number defers the write to this entity.
+        """
+        start_value = self._partner_restored_value()
+        stop_value = self._restored_value
+        if start_value is None and stop_value is None:
+            return None
+        start_temp = int(start_value if start_value is not None else self._device.fan_start_temp)
+        stop_temp = int(stop_value if stop_value is not None else self._device.fan_stop_temp)
+        stop_temp = min(stop_temp, self._attr_native_max_value - FAN_TEMP_HYSTERESIS)
+        stop_temp = max(self._attr_native_min_value, stop_temp)
+        start_temp = min(self._attr_native_max_value, max(start_temp, stop_temp + FAN_TEMP_HYSTERESIS))
+        return start_temp, stop_temp
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the fan stop temperature, keeping the start temperature above it."""
