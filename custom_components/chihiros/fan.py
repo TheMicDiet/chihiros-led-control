@@ -57,7 +57,9 @@ class ChihirosFanEntity(
 
     _attr_assumed_state = True
     _attr_should_poll = False
-    _attr_supported_features = FanEntityFeature.SET_SPEED | FanEntityFeature.PRESET_MODE
+    _attr_supported_features = (
+        FanEntityFeature.SET_SPEED | FanEntityFeature.PRESET_MODE | FanEntityFeature.TURN_ON | FanEntityFeature.TURN_OFF
+    )
     _attr_preset_modes = ["Auto", "Manual"]
 
     def __init__(

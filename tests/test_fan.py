@@ -12,6 +12,7 @@ try:
     from homeassistant.components.fan import (
         ATTR_PERCENTAGE,
         SERVICE_SET_PERCENTAGE,
+        SERVICE_TURN_OFF,
     )
     from homeassistant.components.fan import (
         DOMAIN as FAN_DOMAIN,
@@ -242,6 +243,27 @@ async def test_fan_set_percentage_turn_on_and_turn_off_drive_client(
     state = hass.states.get(entity_id)
     assert state.state == STATE_OFF
     assert state.attributes[ATTR_PERCENTAGE] == 0
+
+
+async def test_fan_turn_off_service_disables_fan(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The standard fan.turn_off service is available and sends zero speed."""
+    _entry, client, _coordinator = await _setup(hass, monkeypatch, FAN_MODEL)
+    registry = er.async_get(hass)
+    entity_id = _entity_id(registry)
+
+    await hass.services.async_call(
+        FAN_DOMAIN,
+        SERVICE_TURN_OFF,
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
+    await _flush()
+
+    assert client.fan_speed_calls == [0]
+    assert hass.states.get(entity_id).state == STATE_OFF
 
 
 async def test_fan_set_speed_failure_raises_and_keeps_previous_state(

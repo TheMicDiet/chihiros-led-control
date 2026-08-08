@@ -235,6 +235,13 @@ class ChihirosDosingSensorBase(
             async_dispatcher_connect(self.hass, self._totals.address_signal, self.async_write_ha_state)
         )
 
+    @property
+    def available(self) -> bool:
+        """Return whether the dosing sensor is available."""
+        if self.coordinator.always_available:
+            return True
+        return super().available
+
 
 class ChihirosDosingDailyTotalSensor(ChihirosDosingSensorBase):
     """Sensor for locally tracked manual dosing total for today."""
