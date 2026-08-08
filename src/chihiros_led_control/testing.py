@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from bleak_retry_connector import BleakClientWithServiceCache, BleakError

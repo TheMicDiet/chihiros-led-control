@@ -131,6 +131,12 @@ def test_detect_model_matches_single_channel_white_prefixes() -> None:
     assert detect_model("DYONE1234567890").name == "Commander X"
 
 
+def test_detect_model_rejects_unsupported_short_prefix_collisions() -> None:
+    """Known non-LED accessories must not be classified as short-prefix LEDs."""
+    for name in ("DYAPRCO2-123", "DYCHIL-123", "DYCO2-123"):
+        assert detect_model(name) is FALLBACK
+
+
 def test_detect_model_matches_x300_two_channel_prefix() -> None:
     """X300 is a two-channel white plus warm device."""
     model = detect_model("DYTWO1234567890")

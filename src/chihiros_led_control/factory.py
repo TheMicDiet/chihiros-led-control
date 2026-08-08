@@ -16,10 +16,15 @@ from .models import (
     iter_model_codes_by_specificity,
 )
 
+# These device families share the short prefixes used by supported LED models,
+# but are not LED controllers. Check them before prefix-based model detection so
+# they do not receive LED commands accidentally.
+KNOWN_UNSUPPORTED_DEVICE_PREFIXES = ("DYAPRCO2", "DYCHIL", "DYCO2")
+
 
 def detect_model(device_name: str | None) -> DeviceModel:
     """Detect a device model from a BLE advertised name."""
-    if not device_name:
+    if not device_name or any(device_name.startswith(prefix) for prefix in KNOWN_UNSUPPORTED_DEVICE_PREFIXES):
         return FALLBACK
     for advertised_code, model in iter_model_codes_by_specificity():
         if device_name.startswith(advertised_code):

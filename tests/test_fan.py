@@ -583,6 +583,31 @@ async def test_fan_temp_numbers_restore_preserves_hysteresis_on_reload(
     assert hass.states.get(stop_id).state == "28.0"
 
 
+async def test_fan_temp_numbers_restore_start_without_stop_state(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A saved start temperature is restored even when the stop value is absent."""
+    from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
+
+    _entry, client, _coordinator = await _setup(hass, monkeypatch, FAN_MODEL)
+    registry = er.async_get(hass)
+    start_id = registry.async_get_entity_id(NUMBER_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_fan_start_temp")
+    stop_id = registry.async_get_entity_id(NUMBER_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_fan_stop_temp")
+    assert start_id is not None
+    assert stop_id is not None
+
+    def _prime() -> None:
+        _prime_restore_state(hass, start_id, State(start_id, "40.0"))
+        async_get_restore_data(hass).last_states.pop(stop_id, None)
+
+    await _reload_entry(hass, _entry, prime=_prime)
+
+    assert client.fan_temp_calls == [(40, 33)]
+    assert hass.states.get(start_id).state == "40.0"
+    assert hass.states.get(stop_id).state == "33.0"
+
+
 async def test_fan_temp_numbers_do_not_restore_without_last_state(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,

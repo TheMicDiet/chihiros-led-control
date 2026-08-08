@@ -15,7 +15,7 @@ from bleak_retry_connector import BleakError
 
 from chihiros_led_control import client as client_module
 from chihiros_led_control import commands
-from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
+from chihiros_led_control.models import WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
 from chihiros_led_control.protocol import DosingTotalsNotification, RuntimeNotification
 from chihiros_led_control.testing import ScriptedTransport
 
@@ -60,9 +60,7 @@ def test_scripted_fan_commands_round_trip(monkeypatch: pytest.MonkeyPatch) -> No
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(
-            DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, min_fan_speed=25)
-        )
+        device = transport.make_device(DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, min_fan_speed=25))
         with transport.patch_establish_connection():
             await device.set_fan_auto()
             assert device.fan_auto is True
@@ -144,9 +142,7 @@ def test_scripted_fan_speed_can_fail_permanently(monkeypatch: pytest.MonkeyPatch
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(
-            DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, min_fan_speed=25)
-        )
+        device = transport.make_device(DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, min_fan_speed=25))
         with transport.patch_establish_connection():
             with pytest.raises(BleakError, match="scripted write failure"):
                 await device.set_fan_speed(50)

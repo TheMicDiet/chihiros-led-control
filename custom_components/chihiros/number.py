@@ -129,7 +129,9 @@ class ChihirosFanTempNumberBase(NumberEntity, RestoreEntity):
                 value = None
             if value is not None and self.native_min_value <= value <= self.native_max_value:
                 self._restored_value = float(value)
-        if self._restored_value is not None:
+        # The stop-temperature entity performs the pair write, but it must
+        # also be scheduled when only the start value has restore state.
+        if self._restored_value is not None or self._partner_restored_value() is not None:
             # Re-applying the pair writes to the device, so defer it past
             # entity setup instead of blocking it on BLE I/O.
             self.hass.async_create_task(self._restore_temperatures())
