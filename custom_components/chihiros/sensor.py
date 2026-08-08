@@ -171,7 +171,7 @@ class ChihirosNotificationSensor(
         if self.entity_description.key == ATTR_LAST_NOTIFICATION:
             if not isinstance(value, dict):
                 return None
-            return value.get("mode")
+            return value.get("mode") or value.get("parsed_type")
         if self.entity_description.key == ATTR_SCHEDULE_POINTS:
             if value is None:
                 return None
