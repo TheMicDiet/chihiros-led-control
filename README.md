@@ -18,15 +18,23 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 
 ## Supported Devices
 - [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
+- Chihiros A Series
 - [Chihiros WRGB II](https://www.chihirosaquaticstudio.com/products/chihiros-wrgb-ii-led-built-in-bluetooth) (Regular, Pro, Slim; Pro is true WRGB)
 - Chihiros WRGB VIVID III (true WRGB, including fan speed control and fan RPM/temperature sensors)
 - Chihiros Tiny Terrarium Egg
 - Chihiros C II (RGB, White)
+- Chihiros New C
 - Chihiros Universal WRGB
 - Chihiros Z Light TINY
+- Chihiros RGB+APLUS
+- Chihiros RGB VIVID
+- Chihiros RGB VIVID II
+- Chihiros SEA_LED (WRGB)
 - Chihiros Commander 1
 - Chihiros Commander 4
-- Chihiros dosing pump (`DYDOSE*`) with first Home Assistant support for manual dosing, daily dose totals, and lifetime pump cycle/ml counters
+- Chihiros Commander X
+- Chihiros X300 (white/warm)
+- Chihiros dosing pump (`DYDOSE*`, `DYNDOS`) with first Home Assistant support for manual dosing, daily dose totals, and lifetime pump cycle/ml counters
 - other LED models might work as well but are not tested
 
 
