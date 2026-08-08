@@ -158,8 +158,10 @@ class FakeChihirosDevice:
         self._notify_callbacks(self.last_runtime_notification)
         self._notify_callbacks(self.last_schedule_snapshot_notification)
         if self.model.name == DOSING_PUMP.name:
-            self._notify_callbacks(self._dosing_totals_notification())
-            self._notify_callbacks(self._dosing_daily_notification())
+            self.last_dosing_totals_notification = self._dosing_totals_notification()
+            self.last_dosing_daily_notification = self._dosing_daily_notification()
+            self._notify_callbacks(self.last_dosing_totals_notification)
+            self._notify_callbacks(self.last_dosing_daily_notification)
 
     async def set_brightness(self, brightness: int | Sequence[int] | Mapping[str | int, int]) -> None:
         """Set fake brightness state."""
@@ -273,8 +275,10 @@ class FakeChihirosDevice:
         """Record a fake manual dose for local dosing pump testing."""
         await asyncio.sleep(0)
         self._dosed_ml[pump_idx] = round(self._dosed_ml[pump_idx] + volume_ml, 1)
-        self._notify_callbacks(self._dosing_totals_notification())
-        self._notify_callbacks(self._dosing_daily_notification())
+        self.last_dosing_totals_notification = self._dosing_totals_notification()
+        self.last_dosing_daily_notification = self._dosing_daily_notification()
+        self._notify_callbacks(self.last_dosing_totals_notification)
+        self._notify_callbacks(self.last_dosing_daily_notification)
 
     def _dosing_totals_notification(self) -> DosingTotalsNotification:
         """Return the fake pump's lifetime totals as a device notification."""

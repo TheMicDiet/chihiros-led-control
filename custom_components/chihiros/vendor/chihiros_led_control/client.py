@@ -575,8 +575,10 @@ class ChihirosDevice:
             self.name,
             [command.hex() for command in prelude],
         )
-        for command in prelude:
+        for index, command in enumerate(prelude):
             await client.write_gatt_char(self._write_char, command, False)
+            if index < len(prelude) - 1 and BATCH_WRITE_DELAY:
+                await asyncio.sleep(BATCH_WRITE_DELAY)
 
     def _reset_disconnect_timer(self) -> None:
         """Reset connection state without scheduling a delayed keepalive."""

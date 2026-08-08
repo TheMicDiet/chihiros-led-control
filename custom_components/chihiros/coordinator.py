@@ -162,7 +162,7 @@ def _notification_to_debug_dict(notification: ParsedNotification, parsed_type: s
     raw = notification.raw
     mode = raw[5] if len(raw) > 5 else None
     return {
-        "firmware_version": notification.firmware_version,
+        "firmware_version": getattr(notification, "firmware_version", None),
         "frame": raw.hex(" "),
         "payload": raw[6:].hex(" "),
         "mode": f"0x{mode:02x}" if mode is not None else None,

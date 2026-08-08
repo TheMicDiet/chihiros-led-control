@@ -97,6 +97,7 @@ async def async_setup_entry(
                 ChihirosDosingLifetimeCyclesSensor(chihiros_data.coordinator, chihiros_data.device, totals, pump_idx)
             )
         async_add_entities(entities)
+        hass.async_create_task(_async_request_initial_status(chihiros_data.coordinator))
         return
 
     async_add_entities(
@@ -200,7 +201,10 @@ class ChihirosNotificationSensor(
             raise HomeAssistantError(f"Failed to request status for {self._device.name}") from ex
 
 
-class ChihirosDosingSensorBase(SensorEntity):
+class ChihirosDosingSensorBase(
+    PassiveBluetoothCoordinatorEntity[ChihirosDataUpdateCoordinator],
+    SensorEntity,
+):
     """Shared base for locally tracked dosing counters."""
 
     _attr_should_poll = False
@@ -215,6 +219,7 @@ class ChihirosDosingSensorBase(SensorEntity):
         name_suffix: str,
     ) -> None:
         """Initialize the dosing counter sensor."""
+        super().__init__(coordinator)
         self._device = device
         self._coordinator = coordinator
         self._totals = totals
@@ -224,7 +229,8 @@ class ChihirosDosingSensorBase(SensorEntity):
         self._attr_device_info = chihiros_device_info(device, coordinator.address)
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to dosing total updates."""
+        """Subscribe to coordinator and local dosing total updates."""
+        await super().async_added_to_hass()
         self.async_on_remove(
             async_dispatcher_connect(self.hass, self._totals.address_signal, self.async_write_ha_state)
         )

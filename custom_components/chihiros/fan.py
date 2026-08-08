@@ -83,6 +83,15 @@ class ChihirosFanEntity(
             preset = last_state.attributes.get("preset_mode")
             if preset in self._attr_preset_modes:
                 self._attr_preset_mode = preset
+        if self._attr_preset_mode == "Auto":
+            self.hass.async_create_task(self._restore_auto_mode())
+
+    async def _restore_auto_mode(self) -> None:
+        """Re-apply the restored auto mode to a newly created device client."""
+        try:
+            await self._device.set_fan_auto()
+        except Exception:
+            _LOGGER.debug("Failed to restore fan auto mode for %s", self.name, exc_info=True)
 
     @property
     def available(self) -> bool:
@@ -107,8 +116,12 @@ class ChihirosFanEntity(
     async def async_set_percentage(self, percentage: int) -> None:
         """Set the fan speed percentage (manual mode)."""
         _LOGGER.debug("Setting fan speed: %s to %s%%", self.name, percentage)
-        await self._set_fan_speed(percentage)
-        self._attr_percentage = percentage
+        applied_percentage = percentage
+        minimum = self._device.model.min_fan_speed
+        if 0 < applied_percentage < minimum:
+            applied_percentage = minimum
+        await self._set_fan_speed(applied_percentage)
+        self._attr_percentage = applied_percentage
         self._attr_preset_mode = "Manual"
         self.schedule_update_ha_state()
 

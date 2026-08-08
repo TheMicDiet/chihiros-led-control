@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature, UnitOfVolume
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -15,6 +17,8 @@ from .const import DOMAIN
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData
 from .runtime import ChihirosClient
+
+_LOGGER = logging.getLogger(__name__)
 
 # Auto mode keeps at least this gap between the fan start and stop temperatures,
 # matching the vendor app's hysteresis handling for temperature-driven fans.
@@ -96,7 +100,7 @@ class ChihirosDosingVolumeNumber(NumberEntity, RestoreEntity):
         self._attr_native_value = value
 
 
-class ChihirosFanTempNumberBase(NumberEntity):
+class ChihirosFanTempNumberBase(NumberEntity, RestoreEntity):
     """Base for the VIVID3 fan start/stop temperature numbers."""
 
     _attr_should_poll = False
@@ -109,20 +113,50 @@ class ChihirosFanTempNumberBase(NumberEntity):
     def __init__(self, device: ChihirosClient) -> None:
         """Initialize the fan temperature number."""
         self._device = device
+        self._restored_value: float | None = None
 
     async def async_added_to_hass(self) -> None:
-        """Refresh whenever the paired fan temperature number changes."""
+        """Restore the configured value and refresh with paired number changes."""
+        await super().async_added_to_hass()
+        if last_state := await self.async_get_last_state():
+            try:
+                value = float(last_state.state)
+            except ValueError:
+                value = None
+            if value is not None and self.native_min_value <= value <= self.native_max_value:
+                pair = self._restored_temperature_pair(int(value))
+                try:
+                    await self._device.set_fan_start_stop_temp(*pair)
+                    self._restored_value = float(self._restored_value_from_pair(pair))
+                except Exception:
+                    _LOGGER.debug("Failed to restore fan temperature for %s", self.name, exc_info=True)
         self.async_on_remove(
-            async_dispatcher_connect(self.hass, _fan_temp_signal(self._device.address), self.async_write_ha_state)
+            async_dispatcher_connect(self.hass, _fan_temp_signal(self._device.address), self._async_temp_updated)
         )
+
+    @callback
+    def _async_temp_updated(self) -> None:
+        """Use the device-side pair after either temperature is changed."""
+        self._restored_value = None
+        self.async_write_ha_state()
 
     @property
     def native_value(self) -> float | None:
-        """Return the current device-side fan temperature."""
+        """Return the configured fan temperature."""
+        if self._restored_value is not None:
+            return self._restored_value
         return self._current_value()
 
     def _current_value(self) -> float:
         """Return this number's device-side value."""
+        raise NotImplementedError
+
+    def _restored_temperature_pair(self, value: int) -> tuple[int, int]:
+        """Return the complete fan temperature pair for a restored value."""
+        raise NotImplementedError
+
+    def _restored_value_from_pair(self, pair: tuple[int, int]) -> int:
+        """Return this entity's value from a complete restored pair."""
         raise NotImplementedError
 
     async def _apply_temps(self, start_temp: int, stop_temp: int) -> None:
@@ -131,7 +165,7 @@ class ChihirosFanTempNumberBase(NumberEntity):
             await self._device.set_fan_start_stop_temp(start_temp, stop_temp)
         except Exception as ex:
             raise HomeAssistantError(f"Failed to set fan temperature for {self.name}") from ex
-        self.async_write_ha_state()
+        self._restored_value = None
         async_dispatcher_send(self.hass, _fan_temp_signal(self._device.address))
 
 
@@ -149,9 +183,20 @@ class ChihirosFanStartTempNumber(ChihirosFanTempNumberBase):
         """Return the fan start temperature stored on the device client."""
         return float(self._device.fan_start_temp)
 
+    def _restored_temperature_pair(self, value: int) -> tuple[int, int]:
+        """Return restored start temperature with a valid stop temperature."""
+        stop_temp = min(self._device.fan_stop_temp, value - FAN_TEMP_HYSTERESIS)
+        return max(self._attr_native_min_value + FAN_TEMP_HYSTERESIS, value), max(
+            self._attr_native_min_value, stop_temp
+        )
+
+    def _restored_value_from_pair(self, pair: tuple[int, int]) -> int:
+        """Return the restored start temperature."""
+        return pair[0]
+
     async def async_set_native_value(self, value: float) -> None:
         """Set the fan start temperature, keeping the stop temperature below it."""
-        start_temp = int(value)
+        start_temp = max(int(value), self._attr_native_min_value + FAN_TEMP_HYSTERESIS)
         stop_temp = min(self._device.fan_stop_temp, start_temp - FAN_TEMP_HYSTERESIS)
         stop_temp = max(self._attr_native_min_value, stop_temp)
         await self._apply_temps(start_temp, stop_temp)
@@ -171,9 +216,19 @@ class ChihirosFanStopTempNumber(ChihirosFanTempNumberBase):
         """Return the fan stop temperature stored on the device client."""
         return float(self._device.fan_stop_temp)
 
+    def _restored_temperature_pair(self, value: int) -> tuple[int, int]:
+        """Return restored stop temperature with a valid start temperature."""
+        stop_temp = min(self._attr_native_max_value - FAN_TEMP_HYSTERESIS, value)
+        start_temp = max(self._device.fan_start_temp, stop_temp + FAN_TEMP_HYSTERESIS)
+        return min(self._attr_native_max_value, start_temp), stop_temp
+
+    def _restored_value_from_pair(self, pair: tuple[int, int]) -> int:
+        """Return the restored stop temperature."""
+        return pair[1]
+
     async def async_set_native_value(self, value: float) -> None:
         """Set the fan stop temperature, keeping the start temperature above it."""
-        stop_temp = int(value)
+        stop_temp = min(int(value), self._attr_native_max_value - FAN_TEMP_HYSTERESIS)
         start_temp = max(self._device.fan_start_temp, stop_temp + FAN_TEMP_HYSTERESIS)
         start_temp = min(self._attr_native_max_value, start_temp)
         await self._apply_temps(start_temp, stop_temp)

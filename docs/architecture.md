@@ -4,11 +4,9 @@
 library and CLI. Home Assistant code lives in `custom_components/chihiros/` and
 acts as an adapter around a vendored runtime copy of that library.
 
-The proposed capability-based plugin architecture is described in
-[plugin-architecture.md](plugin-architecture.md). It is a clean-break target
-design; the current implementation is reference material, not a compatibility
-constraint. Verification against the beta is documented in
-[plugin-architecture-beta-verification.md](plugin-architecture-beta-verification.md).
+A future capability-based plugin architecture may redesign the entity model;
+the current implementation remains the compatibility reference until that
+design is released and documented.
 
 The vendored package at
 `custom_components/chihiros/vendor/chihiros_led_control/` exists so HACS
