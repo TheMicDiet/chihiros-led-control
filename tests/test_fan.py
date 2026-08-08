@@ -396,6 +396,16 @@ async def test_fan_auto_preset_drives_client_and_updates_state(
     assert state.state == STATE_ON
     assert state.attributes[ATTR_PRESET_MODE] == "Auto"
 
+    await hass.services.async_call(
+        FAN_DOMAIN,
+        SERVICE_TURN_OFF,
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
+    await _flush()
+    assert client.fan_speed_calls == [0]
+    assert hass.states.get(entity_id).state == STATE_OFF
+
 
 async def test_fan_percentage_leaves_auto_preset(
     hass: HomeAssistant,

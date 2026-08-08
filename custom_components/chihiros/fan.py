@@ -119,7 +119,7 @@ class ChihirosFanEntity(
         return {ATTR_FAN_RPM: fan_rpm}
 
     async def async_set_percentage(self, percentage: int) -> None:
-        """Set the fan speed percentage (manual mode)."""
+        """Set the fan speed percentage and switch to manual mode."""
         _LOGGER.debug("Setting fan speed: %s to %s%%", self.name, percentage)
         applied_percentage = percentage
         minimum = self._device.model.min_fan_speed
@@ -163,9 +163,12 @@ class ChihirosFanEntity(
         await self.async_set_percentage(percentage)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Turn off the fan."""
+        """Turn off the fan, including when temperature-controlled mode is active."""
         del kwargs
-        await self.async_set_percentage(0)
+        await self._set_fan_speed(0)
+        self._attr_percentage = 0
+        self._attr_preset_mode = "Manual"
+        self.schedule_update_ha_state()
 
     async def _set_fan_speed(self, percentage: int) -> None:
         """Send the fan speed command and raise on BLE failure."""
