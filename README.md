@@ -1,6 +1,6 @@
 ﻿# Chihiros LED Control
 
-This repository contains a python **CLI** script as well as a **Home Assistant integration** that can be used to control Chihiros LEDs for aquariums via bluetooth without the vendor app. It also includes first Home Assistant support for Chihiros dosing pumps. For this purpose, the protocol to control the devices has been reversed engineered with the help of decompiling the old *Magic App* as well as sniffing and analyzing of bluetooth packages that are sent by the new *My Chihiros App*. The new app is based on flutter and only contains a binary that can not easily be analyzed.
+This repository contains a python **CLI** script as well as a **Home Assistant integration** that can be used to control Chihiros LEDs for aquariums via bluetooth without the vendor app. It also includes first Home Assistant support for Chihiros dosing pumps. For this purpose, the protocol to control the devices has been reversed engineered and is based on both the old *Magic App* and the new *My Chihiros App*: the old app was decompiled from its Android sources, the new app's Flutter binary was unpacked to extract and analyze its Dart snapshot, and the resulting frame encoding was verified byte-for-byte against the app's `dataMaker.dart` logic as well as sniffed Bluetooth traffic.
 
 > [!WARNING]
 > This is an independent, unofficial, community-developed project. It is not
@@ -210,7 +210,9 @@ uv run chihirosctl dose-ml <device-address> 1 2.5
 ## Protocol
 
 The Bluetooth command format and known modes are documented in
-[docs/protocol.md](docs/protocol.md).
+[docs/protocol.md](docs/protocol.md). Command encodings were verified against
+the 2.8.59 build of the official My Chihiros app (see
+[docs/protocol.md](docs/protocol.md) for the app-verified details).
 
 ## Contributing
 Reusable library and CLI code lives in `src/chihiros_led_control/`. The Home
