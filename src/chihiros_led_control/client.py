@@ -27,10 +27,13 @@ from .const import UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
 from .exceptions import CharacteristicMissingError
 from .models import FALLBACK, DeviceModel
 from .protocol import (
+    DosingDailyNotification,
+    DosingTotalsNotification,
     FanStatusNotification,
     ParsedNotification,
     RuntimeNotification,
     ScheduleSnapshotNotification,
+    Vivid3FanStatusNotification,
     next_message_id,
     parse_notification,
 )
@@ -40,6 +43,9 @@ DEFAULT_ATTEMPTS = 3
 BLEAK_BACKOFF_TIME = 0.25
 COMMAND_NOTIFICATION_WAIT = 0.5
 STATUS_NOTIFICATION_WAIT = 1.0
+# The vendor app paces frames inside one command batch 30 ms apart
+# (Timer 30000 us in bluetooth.dart _writeQueue).
+BATCH_WRITE_DELAY = 0.03
 NotificationCallback = Callable[[ParsedNotification], None]
 
 
@@ -68,10 +74,16 @@ class ChihirosDevice:
         self._expected_disconnect = False
         self._unexpected_disconnect = asyncio.Event()
         self._msg_id = next_message_id()
+        self._fan_auto = False
+        self._fan_start_temp = 38
+        self._fan_stop_temp = 33
         self._notification_callbacks: set[NotificationCallback] = set()
         self.last_runtime_notification: RuntimeNotification | None = None
         self.last_fan_status_notification: FanStatusNotification | None = None
         self.last_schedule_snapshot_notification: ScheduleSnapshotNotification | None = None
+        self.last_dosing_totals_notification: DosingTotalsNotification | None = None
+        self.last_dosing_daily_notification: DosingDailyNotification | None = None
+        self.last_vivid3_fan_status_notification: Vivid3FanStatusNotification | None = None
         self.loop = asyncio.get_running_loop()
 
     def set_log_level(self, level: int | str) -> None:
@@ -224,11 +236,62 @@ class ChihirosDevice:
         await self._send_command(cmd, 3, notification_wait=STATUS_NOTIFICATION_WAIT)
 
     async def set_fan_speed(self, speed_percent: int) -> None:
-        """Set the fan speed percentage on fan-equipped models."""
+        """Set the fan speed percentage on fan-equipped models.
+
+        Models with a documented minimum fan speed (e.g. the VIVID III, which
+        the vendor app clamps to 25 %) receive the clamped value. Setting a
+        manual speed leaves temperature-controlled auto mode (the vendor app
+        treats manual speed and auto mode as mutually exclusive).
+        """
         if not self.model.has_fan:
             raise ValueError(f"Model does not support fan control: {self.model.name}")
+        if speed_percent < 0 or speed_percent > 100:
+            raise ValueError("Fan speed must be between 0 and 100 percent")
+        if 0 < speed_percent < self.model.min_fan_speed:
+            speed_percent = self.model.min_fan_speed
         cmd = commands.create_set_fan_speed_command(self.get_next_msg_id(), speed_percent)
         await self._send_command(cmd, 3)
+        self._fan_auto = False
+
+    async def set_fan_auto(self) -> None:
+        """Switch the fan to temperature-controlled auto mode.
+
+        Matches the vendor app's ``LedInfo::setFanAuto()`` frame; the fan then
+        starts/stops from the configured start/stop temperatures.
+        """
+        if not self.model.has_fan:
+            raise ValueError(f"Model does not support fan control: {self.model.name}")
+        cmd = commands.create_fan_auto_mode_command(self.get_next_msg_id())
+        await self._send_command(cmd, 3)
+        self._fan_auto = True
+
+    async def set_fan_start_stop_temp(self, start_temp: int, stop_temp: int) -> None:
+        """Set the VIVID3 fan start/stop temperatures used by auto mode."""
+        if not self.model.has_fan:
+            raise ValueError(f"Model does not support fan control: {self.model.name}")
+        cmd = commands.create_vivid3_fan_start_stop_temp_command(
+            self.get_next_msg_id(),
+            start_temp,
+            stop_temp,
+        )
+        await self._send_command(cmd, 3)
+        self._fan_start_temp = start_temp
+        self._fan_stop_temp = stop_temp
+
+    @property
+    def fan_auto(self) -> bool:
+        """Return whether the fan is in temperature-controlled auto mode."""
+        return self._fan_auto
+
+    @property
+    def fan_start_temp(self) -> int:
+        """Return the last fan start temperature in whole degrees Celsius."""
+        return self._fan_start_temp
+
+    @property
+    def fan_stop_temp(self) -> int:
+        """Return the last fan stop temperature in whole degrees Celsius."""
+        return self._fan_stop_temp
 
     async def add_setting(
         self,
@@ -285,8 +348,13 @@ class ChihirosDevice:
         await self._send_command(switch_cmd, 3)
 
     async def set_manual_mode(self) -> None:
-        """Switch to manual mode."""
-        await self.turn_on()
+        """Switch to manual mode.
+
+        Matches the vendor app's ``switchToManual()`` frame; brightness is left
+        unchanged so toggling the auto/manual switch does not snap the light on.
+        """
+        cmd = commands.create_switch_to_manual_mode_command(self.get_next_msg_id())
+        await self._send_command(cmd, 3)
 
     async def _send_command(
         self,
@@ -339,10 +407,12 @@ class ChihirosDevice:
             raise CharacteristicMissingError("Read characteristic missing")
         if not self._write_char:
             raise CharacteristicMissingError("Write characteristic missing")
-        for command in commands_to_send:
+        for index, command in enumerate(commands_to_send):
             await self._client.write_gatt_char(self._write_char, command, False)
             if self._unexpected_disconnect.is_set():
                 raise BleakError("Device unexpectedly disconnected during command batch")
+            if index < len(commands_to_send) - 1 and BATCH_WRITE_DELAY:
+                await asyncio.sleep(BATCH_WRITE_DELAY)
 
     def _notification_handler(self, _sender: BleakGATTCharacteristic, data: bytearray) -> None:
         """Handle notification responses."""
@@ -375,6 +445,34 @@ class ChihirosDevice:
                 self.name,
                 parsed.firmware_version,
                 parsed.points,
+            )
+            self._notify_callbacks(parsed)
+            return
+        if isinstance(parsed, DosingTotalsNotification):
+            self.last_dosing_totals_notification = parsed
+            self._logger.debug(
+                "%s: Dosing totals notification received; total_dosed_ul=%s",
+                self.name,
+                parsed.total_dosed_ul,
+            )
+            self._notify_callbacks(parsed)
+            return
+        if isinstance(parsed, DosingDailyNotification):
+            self.last_dosing_daily_notification = parsed
+            self._logger.debug(
+                "%s: Dosing daily notification received; dose_use_in_day_ul=%s",
+                self.name,
+                parsed.dose_use_in_day_ul,
+            )
+            self._notify_callbacks(parsed)
+            return
+        if isinstance(parsed, Vivid3FanStatusNotification):
+            self.last_vivid3_fan_status_notification = parsed
+            self._logger.debug(
+                "%s: VIVID3 fan notification received; fan_rpm=%s temperature_celsius=%s",
+                self.name,
+                parsed.fan_rpm,
+                parsed.temperature_celsius,
             )
             self._notify_callbacks(parsed)
             return

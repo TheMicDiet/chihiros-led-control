@@ -117,7 +117,7 @@ def reset_settings(device_address: str) -> None:
 @app.command()
 def dose_ml(
     device_address: str,
-    pump: Annotated[int, typer.Argument(min=1, max=4)],
+    pump: Annotated[int, typer.Argument(min=1, max=8)],
     ml: Annotated[float, typer.Argument(min=0.2, max=999.9)],
 ) -> None:
     """Trigger an immediate manual dose on a dosing pump."""

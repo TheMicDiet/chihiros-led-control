@@ -13,11 +13,14 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 
 from .runtime import ChihirosClient
 from .vendor.chihiros_led_control.protocol import (
+    DosingDailyNotification,
+    DosingTotalsNotification,
     FanStatusNotification,
     ParsedNotification,
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
+    Vivid3FanStatusNotification,
 )
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
@@ -29,6 +32,8 @@ ATTR_LAST_NOTIFICATION = "last_notification"
 ATTR_SCHEDULE_POINTS = "schedule_points"
 ATTR_FAN_RPM = "fan_rpm"
 ATTR_FAN_TEMPERATURE_CELSIUS = "fan_temperature_celsius"
+ATTR_DOSING_LIFETIME_UL = "dosing_lifetime_ul"
+ATTR_DOSING_DAILY_UL = "dosing_daily_ul"
 
 
 class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
@@ -115,6 +120,16 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
             self.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
             self.data[ATTR_SCHEDULE_POINTS] = tuple(_schedule_point_to_dict(point) for point in notification.points)
             self.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "schedule_snapshot")
+        elif isinstance(notification, DosingTotalsNotification):
+            self.data[ATTR_DOSING_LIFETIME_UL] = notification.total_dosed_ul
+            self.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "dosing_totals")
+        elif isinstance(notification, DosingDailyNotification):
+            self.data[ATTR_DOSING_DAILY_UL] = notification.dose_use_in_day_ul
+            self.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "dosing_daily")
+        elif isinstance(notification, Vivid3FanStatusNotification):
+            self.data[ATTR_FAN_RPM] = notification.fan_rpm
+            self.data[ATTR_FAN_TEMPERATURE_CELSIUS] = notification.temperature_celsius
+            self.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "vivid3_fan_status")
         self.async_update_listeners()
 
     @callback
@@ -142,10 +157,7 @@ def _schedule_point_to_dict(point: SchedulePoint) -> dict[str, Any]:
     }
 
 
-def _notification_to_debug_dict(
-    notification: RuntimeNotification | FanStatusNotification | ScheduleSnapshotNotification,
-    parsed_type: str,
-) -> dict[str, Any]:
+def _notification_to_debug_dict(notification: ParsedNotification, parsed_type: str) -> dict[str, Any]:
     """Return a Home Assistant-friendly raw notification diagnostic payload."""
     raw = notification.raw
     mode = raw[5] if len(raw) > 5 else None

@@ -44,6 +44,18 @@ class ChihirosClient(Protocol):
     last_schedule_snapshot_notification: ScheduleSnapshotNotification | None
 
     @property
+    def fan_auto(self) -> bool:
+        """Return whether the fan is in temperature-controlled auto mode."""
+
+    @property
+    def fan_start_temp(self) -> int:
+        """Return the last fan start temperature in whole degrees Celsius."""
+
+    @property
+    def fan_stop_temp(self) -> int:
+        """Return the last fan stop temperature in whole degrees Celsius."""
+
+    @property
     def address(self) -> str:
         """Return the device address."""
 
@@ -82,6 +94,12 @@ class ChihirosClient(Protocol):
 
     async def set_fan_speed(self, speed_percent: int) -> None:
         """Set the fan speed percentage on fan-equipped models."""
+
+    async def set_fan_auto(self) -> None:
+        """Switch the fan to temperature-controlled auto mode."""
+
+    async def set_fan_start_stop_temp(self, start_temp: int, stop_temp: int) -> None:
+        """Set the fan start/stop temperatures used by auto mode."""
 
     async def add_setting(
         self,

@@ -14,9 +14,12 @@ from chihiros_led_control.client import ChihirosDevice, ChihirosDosingPump
 from chihiros_led_control.exceptions import CharacteristicMissingError
 from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
 from chihiros_led_control.protocol import (
+    DosingDailyNotification,
+    DosingTotalsNotification,
     FanStatusNotification,
     RuntimeNotification,
     ScheduleSnapshotNotification,
+    Vivid3FanStatusNotification,
     calculate_checksum,
 )
 
@@ -569,3 +572,178 @@ def test_add_setting_uses_first_channel_when_model_has_no_white_channel() -> Non
     asyncio.run(run())
 
     assert sent_commands[0][6:-1] == bytes([8, 0, 18, 30, 0, 127, 40, 255, 255, 255, 255, 255, 255, 255])
+
+
+def test_set_manual_mode_sends_mode_switch_command() -> None:
+    """Manual mode sends the vendor app's switchToManual frame without touching brightness."""
+    sent_commands: list[bytes] = []
+
+    async def run() -> None:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+
+        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+            del retry
+            sent_commands.append(bytes(command))
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+
+        await device.set_manual_mode()
+
+    asyncio.run(run())
+
+    assert sent_commands[0][5:8] == bytes([5, 11, 255])
+
+
+def test_set_fan_speed_clamps_below_model_minimum() -> None:
+    """VIVID3 fan speeds between 1 and 24 percent are clamped to the model minimum."""
+    sent_commands: list[bytes] = []
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            FakeBLEDevice(),
+            DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, min_fan_speed=25),  # type: ignore[arg-type]
+        )
+
+        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+            del retry
+            sent_commands.append(bytes(command))
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+
+        await device.set_fan_speed(10)
+        await device.set_fan_speed(0)
+        await device.set_fan_speed(30)
+
+    asyncio.run(run())
+
+    assert [command[6] for command in sent_commands] == [25, 0, 30]
+
+
+def test_notification_handler_stores_and_publishes_dosing_totals() -> None:
+    """Parsed dosing totals are stored and sent to subscribers."""
+    received: list[DosingTotalsNotification] = []
+    frame = bytearray([0xB6, 0x10, 0x10, 0x00, 0x01, 0x3C, 0x04, 0x1F, 0x00, 0x00])
+
+    async def run() -> ChihirosDevice:
+        device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
+        device.add_notification_callback(received.append)
+        device._notification_handler(None, frame)  # type: ignore[arg-type]
+        return device
+
+    device = asyncio.run(run())
+    assert device.last_dosing_totals_notification == DosingTotalsNotification(
+        total_dosed_ul=(105500, 0),
+        raw=bytes(frame),
+    )
+    assert received == [device.last_dosing_totals_notification]
+
+
+def test_notification_handler_stores_and_publishes_dosing_daily() -> None:
+    """Parsed dosing daily counters are stored and sent to subscribers."""
+    received: list[DosingDailyNotification] = []
+    frame = bytearray([0xB6, 0x10, 0x0E, 0x00, 0x01, 0x44, 0x00, 0x64, 0x01, 0x90])
+
+    async def run() -> ChihirosDevice:
+        device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
+        device.add_notification_callback(received.append)
+        device._notification_handler(None, frame)  # type: ignore[arg-type]
+        return device
+
+    device = asyncio.run(run())
+    assert device.last_dosing_daily_notification == DosingDailyNotification(
+        dose_use_in_day_ul=(10000, 40000),
+        raw=bytes(frame),
+    )
+    assert received == [device.last_dosing_daily_notification]
+
+
+def test_notification_handler_stores_and_publishes_vivid3_fan_status() -> None:
+    """VIVID3 fan readouts are stored and sent to subscribers."""
+    received: list[Vivid3FanStatusNotification] = []
+    frame = bytearray([0xB6, 0x00, 0x00, 0x00, 0x01, 0x16, 0x02, 0x58, 25])
+
+    async def run() -> ChihirosDevice:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WRGB_CHANNELS, has_fan=True))  # type: ignore[arg-type]
+        device.add_notification_callback(received.append)
+        device._notification_handler(None, frame)  # type: ignore[arg-type]
+        return device
+
+    device = asyncio.run(run())
+    assert device.last_vivid3_fan_status_notification == Vivid3FanStatusNotification(
+        fan_rpm=600,
+        temperature_celsius=25,
+        raw=bytes(frame),
+    )
+    assert received == [device.last_vivid3_fan_status_notification]
+
+
+def test_set_fan_auto_sends_auto_mode_command() -> None:
+    """Fan auto mode sends the vendor app's autoFan frame and tracks the mode."""
+    sent_commands: list[bytes] = []
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            FakeBLEDevice(),
+            DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, min_fan_speed=25),  # type: ignore[arg-type]
+        )
+        assert device.fan_auto is False
+
+        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+            del retry
+            sent_commands.append(bytes(command))
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+
+        await device.set_fan_auto()
+
+    asyncio.run(run())
+
+    assert sent_commands[0][5:8] == bytes([5, 0x11, 0xFF])
+    assert sent_commands[0][8] == 0xFF
+
+
+def test_set_fan_speed_clears_fan_auto_mode() -> None:
+    """A manual fan speed leaves temperature-controlled auto mode."""
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            FakeBLEDevice(),
+            DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, min_fan_speed=25),  # type: ignore[arg-type]
+        )
+
+        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+            del retry
+            del command
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+
+        await device.set_fan_auto()
+        assert device.fan_auto is True
+        await device.set_fan_speed(50)
+        assert device.fan_auto is False
+
+    asyncio.run(run())
+
+
+def test_set_fan_start_stop_temp_sends_command_and_stores_values() -> None:
+    """Fan start/stop temperatures are sent and kept for the HA number entities."""
+    sent_commands: list[bytes] = []
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            FakeBLEDevice(),
+            DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, min_fan_speed=25),  # type: ignore[arg-type]
+        )
+        assert (device.fan_start_temp, device.fan_stop_temp) == (38, 33)
+
+        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+            del retry
+            sent_commands.append(bytes(command))
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+
+        await device.set_fan_start_stop_temp(40, 35)
+
+    asyncio.run(run())
+
+    assert sent_commands[0][5:8] == bytes([0x2D, 40, 35])

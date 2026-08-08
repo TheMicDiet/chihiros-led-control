@@ -4,6 +4,12 @@
 library and CLI. Home Assistant code lives in `custom_components/chihiros/` and
 acts as an adapter around a vendored runtime copy of that library.
 
+The proposed capability-based plugin architecture is described in
+[plugin-architecture.md](plugin-architecture.md). It is a clean-break target
+design; the current implementation is reference material, not a compatibility
+constraint. Verification against the beta is documented in
+[plugin-architecture-beta-verification.md](plugin-architecture-beta-verification.md).
+
 The vendored package at
 `custom_components/chihiros/vendor/chihiros_led_control/` exists so HACS
 installs remain self-contained. Do not edit vendored files directly. Make
@@ -21,13 +27,14 @@ uv run python scripts/sync_vendor.py --check
 
 # Home Assistant entity and schedule decisions
 
-## Color entities
+## Entity model
 
-The integration intentionally retains one brightness entity per physical channel. Converting existing RGB/WRGB
-devices to one native RGB/RGBW entity would change unique IDs and remove entities referenced by existing dashboards
-and automations. It would also be lossy: Home Assistant's RGB model normalizes three channel values through a shared
-brightness value, while the device protocol supports independent channel intensities. A future combined entity may be
-added as an opt-in companion only after an entity-registry migration and round-trip color semantics are designed.
+The new implementation is free to redesign the entity model. Each HA plugin
+should choose the entity types and grouping that best represent its capability.
+For example, an LED plugin may expose a native RGB/RGBW entity where that is
+appropriate, while retaining independent channel controls where the protocol
+requires them. Entity IDs and semantics should be deterministic and documented
+once the new architecture is released.
 
 ## Schedule replacement failures
 

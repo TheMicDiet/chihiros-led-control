@@ -7,10 +7,13 @@ import datetime
 from chihiros_led_control import commands
 from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS
 from chihiros_led_control.protocol import (
+    DosingDailyNotification,
+    DosingTotalsNotification,
     FanStatusNotification,
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
+    Vivid3FanStatusNotification,
     calculate_checksum,
     create_command_encoding,
     encode_timestamp,
@@ -56,13 +59,18 @@ def framed(values: list[int]) -> bytearray:
 
 
 def test_next_message_id_skips_reserved_lower_byte() -> None:
-    """Message ids skip reserved lower byte 90."""
+    """Message ids skip the reserved lower byte 90 (0x5A)."""
     assert next_message_id((0, 89)) == (0, 91)
 
 
 def test_next_message_id_skips_reserved_higher_byte() -> None:
-    """Message ids skip reserved higher byte 90."""
+    """Message ids skip the reserved higher byte 90 (0x5A)."""
     assert next_message_id((89, 255)) == (91, 0)
+
+
+def test_next_message_id_does_not_skip_notification_header_byte() -> None:
+    """0x5B is NOT skipped as a sequence byte (the 2.8.59 app skips only 0x5A)."""
+    assert next_message_id((0, 90)) == (0, 91)
 
 
 def test_next_message_id_preserves_higher_byte() -> None:
@@ -71,7 +79,7 @@ def test_next_message_id_preserves_higher_byte() -> None:
 
 
 def test_next_message_id_skips_reserved_lower_byte_with_higher_byte() -> None:
-    """Message ids skip reserved lower byte without resetting the higher byte."""
+    """Message ids skip the reserved lower byte without resetting the higher byte."""
     assert next_message_id((1, 89)) == (1, 91)
 
 
@@ -100,7 +108,7 @@ def test_command_encoding_can_keep_reserved_parameter_for_newer_protocols() -> N
 
 
 def test_command_encoding_normalizes_reserved_message_id() -> None:
-    """Command encoding avoids reserved message IDs passed directly."""
+    """Command encoding avoids the reserved message ID 0x5A passed directly."""
     command = create_command_encoding(90, 7, (0, 90), [0, 100])
 
     assert command[3:5] == bytearray([0, 91])
@@ -399,3 +407,83 @@ def test_parse_schedule_snapshot_notification_skips_metadata_prefix() -> None:
             SchedulePoint(hour=21, minute=45, levels={"white": 0}),
         ),
     )
+
+
+def test_parse_dosing_totals_notification() -> None:
+    """Dosing lifetime totals use 0xB6 header, mode 0x3C, 16-bit x100 uL counters."""
+    frame = bytearray([0xB6, 0x10, 0x10, 0x00, 0x01, 0x3C, 0x04, 0x1F, 0x00, 0x00, 0x05, 0xDC, 0x00, 0x00])
+    notification = parse_notification(frame)
+
+    assert notification == DosingTotalsNotification(total_dosed_ul=(105500, 0, 150000, 0), raw=bytes(frame))
+
+
+def test_parse_dosing_daily_notification() -> None:
+    """Dosing dosed-today totals use 0xB6 header, mode 0x44, 16-bit x100 uL counters."""
+    frame = bytearray([0xB6, 0x10, 0x0E, 0x00, 0x01, 0x44, 0x00, 0x64, 0x01, 0x90])
+    notification = parse_notification(frame)
+
+    assert notification == DosingDailyNotification(dose_use_in_day_ul=(10000, 40000), raw=bytes(frame))
+
+
+def test_parse_dosing_notification_requires_minimum_length() -> None:
+    """Dosing notifications without a full channel counter are ignored."""
+    assert parse_notification(bytearray([0xB6, 0, 0, 0, 0, 0x3C, 0])) is None
+    assert parse_notification(bytearray([0xB6, 0, 0, 0, 0, 0x44, 0])) is None
+
+
+def test_parse_vivid3_fan_status_notification() -> None:
+    """VIVID3 fan readouts use 0xB6 header, mode 0x16, with RPM and temperature."""
+    frame = bytearray([0xB6, 0x00, 0x00, 0x00, 0x01, 0x16, 0x02, 0x58, 25])
+    notification = parse_notification(frame)
+
+    assert notification == Vivid3FanStatusNotification(fan_rpm=600, temperature_celsius=25, raw=bytes(frame))
+
+
+def test_parse_unknown_b6_modes_are_ignored() -> None:
+    """Unknown 0xB6 frames (heater, standalone fan) are not misparsed."""
+    assert parse_notification(bytearray([0xB6, 0, 0, 0, 0, 0x4A, 1, 2, 3, 4, 5, 6])) is None
+
+
+def test_switch_to_manual_mode_command_encoding() -> None:
+    """Manual mode switch uses the vendor app's [11, 255, 255] payload."""
+    assert commands.create_switch_to_manual_mode_command((0, 1)) == bytearray([90, 1, 8, 0, 1, 5, 11, 255, 255, 6])
+
+
+def test_manual_dose_command_accepts_eight_channels() -> None:
+    """Dosing pumps expose up to eight channels."""
+    command = commands.create_manual_dose_command((0, 6), 7, 2.0)
+    assert command[6] == 7
+    for pump_idx in (-1, 8):
+        try:
+            commands.create_manual_dose_command((0, 6), pump_idx, 2.0)
+        except ValueError:
+            continue
+        raise AssertionError(f"Expected ValueError for pump index {pump_idx}")
+
+
+def test_fan_auto_mode_command_encoding() -> None:
+    """Fan auto mode uses the vendor app's autoFan frame (0x5A, 5, [0x11, 0xFF, 0xFF])."""
+    assert commands.create_fan_auto_mode_command((0, 1)) == bytearray.fromhex("5a 01 08 00 01 05 11 ff ff 1c")
+
+
+def test_vivid3_fan_start_stop_temp_command_encoding() -> None:
+    """VIVID3 fan start/stop temps use (0xA5, 45, [start, stop])."""
+    assert commands.create_vivid3_fan_start_stop_temp_command((0, 2), 38, 33) == bytearray.fromhex(
+        "a5 01 07 00 02 2d 26 21 2e"
+    )
+
+
+def test_vivid3_fan_start_stop_temp_preserves_reserved_byte() -> None:
+    """Temperature payload bytes are sent verbatim even when they equal 0x5A."""
+    command = commands.create_vivid3_fan_start_stop_temp_command((0, 4), 90, 30)
+    assert command[6:8] == bytearray([90, 30])
+
+
+def test_vivid3_fan_start_stop_temp_validates_range() -> None:
+    """Fan start/stop temperatures must fit a single byte."""
+    for start, stop in ((-1, 33), (38, 256), (300, 33)):
+        try:
+            commands.create_vivid3_fan_start_stop_temp_command((0, 1), start, stop)
+        except ValueError:
+            continue
+        raise AssertionError(f"Expected ValueError for temperatures {start}/{stop}")

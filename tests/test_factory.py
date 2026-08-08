@@ -46,6 +46,7 @@ def test_detect_model_does_not_rely_on_fixed_slicing() -> None:
 def test_detect_model_matches_dosing_pump_prefix() -> None:
     """Model detection matches dosing pump advertisements."""
     assert detect_model("DYDOSE1234567890").name == "Dosing Pump"
+    assert detect_model("DYNDOSCDA1ECD07A4D").name == "Dosing Pump"
 
 
 def test_detect_model_matches_wrgb_vivid_iii_prefix() -> None:
@@ -100,3 +101,53 @@ def test_factory_created_dosing_pump_uses_dosing_client() -> None:
     assert isinstance(device, ChihirosDosingPump)
     assert device.model_name == "Dosing Pump"
     assert device.colors == {}
+
+
+def test_detect_model_matches_rgb_aplus_prefixes() -> None:
+    """RGB+APLUS advertisements (old and new generation) resolve to a 3-channel RGB model."""
+    for name in ("DYARGB1234567890", "DYRGBA+1234567890", "DYRGBA1234567890", "DYNARGB1234567890"):
+        model = detect_model(name)
+
+        assert model.name == "RGB+APLUS"
+        assert dict(model.color_channels) == {"red": 0, "green": 1, "blue": 2}
+
+
+def test_detect_model_matches_rgb_vivid_prefixes() -> None:
+    """RGB VIVID and RGB VIVID II advertisements resolve to RGB models."""
+    assert detect_model("DYREE1234567890").name == "RGB VIVID"
+    for name in ("DYRGBV1234567890", "DYNVVD1234567890", "DYNV1234567890"):
+        model = detect_model(name)
+
+        assert model.name == "RGB VIVID II"
+        assert dict(model.color_channels) == {"red": 0, "green": 1, "blue": 2}
+
+
+def test_detect_model_matches_single_channel_white_prefixes() -> None:
+    """A series, New C, and Commander X are single-channel white devices."""
+    assert dict(detect_model("DYA1234567890").color_channels) == {"white": 0}
+    assert detect_model("DYA1234567890").name == "A Series"
+    assert detect_model("DYC1234567890").name == "New C"
+    assert dict(detect_model("DYNC2CDA1ECD07A4D").color_channels) == {"white": 0}
+    assert detect_model("DYONE1234567890").name == "Commander X"
+
+
+def test_detect_model_matches_x300_two_channel_prefix() -> None:
+    """X300 is a two-channel white plus warm device."""
+    model = detect_model("DYTWO1234567890")
+
+    assert model.name == "X300"
+    assert dict(model.color_channels) == {"white": 0, "warm": 1}
+
+
+def test_detect_model_matches_sea_led_prefix() -> None:
+    """SEA_LED is a four-channel WRGB device."""
+    model = detect_model("DYSEA1234567890")
+
+    assert model.name == "SEA_LED"
+    assert dict(model.color_channels) == {"white": 3, "red": 0, "green": 1, "blue": 2}
+
+
+def test_detect_model_matches_new_gen_commander_prefix() -> None:
+    """New-generation Commander 4 controllers need a user-selected generic type."""
+    assert detect_model("DYNLED1234567890").name == "Commander 4"
+    assert needs_device_type("DYNLED1234567890") is True

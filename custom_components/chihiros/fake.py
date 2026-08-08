@@ -11,6 +11,8 @@ from datetime import datetime
 from .dosing import normalize_pump_count
 from .vendor.chihiros_led_control.models import DOSING_PUMP, RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
 from .vendor.chihiros_led_control.protocol import (
+    DosingDailyNotification,
+    DosingTotalsNotification,
     FanStatusNotification,
     ParsedNotification,
     RuntimeNotification,
@@ -99,9 +101,14 @@ class FakeChihirosDevice:
         self._dosed_ml = [0.0] * self.pump_count
         self._auto_mode = False
         self._fan_speed = 0
+        self._fan_auto = False
+        self._fan_start_temp = 38
+        self._fan_stop_temp = 33
         self.last_runtime_notification: RuntimeNotification | None = None
         self.last_fan_status_notification: FanStatusNotification | None = None
         self.last_schedule_snapshot_notification: ScheduleSnapshotNotification | None = None
+        self.last_dosing_totals_notification: DosingTotalsNotification | None = None
+        self.last_dosing_daily_notification: DosingDailyNotification | None = None
 
     @property
     def address(self) -> str:
@@ -150,6 +157,9 @@ class FakeChihirosDevice:
         )
         self._notify_callbacks(self.last_runtime_notification)
         self._notify_callbacks(self.last_schedule_snapshot_notification)
+        if self.model.name == DOSING_PUMP.name:
+            self._notify_callbacks(self._dosing_totals_notification())
+            self._notify_callbacks(self._dosing_daily_notification())
 
     async def set_brightness(self, brightness: int | Sequence[int] | Mapping[str | int, int]) -> None:
         """Set fake brightness state."""
@@ -183,7 +193,6 @@ class FakeChihirosDevice:
     async def set_manual_mode(self) -> None:
         """Enable fake manual mode."""
         self._auto_mode = False
-        await self.turn_on()
 
     async def set_fan_speed(self, speed_percent: int) -> None:
         """Set fake fan speed and publish a fake fan status notification."""
@@ -192,13 +201,46 @@ class FakeChihirosDevice:
             raise ValueError(f"Model does not support fan control: {self.model.name}")
         if speed_percent < 0 or speed_percent > 100:
             raise ValueError("Fan speed must be between 0 and 100 percent")
+        if 0 < speed_percent < self.model.min_fan_speed:
+            speed_percent = self.model.min_fan_speed
         self._fan_speed = speed_percent
+        self._fan_auto = False
         self.last_fan_status_notification = FanStatusNotification(
             firmware_version=27,
             fan_rpm=speed_percent * 20,
             temperature_celsius=25,
         )
         self._notify_callbacks(self.last_fan_status_notification)
+
+    async def set_fan_auto(self) -> None:
+        """Switch the fake fan to temperature-controlled auto mode."""
+        await asyncio.sleep(0)
+        if not self.model.has_fan:
+            raise ValueError(f"Model does not support fan control: {self.model.name}")
+        self._fan_auto = True
+
+    async def set_fan_start_stop_temp(self, start_temp: int, stop_temp: int) -> None:
+        """Store the fake fan auto-mode start/stop temperatures."""
+        await asyncio.sleep(0)
+        if not self.model.has_fan:
+            raise ValueError(f"Model does not support fan control: {self.model.name}")
+        self._fan_start_temp = start_temp
+        self._fan_stop_temp = stop_temp
+
+    @property
+    def fan_auto(self) -> bool:
+        """Return whether the fake fan is in auto mode."""
+        return self._fan_auto
+
+    @property
+    def fan_start_temp(self) -> int:
+        """Return the fake fan start temperature."""
+        return self._fan_start_temp
+
+    @property
+    def fan_stop_temp(self) -> int:
+        """Return the fake fan stop temperature."""
+        return self._fan_stop_temp
 
     async def add_setting(
         self,
@@ -231,6 +273,22 @@ class FakeChihirosDevice:
         """Record a fake manual dose for local dosing pump testing."""
         await asyncio.sleep(0)
         self._dosed_ml[pump_idx] = round(self._dosed_ml[pump_idx] + volume_ml, 1)
+        self._notify_callbacks(self._dosing_totals_notification())
+        self._notify_callbacks(self._dosing_daily_notification())
+
+    def _dosing_totals_notification(self) -> DosingTotalsNotification:
+        """Return the fake pump's lifetime totals as a device notification."""
+        return DosingTotalsNotification(
+            tuple(round(volume * 1000) for volume in self._dosed_ml),
+            raw=b"",
+        )
+
+    def _dosing_daily_notification(self) -> DosingDailyNotification:
+        """Return the fake pump's dosed-today totals as a device notification."""
+        return DosingDailyNotification(
+            tuple(round(volume * 1000) for volume in self._dosed_ml),
+            raw=b"",
+        )
 
     async def disconnect(self) -> None:
         """Disconnect the fake device."""

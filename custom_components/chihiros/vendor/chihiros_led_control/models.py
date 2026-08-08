@@ -17,12 +17,14 @@ class DeviceModel:
     needs_device_type: bool = False
     fallback: bool = False
     has_fan: bool = False
+    min_fan_speed: int = 0
 
 
 WHITE_CHANNELS = MappingProxyType({"white": 0})
 RGB_CHANNELS = MappingProxyType({"red": 0, "green": 1, "blue": 2})
 WRGB_CHANNELS = MappingProxyType({"white": 3, "red": 0, "green": 1, "blue": 2})
 COMMANDER_CHANNELS = MappingProxyType({"white": 0, "red": 0, "green": 1, "blue": 2})
+X300_CHANNELS = MappingProxyType({"white": 0, "warm": 1})
 DOSING_CHANNELS = MappingProxyType({})
 TINY_TERRARIUM_EGG_CHANNELS = MappingProxyType({"red": 0, "green": 1})
 Z_LIGHT_TINY_CHANNELS = MappingProxyType({"white": 0, "warm": 1})
@@ -31,12 +33,28 @@ GENERIC_WHITE = DeviceModel("Generic White LED", (), WHITE_CHANNELS)
 GENERIC_RGB = DeviceModel("Generic RGB", (), RGB_CHANNELS)
 GENERIC_WRGB = DeviceModel("Generic WRGB", (), WRGB_CHANNELS)
 FALLBACK = DeviceModel("fallback", (), COMMANDER_CHANNELS, needs_device_type=True, fallback=True)
-DOSING_PUMP = DeviceModel("Dosing Pump", ("DYDOSE", "DYDOSED", "DOSER", "DYTDOS"), DOSING_CHANNELS)
+DOSING_PUMP = DeviceModel("Dosing Pump", ("DYDOSE", "DYDOSED", "DYTDOS", "DYNDOS"), DOSING_CHANNELS)
 
 SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     DeviceModel("Z Light TINY", ("DYSSD", "DYZSD"), Z_LIGHT_TINY_CHANNELS),
     DeviceModel("Tiny Terrarium Egg", ("DYDD",), TINY_TERRARIUM_EGG_CHANNELS),
     DeviceModel("A II", ("DYNA2", "DYNA2N"), WHITE_CHANNELS),
+    DeviceModel("A Series", ("DYA",), WHITE_CHANNELS),
+    DeviceModel("New C", ("DYC", "DYNC2"), WHITE_CHANNELS),
+    DeviceModel("RGB+APLUS", ("DYARGB", "DYRGBA+", "DYRGBA", "DYNARGB"), RGB_CHANNELS),
+    DeviceModel("RGB VIVID", ("DYREE",), RGB_CHANNELS),
+    DeviceModel(
+        "RGB VIVID II",
+        ("DYRGBV", "DYNVVD", "DYNV"),
+        RGB_CHANNELS,
+    ),
+    DeviceModel(
+        "SEA_LED",
+        ("DYSEA",),
+        WRGB_CHANNELS,
+    ),
+    DeviceModel("Commander X", ("DYONE",), WHITE_CHANNELS),
+    DeviceModel("X300", ("DYTWO",), X300_CHANNELS),
     DeviceModel(
         "WRGB II",
         ("DYNT90", "DYWRGB", "DYNWRGB", "DYNW30", "DYNW45", "DYNW60", "DYNW90", "DYNW12P"),
@@ -52,7 +70,7 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
         ("DYSILN", "DYSL30", "DYSL45", "DYSL60", "DYSL90", "DYSL120", "DYSL12"),
         RGB_CHANNELS,
     ),
-    DeviceModel("WRGB VIVID III", ("DYVVD3",), WRGB_CHANNELS, has_fan=True),
+    DeviceModel("WRGB VIVID III", ("DYVVD3",), WRGB_CHANNELS, has_fan=True, min_fan_speed=25),
     DeviceModel("C II", ("DYNC2N",), WHITE_CHANNELS),
     DeviceModel("C II RGB", ("DYNCRGP", "DYNCRGB"), RGB_CHANNELS),
     DeviceModel(
@@ -70,7 +88,7 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
         WRGB_CHANNELS,
     ),
     DeviceModel("Commander 1", ("DYCOM",), COMMANDER_CHANNELS, needs_device_type=True),
-    DeviceModel("Commander 4", ("DYLED",), COMMANDER_CHANNELS, needs_device_type=True),
+    DeviceModel("Commander 4", ("DYLED", "DYNLED"), COMMANDER_CHANNELS, needs_device_type=True),
     DOSING_PUMP,
 )
 

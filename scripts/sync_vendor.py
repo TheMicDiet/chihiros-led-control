@@ -21,6 +21,8 @@ EXCLUDED_DIRS = {
     "tests",
     "dist",
     "build",
+    # Future cli/ package of the plugin architecture; cli.py is excluded by name.
+    "cli",
 }
 EXCLUDED_SUFFIXES = {
     ".pyc",

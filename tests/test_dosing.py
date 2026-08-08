@@ -30,6 +30,7 @@ def test_normalize_pump_count_defaults_invalid_values() -> None:
     """Unsupported or non-numeric values fall back to the default pump count."""
     assert normalize_pump_count("2") == 2
     assert normalize_pump_count("4") == 4
+    assert normalize_pump_count("8") == 8
     assert normalize_pump_count("3") == PUMP_COUNT
     assert normalize_pump_count(None) == PUMP_COUNT
     assert normalize_pump_count("not a number") == PUMP_COUNT
