@@ -199,11 +199,20 @@ class ChihirosDevice:
         return [brightness_by_channel.get(channel_id, 255) for channel_id in range(self._channel_count())]
 
     async def set_brightness(self, brightness: int | Sequence[int] | Mapping[str | int, int]) -> None:
-        """Set light brightness."""
+        """Switch to manual mode and set light brightness.
+
+        The vendor app sends ``switchToManual()`` immediately before manual
+        slider writes. Keep both operations in one paced BLE transaction so a
+        brightness update cannot be consumed while the device is still in auto
+        mode, and so retries replay the complete idempotent operation.
+        """
         brightness_by_channel = self._normalize_brightness(brightness)
         commands_to_send = [
-            commands.create_set_brightness_command(self.get_next_msg_id(), color_id, brightness_level)
-            for color_id, brightness_level in brightness_by_channel.items()
+            commands.create_switch_to_manual_mode_command(self.get_next_msg_id()),
+            *(
+                commands.create_set_brightness_command(self.get_next_msg_id(), color_id, brightness_level)
+                for color_id, brightness_level in brightness_by_channel.items()
+            ),
         ]
         await self._send_command(commands_to_send, 3)
 

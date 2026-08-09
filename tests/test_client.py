@@ -451,7 +451,8 @@ def test_set_brightness_sends_all_true_wrgb_channels() -> None:
 
     asyncio.run(run())
 
-    assert [[command[6:8] for command in batch] for batch in sent_commands] == [
+    assert [[command[5] for command in batch] for batch in sent_commands] == [[5, 7, 7, 7, 7]]
+    assert [[command[6:8] for command in batch[1:]] for batch in sent_commands] == [
         [
             bytes([0, 10]),
             bytes([1, 20]),
@@ -479,7 +480,8 @@ def test_set_brightness_accepts_channel_mapping() -> None:
 
     asyncio.run(run())
 
-    assert [[command[6:8] for command in batch] for batch in sent_commands] == [[bytes([3, 40])]]
+    assert [[command[5] for command in batch] for batch in sent_commands] == [[5, 7]]
+    assert [[command[6:8] for command in batch[1:]] for batch in sent_commands] == [[bytes([3, 40])]]
 
 
 def test_notification_callback_failure_does_not_block_other_subscribers() -> None:
