@@ -7,11 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 RESERVED_BYTE = 0x5A
-RESERVED_NOTIFICATION_BYTE = 0x5B
-# Sequence/message-id bytes avoid the legacy command header 0x5A, matching the
-# official app: the 2.8.59 app's dataMaker.dart sequence counters skip ONLY 0x5A
-# (0x59 -> 0x5B; verified from the binary at 0x8e9160/0x8e91ac). 0x5B is the
-# legacy *notification* header, but the app does NOT skip it as a sequence byte.
+# Sequence bytes skip only 0x5A (the app's dataMaker.dart); 0x5B is the legacy
+# notification header but remains a valid sequence byte.
 RESERVED_MESSAGE_ID_BYTES = (RESERVED_BYTE,)
 SCHEDULE_POINT_SIZE = 3
 SCHEDULE_SNAPSHOT_POINTS_START = 25

@@ -48,12 +48,7 @@ class ChihirosFanEntity(
     FanEntity,
     RestoreEntity,
 ):
-    """Representation of a Chihiros device fan.
-
-    The fan supports manual speed plus a temperature-controlled auto preset
-    (vendor app ``autoFan``); the device starts/stops the fan from the
-    configured start/stop temperatures in auto mode.
-    """
+    """Representation of a Chihiros device fan with manual speed and a temperature auto preset."""
 
     _attr_assumed_state = True
     _attr_should_poll = False
@@ -142,9 +137,8 @@ class ChihirosFanEntity(
                 raise HomeAssistantError(f"Failed to enable fan auto mode for {self.name}") from ex
             self._attr_preset_mode = "Auto"
         else:
-            # Manual: re-apply the last manual speed so the fan leaves auto
-            # control. The percentage attribute is stale while auto mode is
-            # active, so prefer the last explicitly set manual speed.
+            # Leave auto control at the last explicit manual speed; the
+            # percentage attribute is stale while auto mode is active.
             percentage = self._last_manual_percentage or self._attr_percentage or 100
             await self._set_fan_speed(percentage)
             self._attr_percentage = percentage

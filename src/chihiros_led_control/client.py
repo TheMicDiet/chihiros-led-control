@@ -43,8 +43,7 @@ DEFAULT_ATTEMPTS = 3
 BLEAK_BACKOFF_TIME = 0.25
 COMMAND_NOTIFICATION_WAIT = 0.5
 STATUS_NOTIFICATION_WAIT = 1.0
-# The vendor app paces frames inside one command batch 30 ms apart
-# (Timer 30000 us in bluetooth.dart _writeQueue).
+# Vendor app paces frames inside one command batch 30 ms apart.
 BATCH_WRITE_DELAY = 0.03
 NotificationCallback = Callable[[ParsedNotification], None]
 
@@ -201,10 +200,8 @@ class ChihirosDevice:
     async def set_brightness(self, brightness: int | Sequence[int] | Mapping[str | int, int]) -> None:
         """Switch to manual mode and set light brightness.
 
-        The vendor app sends ``switchToManual()`` immediately before manual
-        slider writes. Keep both operations in one paced BLE transaction so a
-        brightness update cannot be consumed while the device is still in auto
-        mode, and so retries replay the complete idempotent operation.
+        The vendor app sends ``switchToManual()`` before manual slider writes;
+        keeping both in one paced transaction avoids racing auto mode.
         """
         brightness_by_channel = self._normalize_brightness(brightness)
         commands_to_send = [
@@ -247,10 +244,8 @@ class ChihirosDevice:
     async def set_fan_speed(self, speed_percent: int) -> None:
         """Set the fan speed percentage on fan-equipped models.
 
-        Models with a documented minimum fan speed (e.g. the VIVID III, which
-        the vendor app clamps to 25 %) receive the clamped value. Setting a
-        manual speed leaves temperature-controlled auto mode (the vendor app
-        treats manual speed and auto mode as mutually exclusive).
+        Values below the model's minimum are clamped to it (the app clamps the
+        VIVID III to 25 %). Manual speed leaves temperature auto mode.
         """
         if not self.model.has_fan:
             raise ValueError(f"Model does not support fan control: {self.model.name}")
@@ -352,13 +347,8 @@ class ChihirosDevice:
     async def set_auto_point(self, channel: int, minutes: int, level: int) -> None:
         """Write one auto-curve point (``0x5A, 6``) for a channel.
 
-        Matches the vendor app's ``ChihirosLed::setAuto`` per-point frame. The
-        time encoding follows the model family: SeaLed devices (e.g. ``DYNLED``,
-        ``DYSEA``) use ``[channel, hour, minute, level]``, BleLed devices (e.g.
-        the Commander 4 ``DYLED``) use ``[channel, 30-min-slot, level]``. See
-        ``create_auto_point_command`` for the verified mapping. Prefer
-        :meth:`set_auto_curve` when writing more than one point so the whole
-        curve is one paced BLE transaction.
+        Time encoding follows the model family (see ``create_auto_point_command``);
+        prefer :meth:`set_auto_curve` when writing more than one point.
         """
         self._validate_auto_point(channel, minutes, level)
         cmd = commands.create_auto_point_command(
@@ -371,18 +361,14 @@ class ChihirosDevice:
         await self._send_command(cmd, 3)
 
     async def set_auto_curve(self, points: Sequence[tuple[int, int, int]]) -> None:
-        """Replace the auto curve with ``0x5A, 6`` points in one transaction.
+        """Replace the auto curve with ``0x5A, 6`` points in one paced transaction.
 
-        ``points`` is a sequence of ``(channel, minutes, level)`` triples. All
-        frames are sent in a single paced BLE transaction (30 ms apart, like
-        the vendor app's auto-curve burst). Call :meth:`reset_settings` first
-        to clear the stored curve (the app sends ``0x5A,5,[5,255,255]`` before
-        re-applying a saved auto state).
+        Call :meth:`reset_settings` first to clear the stored curve (the app
+        sends ``0x5A, 5, [5, 255, 255]`` before re-applying a saved curve).
         """
         if not points:
             raise ValueError("Auto curve must contain at least one point")
-        normalized = [(channel, minutes, level) for channel, minutes, level in points]
-        for channel, minutes, level in normalized:
+        for channel, minutes, level in points:
             self._validate_auto_point(channel, minutes, level)
         commands_to_send = [
             bytes(
@@ -394,7 +380,7 @@ class ChihirosDevice:
                     sea_led_family=self.model.sea_led_family,
                 )
             )
-            for channel, minutes, level in normalized
+            for channel, minutes, level in points
         ]
         await self._send_command(commands_to_send, 3)
 
@@ -404,7 +390,6 @@ class ChihirosDevice:
             raise ValueError(f"Model does not support auto curve points: {self.model.name}")
         if not 0 <= channel < self._channel_count():
             raise ValueError(f"Channel must be between 0 and {self._channel_count() - 1}")
-        # minutes/level ranges are enforced by create_auto_point_command.
 
     async def enable_auto_mode(self, timestamp: datetime | None = None) -> None:
         """Enable auto mode."""
@@ -414,11 +399,7 @@ class ChihirosDevice:
         await self._send_command(switch_cmd, 3)
 
     async def set_manual_mode(self) -> None:
-        """Switch to manual mode.
-
-        Matches the vendor app's ``switchToManual()`` frame; brightness is left
-        unchanged so toggling the auto/manual switch does not snap the light on.
-        """
+        """Switch to manual mode without changing brightness."""
         cmd = commands.create_switch_to_manual_mode_command(self.get_next_msg_id())
         await self._send_command(cmd, 3)
 
@@ -483,7 +464,7 @@ class ChihirosDevice:
             await self._client.write_gatt_char(self._write_char, command, False)
             if self._unexpected_disconnect.is_set():
                 raise BleakError("Device unexpectedly disconnected during command batch")
-            if index < len(commands_to_send) - 1 and BATCH_WRITE_DELAY:
+            if index < len(commands_to_send) - 1:
                 await asyncio.sleep(BATCH_WRITE_DELAY)
 
     def _notification_handler(self, _sender: BleakGATTCharacteristic, data: bytearray) -> None:
@@ -540,9 +521,7 @@ class ChihirosDevice:
             return
         if isinstance(parsed, Vivid3FanStatusNotification):
             if not self.model.has_fan:
-                # The 0xB6/0x16 frame shape is the VIVID3 fan readout; other
-                # newer-generation devices (e.g. dosing pumps) must not be
-                # interpreted as fan telemetry.
+                # 0xB6/0x16 frames are the VIVID3 fan readout; ignore on non-fan models.
                 self._logger.debug(
                     "%s: Ignoring fan readout frame on non-fan model %s",
                     self.name,
@@ -659,7 +638,7 @@ class ChihirosDevice:
         )
         for index, command in enumerate(prelude):
             await client.write_gatt_char(self._write_char, command, False)
-            if index < len(prelude) - 1 and BATCH_WRITE_DELAY:
+            if index < len(prelude) - 1:
                 await asyncio.sleep(BATCH_WRITE_DELAY)
 
     def _reset_disconnect_timer(self) -> None:

@@ -92,6 +92,12 @@ class ChihirosClient(Protocol):
     async def set_manual_mode(self) -> None:
         """Enable manual mode."""
 
+    async def set_auto_point(self, channel: int, minutes: int, level: int) -> None:
+        """Write one auto-curve point for a channel."""
+
+    async def set_auto_curve(self, points: Sequence[tuple[int, int, int]]) -> None:
+        """Replace the device's auto curve in one transaction."""
+
     async def set_fan_speed(self, speed_percent: int) -> None:
         """Set the fan speed percentage on fan-equipped models."""
 

@@ -22,6 +22,7 @@ from .vendor.chihiros_led_control import (
     create_device,
     needs_device_type,
 )
+from .vendor.chihiros_led_control.factory import KNOWN_UNSUPPORTED_DEVICE_PREFIXES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,6 +44,8 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle the bluetooth discovery step."""
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
+        if any(discovery_info.name.startswith(prefix) for prefix in KNOWN_UNSUPPORTED_DEVICE_PREFIXES):
+            return self.async_abort(reason="not_supported")
         device = create_device(discovery_info.device)
         self._discovery_info = discovery_info
         self._discovered_device = device
@@ -160,6 +163,7 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
                     discovery is not None
                     and discovery.address not in current_addresses
                     and discovery.address not in self._discovered_devices
+                    and not any(discovery.name.startswith(prefix) for prefix in KNOWN_UNSUPPORTED_DEVICE_PREFIXES)
                 ):
                     self._discovered_devices[discovery.address] = ChihirosDiscovery.from_bluetooth(discovery)
 

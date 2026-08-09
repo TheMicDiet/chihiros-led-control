@@ -13,12 +13,7 @@ DOSE_VOLUME_BUCKET_TENTHS_ML = 256
 
 
 def create_base_auth_command(msg_id: tuple[int, int]) -> bytearray:
-    """Create the base LED auth/status command used at connection startup.
-
-    Verified byte-identical to the 2.8.59 vendor app's ``getDeviceInfo()``
-    (``0x5A, 4, [1]`` — the app stores the constant 2, which the smi-tagged
-    frame encoder unboxes to wire byte 1).
-    """
+    """Create the base LED auth/status command used at connection startup (app's getDeviceInfo())."""
     return create_command_encoding(90, 4, msg_id, [1])
 
 
@@ -131,35 +126,16 @@ def create_auto_point_command(
 ) -> bytearray:
     """Create one auto-curve point (``0x5A, 6``) for a Commander/LED device.
 
-    The vendor app stores the auto curve as one frame per point per channel
-    (``ChihirosLed::setAuto``). The time encoding depends on the device family
-    (``field_147 = device_type not in {"BleLed", "NewBleLed"}``; set by
-    ``ChihirosLed::_judgeNewLed`` at ``0xc674d0`` and dispatched by
-    ``ChihirosLed::setAuto`` at ``0xe7a680``):
+    Time encoding depends on the model family (see ``models.sea_led_family``
+    and docs/protocol.md): SeaLed devices use ``[channel, hour, minute,
+    level]``; BleLed/NewBleLed devices use ``[channel, 30-min-slot, level]``
+    with the app's rounding rule (a remainder above 14 minutes advances to the
+    next slot, up to 96 slots for 48-hour cross-day curves).
 
-    - SeaLed family (``DYNLED`` Commander 4, ``DYSEA``, ``DYNVVD``/``DYNV``
-      RGB VIVID2, ``DYNARGB``, ``DYNWRGB``, ``DYNA2``, ``DYNC2``, ...):
-      ``setSeaLedAutoCode`` (called when ``field_147`` is true) →
-      ``[channel, hour, minute, level]``
-    - BleLed/NewBleLed family (``DYLED`` Commander 4, ``DYCOM``, ``DYONE``,
-      ``DYTWO``, ``DYWRGB``, ``DYRGBV``, ...): ``setAutoCode`` (called when
-      ``field_147`` is false) → ``[channel, minutes // 30, level]`` with the
-      app's rounding rule (a remainder above 14 minutes advances to the next
-      30-minute slot). The 96-slot capacity allows cross-day curves up to
-      48 hours, so slot values above 47 are valid.
-
-    Verified against the 2.8.59 binary (``ChihirosLed::setAuto`` @ ``0xe7a634``
-    dispatches SeaLed → ``setSeaLedAutoCode`` @ ``0xe419b4`` (4 bytes) and
-    BleLed → ``setAutoCode`` @ ``0xe416f4`` (3 bytes)) and against captured
-    traffic: a real ``DYNA2`` (SeaLed device_type per the app's offline
-    registry) writes ``[channel, hour, minute, level]`` frames — see
-    ``docs/a2-custom-schedule-protocol.md``.
-
-    ``minutes`` is minutes since midnight (0..1439); values up to
-    :data:`AUTO_POINT_MAX_MINUTES` (2880 = 48 hours) are accepted for cross-day
-    curves. Levels are 0..100 verbatim. Payload bytes are sent as-is: the
-    2.8.59 app's ``formatData`` does not escape ``0x5A`` parameter bytes
-    (verified at ``0x8e8e78``), so a level of 90 stays 0x5A.
+    ``minutes`` is minutes since midnight (0..1439; up to
+    :data:`AUTO_POINT_MAX_MINUTES` for cross-day curves), ``level`` is 0..100.
+    Payload bytes are sent as-is — a level of 90 stays 0x5A (the app does not
+    escape parameter bytes).
     """
     if not 0 <= channel <= 7:
         raise ValueError("Channel must be between 0 and 7")
@@ -168,11 +144,9 @@ def create_auto_point_command(
     if not 0 <= level <= 100:
         raise ValueError("Level must be between 0 and 100")
     if sea_led_family:
-        # SeaLed device_type → app's setSeaLedAutoCode: [channel, hour, minute, level]
         hour, minute = divmod(minutes, 60)
         parameters = [channel, hour, minute, level]
     else:
-        # BleLed/NewBleLed device_type → app's setAutoCode: [channel, minutes//30, level]
         time_index, remainder = divmod(minutes, 30)
         if remainder > 14:
             time_index += 1
@@ -183,21 +157,14 @@ def create_auto_point_command(
 def create_switch_to_auto_mode_command(msg_id: tuple[int, int]) -> bytearray:
     """Create a switch to auto mode command.
 
-    The payload matches the vendor app's ``switchToScene()`` frame
-    ``(0x5A, 5, [18, 255, 255])`` which activates the stored auto schedule.
-    NOTE (app 2.8.59): the app has a *separate* ``switchToAuto()`` =
-    ``(0x5A, 5, [3, 255, 255])``; this command keeps the ``[18, 255, 255]``
-    form (the schedule-driven auto mode used by LED devices).
+    Sends the schedule-driven scene frame ``(0x5A, 5, [18, 255, 255])``; the
+    app's other auto variant ``switchToAuto()`` uses ``[3, 255, 255]``.
     """
     return create_command_encoding(90, 5, msg_id, [18, 255, 255])
 
 
 def create_switch_to_manual_mode_command(msg_id: tuple[int, int]) -> bytearray:
-    """Create a switch to manual mode command.
-
-    The vendor app sends ``switchToManual()`` = ``(0x5A, 5, [11, 255, 255])``
-    before manual slider control on LED devices.
-    """
+    """Create a switch to manual mode command (app's ``switchToManual()`` frame)."""
     return create_command_encoding(90, 5, msg_id, [11, 255, 255])
 
 
@@ -211,10 +178,8 @@ def create_set_fan_speed_command(msg_id: tuple[int, int], speed_percent: int) ->
 def create_fan_auto_mode_command(msg_id: tuple[int, int]) -> bytearray:
     """Create a fan auto mode command.
 
-    Matches the vendor app's ``LedInfo::setFanAuto()`` → ``DataMaker::autoFan()``
-    frame ``(0x5A, 5, [0x11, 0xFF, 0xFF])`` used by fan-equipped LED models such
-    as the WRGB VIVID III. In auto mode the device starts/stops the fan from its
-    configured temperature thresholds.
+    Matches the app's ``autoFan()`` frame ``(0x5A, 5, [0x11, 0xFF, 0xFF])``;
+    the device then starts/stops the fan from its temperature thresholds.
     """
     return create_command_encoding(90, 5, msg_id, [0x11, 0xFF, 0xFF])
 
@@ -226,12 +191,9 @@ def create_vivid3_fan_start_stop_temp_command(
 ) -> bytearray:
     """Create a VIVID3 fan start/stop temperature command.
 
-    Matches the vendor app's ``vvd3FanStartStopTemp()`` frame
-    ``(0xA5, 45, [start ?? 38, stop ?? 33])``. The fan starts when the
-    temperature reaches ``start_temp`` and stops at ``stop_temp`` (the app
-    defaults are 38 / 33 °C, a 5 °C hysteresis). Temperatures are payload data
-    so reserved-byte avoidance is disabled to send values such as 90 °C
-    verbatim.
+    Matches the app's ``vvd3FanStartStopTemp()`` frame ``(0xA5, 45, ...)`` with
+    38/33 °C defaults (5 °C hysteresis). Temperatures are payload bytes sent
+    verbatim (reserved-byte avoidance disabled).
     """
     if not 0 <= start_temp <= 255 or not 0 <= stop_temp <= 255:
         raise ValueError("Fan temperatures must be between 0 and 255")

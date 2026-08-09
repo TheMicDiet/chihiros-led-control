@@ -62,8 +62,7 @@ RESET_SCHEDULE_SCHEMA = vol.Schema(DEVICE_SELECTOR_SCHEMA)
 SET_SCHEDULE_SCHEMA = vol.Schema(
     {**DEVICE_SELECTOR_SCHEMA, vol.Required(ATTR_PERIODS): vol.All(list, [vol.Schema(SCHEDULE_PERIOD_SCHEMA)])}
 )
-# Auto-curve points use the app's 0x5A/0x06 per-point encoding: each point is a
-# [minutes, level] pair for one channel. ``minutes`` is minutes since midnight.
+# Auto-curve points are per-channel [minutes, level] pairs; minutes are since midnight.
 AUTO_CURVE_POINT_SCHEMA = vol.All([vol.Coerce(int)], vol.Length(min=2, max=2))
 SET_AUTO_CURVE_SCHEMA = vol.Schema(
     {

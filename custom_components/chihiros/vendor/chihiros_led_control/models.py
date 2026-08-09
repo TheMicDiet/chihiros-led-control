@@ -18,19 +18,16 @@ class DeviceModel:
     fallback: bool = False
     has_fan: bool = False
     min_fan_speed: int = 0
-    # True for SeaLed-type devices (e.g. DYNLED, DYSEA). Selects the 0x5A/0x06
-    # auto-curve point encoding: SeaLed uses [channel, 30-min-slot, level], the
-    # BleLed/NewBleLed family uses [channel, hour, minute, level] (verified in
-    # the 2.8.59 app's ChihirosLed::setAuto, field_147 from _judgeNewLed).
+    # SeaLed devices encode 0x5A/0x06 auto-curve points as [channel, hour, minute, level];
+    # BleLed/NewBleLed devices use [channel, 30-min-slot, level] instead.
     sea_led_family: bool = False
 
 
 WHITE_CHANNELS = MappingProxyType({"white": 0})
 RGB_CHANNELS = MappingProxyType({"red": 0, "green": 1, "blue": 2})
 WRGB_CHANNELS = MappingProxyType({"white": 3, "red": 0, "green": 1, "blue": 2})
-# Legacy Commander 1 / fallback default. The vendor app's registry defines the
-# Commander 4 as a 4-channel controller with channel names red/green/blue/white
-# on 0..3 (initColorNameList), so this is kept collision-free.
+# Commander family (incl. fallback default): channels red/green/blue/white on
+# 0..3 per the 2.8.59 app registry's initColorNameList.
 COMMANDER_CHANNELS = MappingProxyType({"red": 0, "green": 1, "blue": 2, "white": 3})
 X300_CHANNELS = MappingProxyType({"white": 0, "warm": 1})
 DOSING_CHANNELS = MappingProxyType({})
@@ -46,8 +43,7 @@ DOSING_PUMP = DeviceModel("Dosing Pump", ("DYDOSE", "DYDOSED", "DYTDOS", "DYNDOS
 SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     DeviceModel("Z Light TINY", ("DYSSD", "DYZSD"), Z_LIGHT_TINY_CHANNELS),
     DeviceModel("Tiny Terrarium Egg", ("DYDD",), TINY_TERRARIUM_EGG_CHANNELS),
-    # A II (DYNA2/DYNA2N) is SeaLed device_type in the 2.8.59 app registry,
-    # like its A-series sibling DYNA2 — auto points use [ch, hour, minute, level].
+    # A II (DYNA2/DYNA2N) is SeaLed per the 2.8.59 registry.
     DeviceModel("A II", ("DYNA2", "DYNA2N"), WHITE_CHANNELS, sea_led_family=True),
     DeviceModel("A Series", ("DYA",), WHITE_CHANNELS),
     # New C splits by generation: DYC is BleLed, DYNC2 is SeaLed (2.8.59 registry).
@@ -79,11 +75,7 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     ),
     DeviceModel("Commander X", ("DYONE",), WHITE_CHANNELS),
     DeviceModel("X300", ("DYTWO",), X300_CHANNELS),
-    # WRGB II: legacy DYWRGB is BleLed (2.8.59 registry); the DYN-prefixed
-    # new generation is SeaLed — DYNW90/DYNWRGB verified, the 30/45/60/12P
-    # suffix is just light length so those share the family (absent from this
-    # APK). DYNT90 is grouped here per the ESPHome-bridge observation and
-    # follows the new-gen SeaLed family.
+    # WRGB II: legacy DYWRGB is BleLed; the DYN-prefixed new generation is SeaLed.
     DeviceModel(
         "WRGB II",
         ("DYWRGB",),
@@ -99,23 +91,17 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
         "WRGB II Pro",
         ("DYWPRO30", "DYWPRO45", "DYWPRO60", "DYWPRO80", "DYWPRO90", "DYWPR120"),
         WRGB_CHANNELS,
-        # 30/45/60/80/90/120 are light lengths; the family is SeaLed per the
-        # vendor DYN/new-gen convention (device_type is server metadata, not in
-        # the 2.8.59 offline registry).
+        # 30..120 are light lengths; SeaLed per the new-gen convention.
         sea_led_family=True,
     ),
     DeviceModel(
         "WRGB II Slim",
         ("DYSILN", "DYSL30", "DYSL45", "DYSL60", "DYSL90", "DYSL120", "DYSL12"),
         RGB_CHANNELS,
-        # 30/45/60/90/120 are light lengths; SeaLed per the new-gen convention.
-        # Only DYSL60 appears in the 2.8.59 APK (offline power table); its
-        # device_type is server metadata.
+        # 30..120 are light lengths; SeaLed per the new-gen convention.
         sea_led_family=True,
     ),
-    # WRGB VIVID III: device_type is "NewVivid3" in the app (factory key
-    # pp+0xfe08 → NewVivid3 class, no setAuto override), which is not in
-    # {BleLed, NewBleLed} → _judgeNewLed sets field_147 true → SeaLed family.
+    # NewVivid3 device_type is not in {BleLed, NewBleLed}, so the app treats it as SeaLed.
     DeviceModel(
         "WRGB VIVID III",
         ("DYVVD3",),
@@ -124,11 +110,9 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
         min_fan_speed=25,
         sea_led_family=True,
     ),
-    # C II (DYNC2N) is the new-gen C-series; sibling DYNC2 is SeaLed (2.8.59
-    # registry) and the DYN prefix is the app's SeaLed marker.
+    # DYNC2N is the new-gen C-series (DYN prefix → SeaLed family).
     DeviceModel("C II", ("DYNC2N",), WHITE_CHANNELS, sea_led_family=True),
-    # C II RGB: DYN-prefixed new-gen → SeaLed (DYNCRGP is in the 2.8.59 power
-    # table; DYNCRGB absent from this APK — family per the new-gen convention).
+    # DYN-prefixed new-gen → SeaLed family.
     DeviceModel("C II RGB", ("DYNCRGP", "DYNCRGB"), RGB_CHANNELS, sea_led_family=True),
     DeviceModel(
         "Universal WRGB",
@@ -143,8 +127,7 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
             "DYU1500",
         ),
         WRGB_CHANNELS,
-        # 550..1500 are light lengths; the family is SeaLed per the vendor
-        # new-gen convention (device_type is server metadata).
+        # 550..1500 are light lengths; SeaLed per the new-gen convention.
         sea_led_family=True,
     ),
     DeviceModel("Commander 1", ("DYCOM",), COMMANDER_CHANNELS, needs_device_type=True),

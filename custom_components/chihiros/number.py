@@ -22,8 +22,7 @@ from .runtime import ChihirosClient
 
 _LOGGER = logging.getLogger(__name__)
 
-# Auto mode keeps at least this gap between the fan start and stop temperatures,
-# matching the vendor app's hysteresis handling for temperature-driven fans.
+# Minimum gap between the fan start and stop temperatures (vendor app hysteresis).
 FAN_TEMP_HYSTERESIS = 2
 SIGNAL_FAN_TEMP_UPDATED = f"{DOMAIN}_fan_temp_updated"
 
@@ -129,8 +128,7 @@ class ChihirosFanTempNumberBase(NumberEntity, RestoreEntity):
                 value = None
             if value is not None and self.native_min_value <= value <= self.native_max_value:
                 self._restored_value = float(value)
-        # The stop-temperature entity performs the pair write, but it must
-        # also be scheduled when only the start value has restore state.
+        # Both numbers schedule the restore; only the stop number performs the write.
         if self._restored_value is not None or self._partner_restored_value() is not None:
             # Re-applying the pair writes to the device, so defer it past
             # entity setup instead of blocking it on BLE I/O.
@@ -179,12 +177,7 @@ class ChihirosFanTempNumberBase(NumberEntity, RestoreEntity):
         return value
 
     async def _restore_temperatures(self) -> None:
-        """Re-apply the restored fan temperature pair to the device.
-
-        Only the stop-temperature number performs the write so the pair is
-        derived from both restored values; it is always added after the start
-        number and can read the start value from the restore store.
-        """
+        """Re-apply the restored temperature pair to the device (stop number only)."""
         pair = self._restored_temperature_pair()
         if pair is None:
             return
@@ -251,9 +244,7 @@ class ChihirosFanStopTempNumber(ChihirosFanTempNumberBase):
     def _restored_temperature_pair(self) -> tuple[int, int] | None:
         """Return the restored start/stop pair, or None when nothing remains to restore.
 
-        The start half comes from the paired start number's restored value so
-        the write uses the user's stored pair instead of the device defaults;
-        the start number defers the write to this entity.
+        The start half comes from the paired start number's restored value.
         """
         start_value = self._partner_restored_value()
         stop_value = self._restored_value
