@@ -353,11 +353,12 @@ class ChihirosDevice:
         """Write one auto-curve point (``0x5A, 6``) for a channel.
 
         Matches the vendor app's ``ChihirosLed::setAuto`` per-point frame. The
-        time encoding follows the model family: BleLed devices (e.g. the
-        Commander 4 ``DYLED``) use ``[channel, hour, minute, level]``, SeaLed
-        devices (e.g. ``DYNLED``, ``DYSEA``) use ``[channel, 30-min-slot,
-        level]``. Prefer :meth:`set_auto_curve` when writing more than one
-        point so the whole curve is one paced BLE transaction.
+        time encoding follows the model family: SeaLed devices (e.g. ``DYNLED``,
+        ``DYSEA``) use ``[channel, hour, minute, level]``, BleLed devices (e.g.
+        the Commander 4 ``DYLED``) use ``[channel, 30-min-slot, level]``. See
+        ``create_auto_point_command`` for the verified mapping. Prefer
+        :meth:`set_auto_curve` when writing more than one point so the whole
+        curve is one paced BLE transaction.
         """
         self._validate_auto_point(channel, minutes, level)
         cmd = commands.create_auto_point_command(

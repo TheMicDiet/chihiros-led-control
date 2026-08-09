@@ -133,15 +133,27 @@ def create_auto_point_command(
 
     The vendor app stores the auto curve as one frame per point per channel
     (``ChihirosLed::setAuto``). The time encoding depends on the device family
-    (``field_147 = device_type not in {"BleLed", "NewBleLed"}``):
+    (``field_147 = device_type not in {"BleLed", "NewBleLed"}``; set by
+    ``ChihirosLed::_judgeNewLed`` at ``0xc674d0`` and dispatched by
+    ``ChihirosLed::setAuto`` at ``0xe7a680``):
 
-    - BleLed family (``DYLED`` Commander 4, ``DYCOM``, ``DYONE``, ``DYTWO``,
-      ``DYWRGB``, ...): ``setSeaLedAutoCode`` → ``[channel, hour, minute, level]``
-    - SeaLed family (``DYNLED`` Commander 4, ``DYSEA``): ``setAutoCode`` →
-      ``[channel, minutes // 30, level]`` with the app's rounding rule
-      (a remainder above 14 minutes advances to the next 30-minute slot). The
-      app's SeaLed point capacity (96 slots) allows cross-day curves up to
+    - SeaLed family (``DYNLED`` Commander 4, ``DYSEA``, ``DYNVVD``/``DYNV``
+      RGB VIVID2, ``DYNARGB``, ``DYNWRGB``, ``DYNA2``, ``DYNC2``, ...):
+      ``setSeaLedAutoCode`` (called when ``field_147`` is true) →
+      ``[channel, hour, minute, level]``
+    - BleLed/NewBleLed family (``DYLED`` Commander 4, ``DYCOM``, ``DYONE``,
+      ``DYTWO``, ``DYWRGB``, ``DYRGBV``, ...): ``setAutoCode`` (called when
+      ``field_147`` is false) → ``[channel, minutes // 30, level]`` with the
+      app's rounding rule (a remainder above 14 minutes advances to the next
+      30-minute slot). The 96-slot capacity allows cross-day curves up to
       48 hours, so slot values above 47 are valid.
+
+    Verified against the 2.8.59 binary (``ChihirosLed::setAuto`` @ ``0xe7a634``
+    dispatches SeaLed → ``setSeaLedAutoCode`` @ ``0xe419b4`` (4 bytes) and
+    BleLed → ``setAutoCode`` @ ``0xe416f4`` (3 bytes)) and against captured
+    traffic: a real ``DYNA2`` (SeaLed device_type per the app's offline
+    registry) writes ``[channel, hour, minute, level]`` frames — see
+    ``docs/a2-custom-schedule-protocol.md``.
 
     ``minutes`` is minutes since midnight (0..1439); values up to
     :data:`AUTO_POINT_MAX_MINUTES` (2880 = 48 hours) are accepted for cross-day
@@ -156,13 +168,15 @@ def create_auto_point_command(
     if not 0 <= level <= 100:
         raise ValueError("Level must be between 0 and 100")
     if sea_led_family:
+        # SeaLed device_type → app's setSeaLedAutoCode: [channel, hour, minute, level]
+        hour, minute = divmod(minutes, 60)
+        parameters = [channel, hour, minute, level]
+    else:
+        # BleLed/NewBleLed device_type → app's setAutoCode: [channel, minutes//30, level]
         time_index, remainder = divmod(minutes, 30)
         if remainder > 14:
             time_index += 1
         parameters = [channel, time_index, level]
-    else:
-        hour, minute = divmod(minutes, 60)
-        parameters = [channel, hour, minute, level]
     return create_command_encoding(90, 6, msg_id, parameters, avoid_reserved_byte=False)
 
 

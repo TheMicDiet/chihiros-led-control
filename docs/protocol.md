@@ -135,10 +135,26 @@ and the channel maximum. The registry also defines the channel layout used by
 | `DYONE` | Commander X / 一路控制器 | `BleLed` | `[100]` | 1 |
 | `DYTWO` | X300 | `BleLed` | `[100, 100]` | 2 (white/warm) |
 | `DYA` | A series / A系列 | `BleLed` | `[100]` | 1 |
-| `DYWRGB`, `DYNWRGB`, `DYNW90` | WRGB2 | `BleLed` | `[100, 100, 100]` | 3 (RGB) |
-| `DYC`, `DYNC2` | New C / C系列 | `BleLed` | `[100]` | 1 |
+| `DYWRGB` | WRGB2 | `BleLed` | `[100, 100, 100]` | 3 (RGB) |
+| `DYNWRGB`, `DYNW90`, `DYNW30/45/60/12P` | WRGB2 | `SeaLed` | `[100, 100, 100]` | 3 (RGB) |
+| `DYC` | New C / C系列 | `BleLed` | `[100]` | 1 |
+| `DYNC2`, `DYNC2N` | New C / C II | `SeaLed` | `[100]` | 1 |
 | `DYSEA` | SEA_LED / 海水灯 | `SeaLed` | `[100, 100, 100, 100]` | 4 (WRGB) |
-| `DYRGBV`, `DYNVVD`, `DYNV` | RGB VIVID2 | `NewBleLed` | `[115, 130, 200]` | 3 (RGB) |
+| `DYRGBV` | RGB VIVID2 | `NewBleLed` | `[115, 130, 200]` | 3 (RGB) |
+| `DYNVVD`, `DYNV` | RGB VIVID2 | `SeaLed` | `[115, 130, 200]` | 3 (RGB) |
+| `DYWPRO30–90`, `DYWPR120` | WRGB II Pro | `SeaLed`¹ | `[100, 100, 100, 100]` | 4 (WRGB) |
+| `DYSILN`, `DYSL30–120` | WRGB II Slim | `SeaLed`¹ | `[100, 100, 100]` | 3 (RGB) |
+| `DYU550–1500` | Universal WRGB | `SeaLed`¹ | `[100, 100, 100, 100]` | 4 (WRGB) |
+| `DYVVD3` | WRGB VIVID III | `SeaLed`² | `[100, 100, 100, 100]` | 4 (WRGB) + fan |
+
+¹ device_type is server metadata (not in the 2.8.59 offline registry); SeaLed
+is inferred from the vendor's new-gen convention and the numeric suffix being
+light length (see `models.py`).
+
+² binary-verified: the VIVID III's device_type is `"NewVivid3"` (factory key
+`pp+0xfe08` → `NewVivid3` class, which has no `setAuto` override), and
+`"NewVivid3"` is not in `{BleLed, NewBleLed}`, so `_judgeNewLed` sets
+`field_147` true → SeaLed family.
 
 Findings from the 2.8.59 app decompilation:
 
@@ -254,12 +270,13 @@ The vendor app stores the auto curve as one frame per point per channel
 depends on the device family (`field_147 = device_type not in
 {"BleLed", "NewBleLed"}`):
 
+- **SeaLed family** (`DYNLED` Commander 4, `DYSEA`, `DYNVVD`/`DYNV`,
+  `DYNARGB`, `DYNWRGB`/`DYNW90`, `DYNA2`, `DYNC2`): `[channel, hour, minute,
+  level]`
 - **BleLed family** (`DYLED` Commander 4, `DYCOM`, `DYONE`, `DYTWO`, `DYWRGB`,
-  ...): `[channel, hour, minute, level]`
-- **SeaLed family** (`DYNLED` Commander 4, `DYSEA`): `[channel, minutes // 30,
-  level]`, rounded to the nearest 30-minute slot (a remainder above 14 advances
-  to the next slot); the app's SeaLed capacity allows up to 96 slots for
-  48-hour cross-day curves
+  ...): `[channel, minutes // 30, level]`, rounded to the nearest 30-minute
+  slot (a remainder above 14 advances to the next slot); the app's BleLed
+  capacity allows up to 96 slots for 48-hour cross-day curves
 
 Payload bytes are sent **verbatim**: the 2.8.59 app's `formatData` does not
 escape `0x5A` payload bytes, so a level of 90 stays `0x5A` on the wire. The
@@ -378,8 +395,8 @@ snapshot as a status payload whose checksum/trailer is not yet confirmed.
 | Command ID | Mode | Parameters | Meaning |
 | ---: | ---: | --- | --- |
 | `0x5a` / `90` | `0x04` / `4` | `[1]` | Query LED runtime/status |
-| `0x5a` / `90` | `0x06` / `6` | `[channel, hour, minute, level]` | Auto-curve point, **BleLed family** (per the 2.8.59 app's registry `device_type`; encoder verified: `setSeaLedAutoCode`. Includes `DYLED` Commander 4, `DYCOM`, `DYONE`, `DYTWO`, `DYWRGB`, ...) |
-| `0x5a` / `90` | `0x06` / `6` | `[channel, time_index, level]` | Auto-curve point, **SeaLed family** (per the 2.8.59 app's registry `device_type`; encoder verified: `setAutoCode`. `time_index = minutes/30` with the app's rounding rule; up to 96 slots for 48-hour cross-day curves. Includes `DYNLED` Commander 4, `DYSEA`) |
+| `0x5a` / `90` | `0x06` / `6` | `[channel, hour, minute, level]` | Auto-curve point, **SeaLed family** (per the 2.8.59 app's registry `device_type`; encoder verified in the binary: `ChihirosLed::setAuto` @ `0xe7a680` calls `setSeaLedAutoCode` for SeaLed. Includes `DYNLED` Commander 4, `DYSEA`, `DYNVVD`/`DYNV`, `DYNARGB`, `DYNWRGB`/`DYNW90`, `DYNA2`, `DYNC2`. Captured on a real `DYNA2` — see `a2-custom-schedule-protocol.md`) |
+| `0x5a` / `90` | `0x06` / `6` | `[channel, time_index, level]` | Auto-curve point, **BleLed/NewBleLed family** (per the 2.8.59 app's registry `device_type`; encoder verified in the binary: `setAutoCode` for BleLed. `time_index = minutes/30` with the app's rounding rule; up to 96 slots for 48-hour cross-day curves. Includes `DYLED` Commander 4, `DYCOM`, `DYONE`, `DYTWO`, `DYWRGB`, `DYRGBV`, ...) |
 | `0x5a` / `90` | `0x07` / `7` | `[color, brightness]` | Manual brightness |
 | `0x5a` / `90` | `0x09` / `9` | `[year - 2000, month, date_field, hour, minute, second]` | Set device time |
 | `0x5a` / `90` | `0x0f` / `15` | `[speed_percent]` | Fan speed, `0` to `100`; confirmed on WRGB VIVID III |

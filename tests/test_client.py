@@ -607,12 +607,12 @@ def test_set_auto_point_sends_family_specific_encoding() -> None:
 
     asyncio.run(run())
 
-    # BleLed DYLED → [channel, hour, minute, level] (mode at index 5, checksum last)
-    assert bleled_sent[0][5:10] == bytes([6, 2, 8, 30, 80])
-    assert bleled_sent[0][10] == calculate_checksum(bleled_sent[0][:-1])
-    # SeaLed DYNLED → [channel, 30-minute-slot, level]
-    assert sealed_sent[0][5:9] == bytes([6, 3, 17, 60])
-    assert sealed_sent[0][9] == calculate_checksum(sealed_sent[0][:-1])
+    # BleLed DYLED → [channel, 30-minute-slot, level] (mode at index 5, checksum last)
+    assert bleled_sent[0][5:9] == bytes([6, 2, 17, 80])  # 8:30 → slot 17
+    assert bleled_sent[0][9] == calculate_checksum(bleled_sent[0][:-1])
+    # SeaLed DYNLED → [channel, hour, minute, level]
+    assert sealed_sent[0][5:10] == bytes([6, 3, 8, 30, 60])
+    assert sealed_sent[0][10] == calculate_checksum(sealed_sent[0][:-1])
 
 
 def test_set_auto_point_rejects_out_of_range_channel() -> None:
@@ -649,10 +649,10 @@ def test_set_auto_curve_sends_all_points_in_one_transaction() -> None:
 
     assert len(sent_batches) == 1
     assert len(sent_batches[0]) == 3
-    # SeaLed encoding: [channel, slot, level]
-    assert sent_batches[0][0][5:9] == bytes([6, 0, 16, 100])  # 480 min → slot 16
-    assert sent_batches[0][1][5:9] == bytes([6, 1, 16, 60])
-    assert sent_batches[0][2][5:9] == bytes([6, 2, 24, 0])  # 720 min → slot 24
+    # SeaLed encoding (DYNLED): [channel, hour, minute, level]
+    assert sent_batches[0][0][5:10] == bytes([6, 0, 8, 0, 100])  # 480 min = 08:00
+    assert sent_batches[0][1][5:10] == bytes([6, 1, 8, 0, 60])
+    assert sent_batches[0][2][5:10] == bytes([6, 2, 12, 0, 0])  # 720 min = 12:00
 
 
 def test_set_auto_curve_rejects_empty_or_out_of_range_points() -> None:

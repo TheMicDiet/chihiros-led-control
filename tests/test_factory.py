@@ -28,6 +28,48 @@ def test_detect_model_matches_name_prefix() -> None:
     assert detect_model("DYNW601234567890").name == "WRGB II"
 
 
+def test_detect_model_wrgb2_generation_split() -> None:
+    """WRGB2 new-gen codes are SeaLed; legacy DYWRGB is BleLed."""
+    assert detect_model("DYWRGB1234567890").sea_led_family is False
+    # DYN-prefixed new gen (length suffixes are light sizes): SeaLed
+    for name in (
+        "DYNT901234567890",
+        "DYNW301234567890",
+        "DYNW451234567890",
+        "DYNW601234567890",
+        "DYNW901234567890",
+        "DYNW12P1234567890",
+        "DYNWRGB1234567890",
+    ):
+        model = detect_model(name)
+        assert model.name == "WRGB II"
+        assert model.sea_led_family is True
+
+
+def test_detect_model_new_gen_families_are_sea_led() -> None:
+    """Pro/Slim/Universal/C II/C II RGB are SeaLed (length suffix = light size)."""
+    sea_led_cases = {
+        "DYWPRO301234567890": "WRGB II Pro",
+        "DYWPRO901234567890": "WRGB II Pro",
+        "DYWPR1201234567890": "WRGB II Pro",
+        "DYSILN1234567890": "WRGB II Slim",
+        "DYSL301234567890": "WRGB II Slim",
+        "DYSL1201234567890": "WRGB II Slim",
+        "DYNC2N1234567890": "C II",
+        "DYNCRGP1234567890": "C II RGB",
+        "DYNCRGB1234567890": "C II RGB",
+        "DYU5501234567890": "Universal WRGB",
+        "DYU15001234567890": "Universal WRGB",
+    }
+    for name, expected in sea_led_cases.items():
+        model = detect_model(name)
+        assert model.name == expected
+        assert model.sea_led_family is True, name
+    # WRGB VIVID III: device_type "NewVivid3" is not in {BleLed, NewBleLed},
+    # so _judgeNewLed sets field_147 true → SeaLed family (binary-verified).
+    assert detect_model("DYVVD31234567890").sea_led_family is True
+
+
 def test_detect_model_matches_legacy_wrgb_prefix() -> None:
     """Model detection matches the legacy WRGB prefix from app templates."""
     assert detect_model("DYWRGB1234567890").name == "WRGB II"
@@ -113,13 +155,22 @@ def test_detect_model_matches_rgb_aplus_prefixes() -> None:
 
 
 def test_detect_model_matches_rgb_vivid_prefixes() -> None:
-    """RGB VIVID and RGB VIVID II advertisements resolve to RGB models."""
+    """RGB VIVID and RGB VIVID II advertisements resolve to RGB models.
+
+    DYRGBV is NewBleLed device_type; DYNVVD/DYNV are SeaLed (2.8.59 registry
+    "RGB VIVID2"), which selects the [ch, hour, minute, level] auto-point form.
+    """
     assert detect_model("DYREE1234567890").name == "RGB VIVID"
-    for name in ("DYRGBV1234567890", "DYNVVD1234567890", "DYNV1234567890"):
+    dyrgbv = detect_model("DYRGBV1234567890")
+    assert dyrgbv.name == "RGB VIVID II"
+    assert dict(dyrgbv.color_channels) == {"red": 0, "green": 1, "blue": 2}
+    assert dyrgbv.sea_led_family is False
+    for name in ("DYNVVD1234567890", "DYNV1234567890"):
         model = detect_model(name)
 
         assert model.name == "RGB VIVID II"
         assert dict(model.color_channels) == {"red": 0, "green": 1, "blue": 2}
+        assert model.sea_led_family is True
 
 
 def test_detect_model_matches_single_channel_white_prefixes() -> None:
@@ -159,10 +210,10 @@ def test_detect_model_matches_new_gen_commander_prefix() -> None:
     assert dyled.name == "Commander 4"
     assert dict(dyled.color_channels) == {"white": 3, "red": 0, "green": 1, "blue": 2}
     assert dyled.needs_device_type is False
-    assert dyled.sea_led_family is False  # BleLed generation → [ch, hour, minute, level] auto points
+    assert dyled.sea_led_family is False  # BleLed device_type → [ch, minutes/30, level] auto points
 
     dynled = detect_model("DYNLED1234567890")
     assert dynled.name == "Commander 4"
     assert dict(dynled.color_channels) == {"white": 3, "red": 0, "green": 1, "blue": 2}
     assert needs_device_type("DYNLED1234567890") is False
-    assert dynled.sea_led_family is True  # SeaLed generation → [ch, 30-min-slot, level] auto points
+    assert dynled.sea_led_family is True  # SeaLed device_type → [ch, hour, minute, level] auto points
