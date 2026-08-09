@@ -13,6 +13,7 @@ from homeassistant.exceptions import HomeAssistantError
 from .const import DOMAIN
 from .models import ChihirosData
 from .service_utils import DEVICE_SELECTOR_SCHEMA, resolve_service_device
+from .vendor.chihiros_led_control.commands import AUTO_POINT_MAX_MINUTES
 from .vendor.chihiros_led_control.schedule_validation import (
     find_duplicate_schedule_weekdays,
     normalize_schedule_weekdays,
@@ -25,8 +26,10 @@ SERVICE_ADD_SCHEDULE = "add_schedule"
 SERVICE_REMOVE_SCHEDULE = "remove_schedule"
 SERVICE_RESET_SCHEDULE = "reset_schedule"
 SERVICE_SET_SCHEDULE = "set_schedule"
+SERVICE_SET_AUTO_CURVE = "set_auto_curve"
 
 ATTR_BRIGHTNESS = "brightness"
+ATTR_CURVE = "curve"
 ATTR_END = "end"
 ATTR_LEVELS = "levels"
 ATTR_PERIODS = "periods"
@@ -58,6 +61,15 @@ REMOVE_SCHEDULE_SCHEMA = vol.Schema(
 RESET_SCHEDULE_SCHEMA = vol.Schema(DEVICE_SELECTOR_SCHEMA)
 SET_SCHEDULE_SCHEMA = vol.Schema(
     {**DEVICE_SELECTOR_SCHEMA, vol.Required(ATTR_PERIODS): vol.All(list, [vol.Schema(SCHEDULE_PERIOD_SCHEMA)])}
+)
+# Auto-curve points use the app's 0x5A/0x06 per-point encoding: each point is a
+# [minutes, level] pair for one channel. ``minutes`` is minutes since midnight.
+AUTO_CURVE_POINT_SCHEMA = vol.All([vol.Coerce(int)], vol.Length(min=2, max=2))
+SET_AUTO_CURVE_SCHEMA = vol.Schema(
+    {
+        **DEVICE_SELECTOR_SCHEMA,
+        vol.Required(ATTR_CURVE): {vol.Coerce(int): vol.All(list, [AUTO_CURVE_POINT_SCHEMA])},
+    }
 )
 
 
@@ -98,11 +110,41 @@ def async_register_schedule_services(hass: HomeAssistant) -> None:
         await async_replace_schedule(data, call.data[ATTR_PERIODS])
         await async_refresh_status(data)
 
+    async def async_set_auto_curve(call: ServiceCall) -> None:
+        """Replace the device's auto curve with 0x5A/0x06 points (app format)."""
+        data = resolve_service_device(hass, call.data)
+        ensure_light_device(data)
+        curve = call.data[ATTR_CURVE]
+        validate_auto_curve(data, curve)
+        points = [
+            (channel, minutes, level) for channel, channel_points in curve.items() for minutes, level in channel_points
+        ]
+        try:
+            await data.device.reset_settings()
+        except Exception as ex:
+            raise HomeAssistantError(
+                f"Failed to start auto curve update for {data.device.name}; the existing curve may remain"
+            ) from ex
+        try:
+            await data.device.set_auto_curve(points)
+        except Exception as ex:
+            try:
+                await data.device.reset_settings()
+            except Exception:
+                _LOGGER.exception("Failed to clear a partial auto curve for %s", data.device.name)
+            raise HomeAssistantError(
+                f"Failed to write auto curve for {data.device.name}; "
+                "the previous curve cannot be restored and the integration "
+                "attempted to clear the partial replacement"
+            ) from ex
+        await async_refresh_status(data)
+
     registrations = (
         (SERVICE_ADD_SCHEDULE, async_add_schedule, ADD_SCHEDULE_SCHEMA),
         (SERVICE_REMOVE_SCHEDULE, async_remove_schedule, REMOVE_SCHEDULE_SCHEMA),
         (SERVICE_RESET_SCHEDULE, async_reset_schedule, RESET_SCHEDULE_SCHEMA),
         (SERVICE_SET_SCHEDULE, async_set_schedule, SET_SCHEDULE_SCHEMA),
+        (SERVICE_SET_AUTO_CURVE, async_set_auto_curve, SET_AUTO_CURVE_SCHEMA),
     )
     for service, handler, schema in registrations:
         if not hass.services.has_service(DOMAIN, service):
@@ -111,7 +153,13 @@ def async_register_schedule_services(hass: HomeAssistant) -> None:
 
 def async_remove_schedule_services(hass: HomeAssistant) -> None:
     """Remove all registered schedule services."""
-    for service in (SERVICE_ADD_SCHEDULE, SERVICE_REMOVE_SCHEDULE, SERVICE_RESET_SCHEDULE, SERVICE_SET_SCHEDULE):
+    for service in (
+        SERVICE_ADD_SCHEDULE,
+        SERVICE_REMOVE_SCHEDULE,
+        SERVICE_RESET_SCHEDULE,
+        SERVICE_SET_SCHEDULE,
+        SERVICE_SET_AUTO_CURVE,
+    ):
         if hass.services.has_service(DOMAIN, service):
             hass.services.async_remove(DOMAIN, service)
 
@@ -198,6 +246,36 @@ async def async_replace_schedule(chihiros_data: ChihirosData, periods: list[dict
             f"Failed to replace the schedule for {chihiros_data.device.name}; "
             "the previous schedule cannot be restored and the integration attempted to clear the partial replacement"
         ) from ex
+
+
+def validate_auto_curve(chihiros_data: ChihirosData, curve: dict[int, list[list[int]]]) -> None:
+    """Validate auto-curve points against the selected device before writing."""
+    if not curve:
+        raise HomeAssistantError("Auto curve must contain at least one channel with at least one point")
+    channels = chihiros_data.device.colors
+    if not channels:
+        raise HomeAssistantError(f"{chihiros_data.device.name} does not expose any controllable channels")
+    channel_count = max(channels.values()) + 1
+    if unsupported := sorted({channel for channel in curve if not 0 <= channel < channel_count}):
+        raise HomeAssistantError(
+            f"Channel {', '.join(str(channel) for channel in unsupported)} is not supported by "
+            f"{chihiros_data.device.name}; supported channel ids: {', '.join(str(i) for i in range(channel_count))}"
+        )
+    for channel, points in curve.items():
+        if not points:
+            raise HomeAssistantError(
+                f"Auto curve channel {channel} for {chihiros_data.device.name} must contain at least one point"
+            )
+        for minutes, level in points:
+            if not 0 <= minutes <= AUTO_POINT_MAX_MINUTES:
+                raise HomeAssistantError(
+                    f"Auto curve point minutes must be between 0 and {AUTO_POINT_MAX_MINUTES} for "
+                    f"{chihiros_data.device.name}"
+                )
+            if not 0 <= level <= 100:
+                raise HomeAssistantError(
+                    f"Auto curve point level must be between 0 and 100 for {chihiros_data.device.name}"
+                )
 
 
 def parse_schedule_time(value: str) -> datetime:

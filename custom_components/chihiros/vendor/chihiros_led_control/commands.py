@@ -118,6 +118,54 @@ def create_reset_auto_settings_command(msg_id: tuple[int, int]) -> bytearray:
     return create_command_encoding(90, 5, msg_id, [5, 255, 255])
 
 
+AUTO_POINT_MAX_MINUTES = 2880
+
+
+def create_auto_point_command(
+    msg_id: tuple[int, int],
+    channel: int,
+    minutes: int,
+    level: int,
+    *,
+    sea_led_family: bool,
+) -> bytearray:
+    """Create one auto-curve point (``0x5A, 6``) for a Commander/LED device.
+
+    The vendor app stores the auto curve as one frame per point per channel
+    (``ChihirosLed::setAuto``). The time encoding depends on the device family
+    (``field_147 = device_type not in {"BleLed", "NewBleLed"}``):
+
+    - BleLed family (``DYLED`` Commander 4, ``DYCOM``, ``DYONE``, ``DYTWO``,
+      ``DYWRGB``, ...): ``setSeaLedAutoCode`` → ``[channel, hour, minute, level]``
+    - SeaLed family (``DYNLED`` Commander 4, ``DYSEA``): ``setAutoCode`` →
+      ``[channel, minutes // 30, level]`` with the app's rounding rule
+      (a remainder above 14 minutes advances to the next 30-minute slot). The
+      app's SeaLed point capacity (96 slots) allows cross-day curves up to
+      48 hours, so slot values above 47 are valid.
+
+    ``minutes`` is minutes since midnight (0..1439); values up to
+    :data:`AUTO_POINT_MAX_MINUTES` (2880 = 48 hours) are accepted for cross-day
+    curves. Levels are 0..100 verbatim. Payload bytes are sent as-is: the
+    2.8.59 app's ``formatData`` does not escape ``0x5A`` parameter bytes
+    (verified at ``0x8e8e78``), so a level of 90 stays 0x5A.
+    """
+    if not 0 <= channel <= 7:
+        raise ValueError("Channel must be between 0 and 7")
+    if not 0 <= minutes <= AUTO_POINT_MAX_MINUTES:
+        raise ValueError(f"Minutes must be between 0 and {AUTO_POINT_MAX_MINUTES}")
+    if not 0 <= level <= 100:
+        raise ValueError("Level must be between 0 and 100")
+    if sea_led_family:
+        time_index, remainder = divmod(minutes, 30)
+        if remainder > 14:
+            time_index += 1
+        parameters = [channel, time_index, level]
+    else:
+        hour, minute = divmod(minutes, 60)
+        parameters = [channel, hour, minute, level]
+    return create_command_encoding(90, 6, msg_id, parameters, avoid_reserved_byte=False)
+
+
 def create_switch_to_auto_mode_command(msg_id: tuple[int, int]) -> bytearray:
     """Create a switch to auto mode command.
 

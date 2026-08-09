@@ -349,6 +349,62 @@ class ChihirosDevice:
         cmd = commands.create_reset_auto_settings_command(self.get_next_msg_id())
         await self._send_command(cmd, 3)
 
+    async def set_auto_point(self, channel: int, minutes: int, level: int) -> None:
+        """Write one auto-curve point (``0x5A, 6``) for a channel.
+
+        Matches the vendor app's ``ChihirosLed::setAuto`` per-point frame. The
+        time encoding follows the model family: BleLed devices (e.g. the
+        Commander 4 ``DYLED``) use ``[channel, hour, minute, level]``, SeaLed
+        devices (e.g. ``DYNLED``, ``DYSEA``) use ``[channel, 30-min-slot,
+        level]``. Prefer :meth:`set_auto_curve` when writing more than one
+        point so the whole curve is one paced BLE transaction.
+        """
+        self._validate_auto_point(channel, minutes, level)
+        cmd = commands.create_auto_point_command(
+            self.get_next_msg_id(),
+            channel,
+            minutes,
+            level,
+            sea_led_family=self.model.sea_led_family,
+        )
+        await self._send_command(cmd, 3)
+
+    async def set_auto_curve(self, points: Sequence[tuple[int, int, int]]) -> None:
+        """Replace the auto curve with ``0x5A, 6`` points in one transaction.
+
+        ``points`` is a sequence of ``(channel, minutes, level)`` triples. All
+        frames are sent in a single paced BLE transaction (30 ms apart, like
+        the vendor app's auto-curve burst). Call :meth:`reset_settings` first
+        to clear the stored curve (the app sends ``0x5A,5,[5,255,255]`` before
+        re-applying a saved auto state).
+        """
+        if not points:
+            raise ValueError("Auto curve must contain at least one point")
+        normalized = [(channel, minutes, level) for channel, minutes, level in points]
+        for channel, minutes, level in normalized:
+            self._validate_auto_point(channel, minutes, level)
+        commands_to_send = [
+            bytes(
+                commands.create_auto_point_command(
+                    self.get_next_msg_id(),
+                    channel,
+                    minutes,
+                    level,
+                    sea_led_family=self.model.sea_led_family,
+                )
+            )
+            for channel, minutes, level in normalized
+        ]
+        await self._send_command(commands_to_send, 3)
+
+    def _validate_auto_point(self, channel: int, minutes: int, level: int) -> None:
+        """Validate one auto-curve point against this model."""
+        if not self.model.color_channels:
+            raise ValueError(f"Model does not support auto curve points: {self.model.name}")
+        if not 0 <= channel < self._channel_count():
+            raise ValueError(f"Channel must be between 0 and {self._channel_count() - 1}")
+        # minutes/level ranges are enforced by create_auto_point_command.
+
     async def enable_auto_mode(self, timestamp: datetime | None = None) -> None:
         """Enable auto mode."""
         time_cmd = commands.create_set_time_command(self.get_next_msg_id(), timestamp)

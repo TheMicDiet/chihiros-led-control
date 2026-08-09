@@ -128,7 +128,8 @@ and the channel maximum. The registry also defines the channel layout used by
 
 | Device label(s) | Category | `device_type` | `max_level` | Channels |
 | --- | --- | --- | --- | --- |
-| `DYLED`, `DYNLED` | Commander 4 / 四路控制器 | `BleLed` | `[100, 100, 100, 100]` | 4 |
+| `DYLED` | Commander 4 / 四路控制器 | `BleLed` | `[100, 100, 100, 100]` | 4 (red/green/blue/white) |
+| `DYNLED` | Commander 4 / 四路控制器 | `SeaLed` | `[100, 100, 100, 100]` | 4 (red/green/blue/white) |
 | `DYARGB`, `DYRGBA+`, `DYNARGB` | RGB+APLUS | `BleLed` | `[100, 100, 100]` | 3 (RGB) |
 | `DYREE` | RGB VIVID | `BleLed` | `[100, 100, 100]` | 3 (RGB) |
 | `DYONE` | Commander X / 一路控制器 | `BleLed` | `[100]` | 1 |
@@ -246,6 +247,30 @@ selects every weekday, and `0x71` is the valid XOR checksum.
 Only one setting can be configured per day, so settings cannot conflict. There
 is a maximum of 7 settings.
 
+### Auto Curve Points (0x5a / 0x06)
+
+The vendor app stores the auto curve as one frame per point per channel
+(`ChihirosLed::setAuto`, verified in `chihiros_led.dart`). The time encoding
+depends on the device family (`field_147 = device_type not in
+{"BleLed", "NewBleLed"}`):
+
+- **BleLed family** (`DYLED` Commander 4, `DYCOM`, `DYONE`, `DYTWO`, `DYWRGB`,
+  ...): `[channel, hour, minute, level]`
+- **SeaLed family** (`DYNLED` Commander 4, `DYSEA`): `[channel, minutes // 30,
+  level]`, rounded to the nearest 30-minute slot (a remainder above 14 advances
+  to the next slot); the app's SeaLed capacity allows up to 96 slots for
+  48-hour cross-day curves
+
+Payload bytes are sent **verbatim**: the 2.8.59 app's `formatData` does not
+escape `0x5A` payload bytes, so a level of 90 stays `0x5A` on the wire. The
+`create_auto_point_command` helper in this repository follows the app here
+(`avoid_reserved_byte=False`). A full curve is a burst of these frames, 30 ms
+apart, sent in one BLE transaction; clear the stored curve first with
+`0x5a / 0x05 [5, 255, 255]`. The Home Assistant `chihiros.set_auto_curve`
+service writes curves in this format. (Note: the BleLed/SeaLed *model lists*
+above are inferred from each model's registry `device_type`; the encoding
+selection itself is binary-verified.)
+
 Single-channel A2 devices also have a distinct point-based custom-curve
 protocol using a four-parameter `0x5a / 0x06` command. It is not interchangeable
 with the `0xa5 / 0x19` schedule described above. See
@@ -353,8 +378,8 @@ snapshot as a status payload whose checksum/trailer is not yet confirmed.
 | Command ID | Mode | Parameters | Meaning |
 | ---: | ---: | --- | --- |
 | `0x5a` / `90` | `0x04` / `4` | `[1]` | Query LED runtime/status |
-| `0x5a` / `90` | `0x06` / `6` | `[color, time_index, level]` | Old 48-point auto curve variant; `time_index` is `0..47` in 30-minute steps |
-| `0x5a` / `90` | `0x06` / `6` | `[channel, hour, minute, level]` | A2 custom-curve point variant; see [the capture note](a2-custom-schedule-protocol.md) |
+| `0x5a` / `90` | `0x06` / `6` | `[channel, hour, minute, level]` | Auto-curve point, **BleLed family** (per the 2.8.59 app's registry `device_type`; encoder verified: `setSeaLedAutoCode`. Includes `DYLED` Commander 4, `DYCOM`, `DYONE`, `DYTWO`, `DYWRGB`, ...) |
+| `0x5a` / `90` | `0x06` / `6` | `[channel, time_index, level]` | Auto-curve point, **SeaLed family** (per the 2.8.59 app's registry `device_type`; encoder verified: `setAutoCode`. `time_index = minutes/30` with the app's rounding rule; up to 96 slots for 48-hour cross-day curves. Includes `DYNLED` Commander 4, `DYSEA`) |
 | `0x5a` / `90` | `0x07` / `7` | `[color, brightness]` | Manual brightness |
 | `0x5a` / `90` | `0x09` / `9` | `[year - 2000, month, date_field, hour, minute, second]` | Set device time |
 | `0x5a` / `90` | `0x0f` / `15` | `[speed_percent]` | Fan speed, `0` to `100`; confirmed on WRGB VIVID III |

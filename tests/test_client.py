@@ -12,7 +12,7 @@ from bleak_retry_connector import BleakError
 
 from chihiros_led_control.client import ChihirosDevice, ChihirosDosingPump
 from chihiros_led_control.exceptions import CharacteristicMissingError
-from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
+from chihiros_led_control.models import DOSING_PUMP, RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
 from chihiros_led_control.protocol import (
     DosingDailyNotification,
     DosingTotalsNotification,
@@ -574,6 +574,107 @@ def test_add_setting_uses_first_channel_when_model_has_no_white_channel() -> Non
     asyncio.run(run())
 
     assert sent_commands[0][6:-1] == bytes([8, 0, 18, 30, 0, 127, 40, 255, 255, 255, 255, 255, 255, 255])
+
+
+def test_set_auto_point_sends_family_specific_encoding() -> None:
+    """Auto curve points use the app's per-family 0x5A/0x06 encoding."""
+    bleled_sent: list[bytes] = []
+    sealed_sent: list[bytes] = []
+
+    async def run() -> None:
+        bleled = ChihirosDevice(
+            FakeBLEDevice(),
+            DeviceModel("Commander 4", ("DYLED",), WRGB_CHANNELS),  # type: ignore[arg-type]
+        )
+        sealed = ChihirosDevice(
+            FakeBLEDevice(),
+            DeviceModel("Commander 4", ("DYNLED",), WRGB_CHANNELS, sea_led_family=True),  # type: ignore[arg-type]
+        )
+
+        async def capture_bleled(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+            del retry
+            bleled_sent.append(bytes(command))
+
+        async def capture_sealed(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+            del retry
+            sealed_sent.append(bytes(command))
+
+        bleled._send_command = capture_bleled  # type: ignore[method-assign]
+        sealed._send_command = capture_sealed  # type: ignore[method-assign]
+
+        await bleled.set_auto_point(2, 8 * 60 + 30, 80)
+        await sealed.set_auto_point(3, 8 * 60 + 30, 60)
+
+    asyncio.run(run())
+
+    # BleLed DYLED → [channel, hour, minute, level] (mode at index 5, checksum last)
+    assert bleled_sent[0][5:10] == bytes([6, 2, 8, 30, 80])
+    assert bleled_sent[0][10] == calculate_checksum(bleled_sent[0][:-1])
+    # SeaLed DYNLED → [channel, 30-minute-slot, level]
+    assert sealed_sent[0][5:9] == bytes([6, 3, 17, 60])
+    assert sealed_sent[0][9] == calculate_checksum(sealed_sent[0][:-1])
+
+
+def test_set_auto_point_rejects_out_of_range_channel() -> None:
+    """Auto curve points validate the channel against the model layout."""
+
+    async def run() -> None:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Commander X", ("DYONE",), WHITE_CHANNELS))  # type: ignore[arg-type]
+
+        with pytest.raises(ValueError, match="Channel"):
+            await device.set_auto_point(1, 60, 50)
+
+    asyncio.run(run())
+
+
+def test_set_auto_curve_sends_all_points_in_one_transaction() -> None:
+    """Auto curves batch every point frame into a single paced BLE transaction."""
+    sent_batches: list[list[bytes]] = []
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            FakeBLEDevice(),
+            DeviceModel("Commander 4", ("DYNLED",), WRGB_CHANNELS, sea_led_family=True),  # type: ignore[arg-type]
+        )
+
+        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+            del retry
+            sent_batches.append(list(command) if isinstance(command, list) else [bytes(command)])
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+
+        await device.set_auto_curve([(0, 480, 100), (1, 480, 60), (2, 720, 0)])
+
+    asyncio.run(run())
+
+    assert len(sent_batches) == 1
+    assert len(sent_batches[0]) == 3
+    # SeaLed encoding: [channel, slot, level]
+    assert sent_batches[0][0][5:9] == bytes([6, 0, 16, 100])  # 480 min → slot 16
+    assert sent_batches[0][1][5:9] == bytes([6, 1, 16, 60])
+    assert sent_batches[0][2][5:9] == bytes([6, 2, 24, 0])  # 720 min → slot 24
+
+
+def test_set_auto_curve_rejects_empty_or_out_of_range_points() -> None:
+    """Auto curves reject empty input and out-of-range channels before writing."""
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            FakeBLEDevice(),
+            DeviceModel("Commander 4", ("DYNLED",), WRGB_CHANNELS, sea_led_family=True),  # type: ignore[arg-type]
+        )
+        dosing = ChihirosDevice(FakeBLEDevice(), DOSING_PUMP)  # type: ignore[arg-type]
+
+        with pytest.raises(ValueError, match="at least one point"):
+            await device.set_auto_curve([])
+        with pytest.raises(ValueError, match="Channel"):
+            await device.set_auto_curve([(4, 60, 50)])
+        with pytest.raises(ValueError, match="Minutes"):
+            await device.set_auto_curve([(0, 2881, 50)])
+        with pytest.raises(ValueError, match="does not support auto curve"):
+            await dosing.set_auto_curve([(0, 60, 50)])
+
+    asyncio.run(run())
 
 
 def test_set_manual_mode_sends_mode_switch_command() -> None:

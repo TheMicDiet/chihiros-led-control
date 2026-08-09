@@ -199,6 +199,70 @@ def test_delete_auto_setting_command_matches_captured_frame() -> None:
     assert command == bytearray.fromhex("A5 01 13 00 17 19 02 1E 05 0A 01 7F FF FF FF FF FF FF FF FF 71")
 
 
+def test_auto_point_command_bleled_family_uses_hour_minute_encoding() -> None:
+    """BleLed-family auto points encode [channel, hour, minute, level] (app's setSeaLedAutoCode)."""
+    command = commands.create_auto_point_command((0, 1), 2, 8 * 60 + 30, 80, sea_led_family=False)
+
+    # 0x5A, 6, [2, 8, 30, 80] with checksum over bytes 1..n-2
+    assert command[0] == 0x5A
+    assert command[2] == 4 + 5
+    assert command[5] == 6
+    assert command[6:-1] == bytearray([2, 8, 30, 80])
+    assert command[-1] == calculate_checksum(command[:-1])
+
+
+def test_auto_point_command_sea_led_family_uses_30_minute_slots() -> None:
+    """SeaLed-family auto points encode [channel, 30-minute-slot, level] (app's setAutoCode)."""
+    command = commands.create_auto_point_command((0, 1), 3, 8 * 60 + 30, 60, sea_led_family=True)
+
+    # 8:30 is slot 17; 3-byte payload [3, 17, 60]
+    assert command[6:-1] == bytearray([3, 17, 60])
+
+    # 8:45 rounds up to slot 18 (remainder 15 > 14, matching the app's rule)
+    command = commands.create_auto_point_command((0, 1), 3, 8 * 60 + 45, 60, sea_led_family=True)
+    assert command[6:-1] == bytearray([3, 18, 60])
+
+    # 8:44 stays in slot 17 (remainder 14 is not above the rounding threshold)
+    command = commands.create_auto_point_command((0, 1), 3, 8 * 60 + 44, 60, sea_led_family=True)
+    assert command[6:-1] == bytearray([3, 17, 60])
+
+
+def test_auto_point_command_slot_boundaries() -> None:
+    """SeaLed slot boundaries: midnight is slot 0, 23:59 wraps to slot 48, 48 h is slot 96."""
+    assert commands.create_auto_point_command((0, 1), 0, 0, 0, sea_led_family=True)[6:-1] == bytearray([0, 0, 0])
+    assert commands.create_auto_point_command((0, 1), 0, 1439, 0, sea_led_family=True)[6:-1] == bytearray([0, 48, 0])
+    assert commands.create_auto_point_command((0, 1), 0, 2880, 0, sea_led_family=True)[6:-1] == bytearray([0, 96, 0])
+
+
+def test_auto_point_command_bleled_family_hour_boundary() -> None:
+    """BleLed auto points wrap minutes into hour/minute fields (48 h → hour 48)."""
+    command = commands.create_auto_point_command((0, 1), 1, 2880, 90, sea_led_family=False)
+
+    assert command[6:-1] == bytearray([1, 48, 0, 0x5A])
+
+
+def test_auto_point_command_sends_reserved_byte_verbatim() -> None:
+    """Level 90 (0x5A) is sent verbatim: the 2.8.59 app's formatData does not escape payload bytes."""
+    command = commands.create_auto_point_command((0, 1), 1, 10 * 60, 90, sea_led_family=False)
+
+    assert command[6:-1] == bytearray([1, 10, 0, 0x5A])
+
+
+def test_auto_point_command_validates_range() -> None:
+    """Auto point commands reject out-of-range channels, minutes, and levels."""
+    for kwargs in (
+        {"channel": 8, "minutes": 60, "level": 50},
+        {"channel": 0, "minutes": -1, "level": 50},
+        {"channel": 0, "minutes": 2881, "level": 50},
+        {"channel": 0, "minutes": 60, "level": 101},
+    ):
+        try:
+            commands.create_auto_point_command((0, 1), sea_led_family=False, **kwargs)
+        except ValueError:
+            continue
+        raise AssertionError(f"Expected ValueError for {kwargs}")
+
+
 def test_encode_timestamp() -> None:
     """Timestamps are encoded as protocol parameters."""
     timestamp = datetime.datetime(2026, 6, 11, 9, 8, 7)

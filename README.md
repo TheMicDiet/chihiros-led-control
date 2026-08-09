@@ -61,6 +61,17 @@ The integration provides services for changing the auto mode schedule from
 - `chihiros.remove_schedule`: remove one schedule period.
 - `chihiros.reset_schedule`: remove all schedule periods.
 - `chihiros.set_schedule`: replace the complete schedule.
+- `chihiros.set_auto_curve`: replace the device's stored auto curve with the
+  vendor app's per-point `0x5A/0x06` format (channel id → list of
+  `[minutes, level]` pairs). Clears the stored curve first. The curve is
+  stored but only active while the device is in auto mode (toggle the
+  Auto Mode switch).
+
+> **Upgrade note:** Commander 4 (`DYLED`/`DYNLED`) now auto-detects its
+> verified 4-channel layout instead of asking for a generic device type.
+> Existing entries that had picked "white" or "rgb" get a single RGBW light
+> entity (unique id `-rgbw`) replacing the old per-channel entity; entries
+> that picked "wrgb" are unaffected.
 
 If only one Chihiros device is configured, `entry_id` and `address` can be
 omitted. If multiple devices are configured, include either the config entry ID

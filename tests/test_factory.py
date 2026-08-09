@@ -65,7 +65,7 @@ def test_unknown_model_needs_device_type() -> None:
 
 
 def test_commander_model_needs_device_type() -> None:
-    """Commander devices need a user-selected generic type."""
+    """Legacy Commander 1 (unknown layout) still asks for a generic type."""
     assert needs_device_type("DYCOM123456789") is True
 
 
@@ -154,6 +154,15 @@ def test_detect_model_matches_sea_led_prefix() -> None:
 
 
 def test_detect_model_matches_new_gen_commander_prefix() -> None:
-    """New-generation Commander 4 controllers need a user-selected generic type."""
-    assert detect_model("DYNLED1234567890").name == "Commander 4"
-    assert needs_device_type("DYNLED1234567890") is True
+    """Commander 4 auto-detects its verified 4-channel layout (no generic type prompt)."""
+    dyled = detect_model("DYLED1234567890")
+    assert dyled.name == "Commander 4"
+    assert dict(dyled.color_channels) == {"white": 3, "red": 0, "green": 1, "blue": 2}
+    assert dyled.needs_device_type is False
+    assert dyled.sea_led_family is False  # BleLed generation → [ch, hour, minute, level] auto points
+
+    dynled = detect_model("DYNLED1234567890")
+    assert dynled.name == "Commander 4"
+    assert dict(dynled.color_channels) == {"white": 3, "red": 0, "green": 1, "blue": 2}
+    assert needs_device_type("DYNLED1234567890") is False
+    assert dynled.sea_led_family is True  # SeaLed generation → [ch, 30-min-slot, level] auto points

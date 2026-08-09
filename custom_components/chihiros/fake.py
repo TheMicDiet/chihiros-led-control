@@ -10,7 +10,6 @@ from datetime import datetime
 
 from .dosing import normalize_pump_count
 from .vendor.chihiros_led_control.models import (
-    COMMANDER_CHANNELS,
     DOSING_PUMP,
     RGB_CHANNELS,
     WHITE_CHANNELS,
@@ -119,8 +118,8 @@ FAKE_DEVICES = (
         model=DeviceModel(
             "Fake Commander 4",
             ("DYNLED",),
-            COMMANDER_CHANNELS,
-            needs_device_type=True,
+            WRGB_CHANNELS,
+            sea_led_family=True,
         ),
     ),
 )
@@ -164,6 +163,7 @@ class FakeChihirosDevice:
         self._brightness = {color: 0 for color in self.model.color_channels}
         self._dosed_ml = [0.0] * self.pump_count
         self._auto_mode = False
+        self._auto_curve_points: list[tuple[int, int, int]] = []
         self._fan_speed = 0
         self._fan_auto = False
         self._fan_start_temp = 38
@@ -333,7 +333,18 @@ class FakeChihirosDevice:
 
     async def reset_settings(self) -> None:
         """Accept fake schedule resets."""
+        self._auto_curve_points.clear()
         await self.query_status()
+
+    async def set_auto_point(self, channel: int, minutes: int, level: int) -> None:
+        """Record a fake auto-curve point."""
+        await asyncio.sleep(0)
+        self._auto_curve_points.append((channel, minutes, level))
+
+    async def set_auto_curve(self, points: Sequence[tuple[int, int, int]]) -> None:
+        """Record a fake auto-curve batch."""
+        await asyncio.sleep(0)
+        self._auto_curve_points.extend(points)
 
     async def dose_ml(self, pump_idx: int, volume_ml: float) -> None:
         """Record a fake manual dose for local dosing pump testing."""

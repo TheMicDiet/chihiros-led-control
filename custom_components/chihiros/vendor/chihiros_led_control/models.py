@@ -18,12 +18,20 @@ class DeviceModel:
     fallback: bool = False
     has_fan: bool = False
     min_fan_speed: int = 0
+    # True for SeaLed-type devices (e.g. DYNLED, DYSEA). Selects the 0x5A/0x06
+    # auto-curve point encoding: SeaLed uses [channel, 30-min-slot, level], the
+    # BleLed/NewBleLed family uses [channel, hour, minute, level] (verified in
+    # the 2.8.59 app's ChihirosLed::setAuto, field_147 from _judgeNewLed).
+    sea_led_family: bool = False
 
 
 WHITE_CHANNELS = MappingProxyType({"white": 0})
 RGB_CHANNELS = MappingProxyType({"red": 0, "green": 1, "blue": 2})
 WRGB_CHANNELS = MappingProxyType({"white": 3, "red": 0, "green": 1, "blue": 2})
-COMMANDER_CHANNELS = MappingProxyType({"white": 0, "red": 0, "green": 1, "blue": 2})
+# Legacy Commander 1 / fallback default. The vendor app's registry defines the
+# Commander 4 as a 4-channel controller with channel names red/green/blue/white
+# on 0..3 (initColorNameList), so this is kept collision-free.
+COMMANDER_CHANNELS = MappingProxyType({"red": 0, "green": 1, "blue": 2, "white": 3})
 X300_CHANNELS = MappingProxyType({"white": 0, "warm": 1})
 DOSING_CHANNELS = MappingProxyType({})
 TINY_TERRARIUM_EGG_CHANNELS = MappingProxyType({"red": 0, "green": 1})
@@ -52,6 +60,7 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
         "SEA_LED",
         ("DYSEA",),
         WRGB_CHANNELS,
+        sea_led_family=True,
     ),
     DeviceModel("Commander X", ("DYONE",), WHITE_CHANNELS),
     DeviceModel("X300", ("DYTWO",), X300_CHANNELS),
@@ -88,7 +97,10 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
         WRGB_CHANNELS,
     ),
     DeviceModel("Commander 1", ("DYCOM",), COMMANDER_CHANNELS, needs_device_type=True),
-    DeviceModel("Commander 4", ("DYLED", "DYNLED"), COMMANDER_CHANNELS, needs_device_type=True),
+    # Commander 4 exists in two generations with different device types, which
+    # changes the 0x5A/0x06 auto-curve encoding: DYLED is BleLed, DYNLED is SeaLed.
+    DeviceModel("Commander 4", ("DYLED",), WRGB_CHANNELS),
+    DeviceModel("Commander 4", ("DYNLED",), WRGB_CHANNELS, sea_led_family=True),
     DOSING_PUMP,
 )
 

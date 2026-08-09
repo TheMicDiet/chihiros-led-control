@@ -204,3 +204,37 @@ set_schedule:
             - thursday
       selector:
         object:
+
+set_auto_curve:
+  name: Set auto curve
+  description: >
+    Replace the device's stored auto curve with per-channel time/level points
+    using the vendor app's 0x5A/0x06 encoding. Each point is a [minutes, level]
+    pair; minutes are since midnight (0-1439, up to 2880 for cross-day curves),
+    levels are 0-100. The stored curve is cleared first. The curve is stored
+    but only active while the device is in auto mode (use the Auto Mode
+    switch). Use YAML mode.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: Chihiros config entry ID. Required only when more than one Chihiros device is configured.
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      description: Chihiros Bluetooth address. Required only when more than one Chihiros device is configured.
+      selector:
+        text:
+    curve:
+      name: Curve
+      description: Per-channel point lists, channel id to [[minutes, level], ...].
+      required: true
+      example:
+        0:
+          - [480, 100]
+          - [720, 0]
+        1:
+          - [480, 60]
+          - [720, 0]
+      selector:
+        object:
