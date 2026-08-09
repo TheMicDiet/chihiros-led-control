@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from chihiros_led_control.client import ChihirosDosingPump
+from chihiros_led_control.exceptions import UnsupportedDeviceError
 from chihiros_led_control.factory import (
     create_device,
     detect_model,
@@ -130,6 +133,16 @@ def test_factory_created_device_uses_generic_wrgb_model() -> None:
 
     assert model_name == "Generic WRGB"
     assert colors == {"white": 3, "red": 0, "green": 1, "blue": 2}
+
+
+def test_factory_rejects_known_unsupported_devices() -> None:
+    """Known non-LED devices cannot be constructed as fallback LED clients."""
+
+    async def create() -> None:
+        create_device(FakeBLEDevice("DYCO2-123"))  # type: ignore[arg-type]
+
+    with pytest.raises(UnsupportedDeviceError, match="Unsupported Chihiros device"):
+        asyncio.run(create())
 
 
 def test_factory_created_dosing_pump_uses_dosing_client() -> None:
