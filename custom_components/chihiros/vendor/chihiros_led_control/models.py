@@ -18,6 +18,9 @@ class DeviceModel:
     fallback: bool = False
     has_fan: bool = False
     min_fan_speed: int = 0
+    # VIVID III extras: temperature-protection and indicator-LED switches
+    # (app's Vivid3Info beyond the shared LedInfo command set).
+    is_vivid3: bool = False
     # SeaLed devices encode 0x5A/0x06 auto-curve points as [channel, hour, minute, level];
     # BleLed/NewBleLed devices use [channel, 30-min-slot, level] instead.
     sea_led_family: bool = False
@@ -108,6 +111,7 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
         WRGB_CHANNELS,
         has_fan=True,
         min_fan_speed=25,
+        is_vivid3=True,
         sea_led_family=True,
     ),
     # DYNC2N is the new-gen C-series (DYN prefix → SeaLed family).

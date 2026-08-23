@@ -207,6 +207,8 @@ Other observed `0x5a / 0x05` first parameters:
 | `17` | `autoFan` (the 2.8.59 app's fan-auto-mode switch, `[0x11, 0xFF, 0xFF]`) |
 | `18` | `switchToScene` / enable auto schedule |
 | `40` | `resetLedQuick`, reset scene data (used after scene delete) |
+| `48` / `49` | VIVID III `vvd3tempProtect` off / on (`[0x30\|0x31, 0xFF, 0xFF]`) |
+| `49` / `50` | VIVID III `vvd3BluetoothLed` off / on (`[0x31\|0x32, 0xFF, 0xFF]`) |
 | `0x22` / `0x23` | `setFanEco` on / off (standalone fan echo mode) |
 | `0x2c` / `0x2d` | `setTemType` °C / °F (heater) |
 | `0x2e` / `0x2f` | `setHeaterAuto` on / off |
@@ -442,6 +444,29 @@ temperature (defaults 38 / 33 °C, a 5 °C hysteresis). The vendor app tracks
 `fan_mode` app-side (`"auto"` or the manual speed string); the integration
 exposes Auto/Manual presets on the fan entity and start/stop temperature
 numbers.
+
+### VIVID III Switches
+
+The 2.8.59 app's `Vivid3Info` (beyond the shared `LedInfo` set) adds two
+boolean settings, both binary-verified in the encoder disassembly. Neither has
+a readback notification, so state is tracked optimistically:
+
+| Action | Frame | Payload |
+| --- | --- | --- |
+| Temperature protection | `0x5a / 0x05` | `[0x31\|0x30, 0xff, 0xff]` — `vvd3tempProtect`, byte 0 = 49 (on) / 48 (off) |
+| Indicator LED | `0x5a / 0x05` | `[0x32\|0x31, 0xff, 0xff]` — `vvd3BluetoothLed`, byte 0 = 50 (on) / 49 (off) |
+
+Example frames (msg id `00 01`):
+
+```text
+5a 01 08 00 01 05 31 ff ff 3c   temperature protection ON
+5a 01 08 00 01 05 30 ff ff 3d   temperature protection OFF
+5a 01 08 00 01 05 32 ff ff 3f   indicator LED ON
+5a 01 08 00 01 05 31 ff ff 3c   indicator LED OFF
+```
+
+The integration exposes both as optimistic switch entities that restore their
+last state across restarts (without re-sending it to the device).
 
 The VIVID III also sends a constant `0x5b` notification with mode `0x36` after
 each auth/status query. Its payload is static and its meaning is unknown; it

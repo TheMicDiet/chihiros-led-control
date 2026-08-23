@@ -198,3 +198,21 @@ def create_vivid3_fan_start_stop_temp_command(
     if not 0 <= start_temp <= 255 or not 0 <= stop_temp <= 255:
         raise ValueError("Fan temperatures must be between 0 and 255")
     return create_command_encoding(165, 45, msg_id, [start_temp, stop_temp], avoid_reserved_byte=False)
+
+
+def create_vivid3_temp_protect_command(msg_id: tuple[int, int], enabled: bool) -> bytearray:
+    """Create a VIVID3 temperature-protection switch command.
+
+    Matches the app's ``vvd3tempProtect()`` frame ``(0x5A, 5, [0x31|0x30, 0xFF, 0xFF])``:
+    payload byte 0 is 49 (on) or 48 (off).
+    """
+    return create_command_encoding(90, 5, msg_id, [0x31 if enabled else 0x30, 0xFF, 0xFF])
+
+
+def create_vivid3_bluetooth_led_command(msg_id: tuple[int, int], enabled: bool) -> bytearray:
+    """Create a VIVID3 indicator-LED switch command.
+
+    Matches the app's ``vvd3BluetoothLed()`` frame ``(0x5A, 5, [0x32|0x31, 0xFF, 0xFF])``:
+    payload byte 0 is 50 (on) or 49 (off).
+    """
+    return create_command_encoding(90, 5, msg_id, [0x32 if enabled else 0x31, 0xFF, 0xFF])

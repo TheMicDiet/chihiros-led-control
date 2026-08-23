@@ -76,6 +76,8 @@ class ChihirosDevice:
         self._fan_auto = False
         self._fan_start_temp = 38
         self._fan_stop_temp = 33
+        self._temp_protect = False
+        self._bluetooth_led = False
         self._notification_callbacks: set[NotificationCallback] = set()
         self.last_runtime_notification: RuntimeNotification | None = None
         self.last_fan_status_notification: FanStatusNotification | None = None
@@ -281,6 +283,40 @@ class ChihirosDevice:
         await self._send_command(cmd, 3)
         self._fan_start_temp = start_temp
         self._fan_stop_temp = stop_temp
+
+    async def set_temp_protect(self, enabled: bool) -> None:
+        """Toggle the VIVID3 temperature protection.
+
+        Matches the vendor app's ``Vivid3Info::tempProtect()`` frame. The device
+        sends no acknowledgement, so the new state is tracked optimistically.
+        """
+        if not self.model.is_vivid3:
+            raise ValueError(f"Model does not support temperature protection: {self.model.name}")
+        cmd = commands.create_vivid3_temp_protect_command(self.get_next_msg_id(), enabled)
+        await self._send_command(cmd, 3)
+        self._temp_protect = enabled
+
+    async def set_bluetooth_led(self, enabled: bool) -> None:
+        """Toggle the VIVID3 indicator LED.
+
+        Matches the vendor app's ``Vivid3Info::setLed()`` frame. The device
+        sends no acknowledgement, so the new state is tracked optimistically.
+        """
+        if not self.model.is_vivid3:
+            raise ValueError(f"Model does not support the indicator LED switch: {self.model.name}")
+        cmd = commands.create_vivid3_bluetooth_led_command(self.get_next_msg_id(), enabled)
+        await self._send_command(cmd, 3)
+        self._bluetooth_led = enabled
+
+    @property
+    def temp_protect(self) -> bool:
+        """Return the optimistically tracked temperature-protection state."""
+        return self._temp_protect
+
+    @property
+    def bluetooth_led(self) -> bool:
+        """Return the optimistically tracked indicator-LED state."""
+        return self._bluetooth_led
 
     @property
     def fan_auto(self) -> bool:

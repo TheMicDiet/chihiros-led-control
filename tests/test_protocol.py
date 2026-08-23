@@ -551,3 +551,23 @@ def test_vivid3_fan_start_stop_temp_validates_range() -> None:
         except ValueError:
             continue
         raise AssertionError(f"Expected ValueError for temperatures {start}/{stop}")
+
+
+def test_vivid3_temp_protect_command_encoding() -> None:
+    """VIVID3 temperature protection uses (0x5A, 5, [0x31|0x30, 0xFF, 0xFF])."""
+    assert commands.create_vivid3_temp_protect_command((0, 1), True) == bytearray.fromhex(
+        "5a 01 08 00 01 05 31 ff ff 3c"
+    )
+    assert commands.create_vivid3_temp_protect_command((0, 1), False) == bytearray.fromhex(
+        "5a 01 08 00 01 05 30 ff ff 3d"
+    )
+
+
+def test_vivid3_bluetooth_led_command_encoding() -> None:
+    """VIVID3 indicator LED uses (0x5A, 5, [0x32|0x31, 0xFF, 0xFF])."""
+    assert commands.create_vivid3_bluetooth_led_command((0, 1), True) == bytearray.fromhex(
+        "5a 01 08 00 01 05 32 ff ff 3f"
+    )
+    assert commands.create_vivid3_bluetooth_led_command((0, 1), False) == bytearray.fromhex(
+        "5a 01 08 00 01 05 31 ff ff 3c"
+    )

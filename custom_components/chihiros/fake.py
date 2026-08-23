@@ -70,6 +70,7 @@ FAKE_DEVICES = (
             WRGB_CHANNELS,
             has_fan=True,
             min_fan_speed=25,
+            is_vivid3=True,
         ),
     ),
     FakeChihirosDeviceInfo(

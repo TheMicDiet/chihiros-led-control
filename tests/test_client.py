@@ -866,3 +866,74 @@ def test_set_fan_start_stop_temp_sends_command_and_stores_values() -> None:
     asyncio.run(run())
 
     assert sent_commands[0][5:8] == bytes([0x2D, 40, 35])
+
+
+def test_set_temp_protect_sends_command_and_tracks_state() -> None:
+    """Temperature protection sends the vvd3tempProtect frame and tracks state."""
+    sent_commands: list[bytes] = []
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            FakeBLEDevice(),
+            DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, is_vivid3=True),  # type: ignore[arg-type]
+        )
+        assert device.temp_protect is False
+
+        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+            del retry
+            sent_commands.append(bytes(command))
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+
+        await device.set_temp_protect(True)
+        assert device.temp_protect is True
+        await device.set_temp_protect(False)
+        assert device.temp_protect is False
+
+    asyncio.run(run())
+
+    assert sent_commands[0][5:8] == bytes([5, 0x31, 0xFF])
+    assert sent_commands[1][5:8] == bytes([5, 0x30, 0xFF])
+
+
+def test_set_bluetooth_led_sends_command_and_tracks_state() -> None:
+    """Indicator LED sends the vvd3BluetoothLed frame and tracks state."""
+    sent_commands: list[bytes] = []
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            FakeBLEDevice(),
+            DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, is_vivid3=True),  # type: ignore[arg-type]
+        )
+        assert device.bluetooth_led is False
+
+        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+            del retry
+            sent_commands.append(bytes(command))
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+
+        await device.set_bluetooth_led(True)
+        assert device.bluetooth_led is True
+
+    asyncio.run(run())
+
+    assert sent_commands[0][5:8] == bytes([5, 0x32, 0xFF])
+
+
+def test_vivid3_switches_reject_non_vivid3_models() -> None:
+    """Non-VIVID3 models reject the VIVID3-only switches."""
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            FakeBLEDevice(),
+            DeviceModel("Fake RGB", (), RGB_CHANNELS),  # type: ignore[arg-type]
+        )
+        for call in (device.set_temp_protect, device.set_bluetooth_led):
+            try:
+                await call(True)
+            except ValueError:
+                continue
+            raise AssertionError(f"Expected ValueError from {call.__name__}")
+
+    asyncio.run(run())
