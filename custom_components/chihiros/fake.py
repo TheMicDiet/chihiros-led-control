@@ -228,17 +228,25 @@ class FakeChihirosDevice:
             self._notify_callbacks(self.last_dosing_totals_notification)
             self._notify_callbacks(self.last_dosing_daily_notification)
 
+    def _apply_scalar_brightness(self, brightness: int) -> None:
+        """Apply one brightness level to every channel."""
+        for color in self._brightness:
+            self._brightness[color] = brightness
+
+    def _apply_mapping_brightness(self, brightness: Mapping[str | int, int]) -> None:
+        """Apply brightness levels keyed by color name or id."""
+        for color, level in brightness.items():
+            if isinstance(color, str) and color in self._brightness:
+                self._brightness[color] = level
+
     async def set_brightness(self, brightness: int | Sequence[int] | Mapping[str | int, int]) -> None:
         """Set fake brightness state."""
         await asyncio.sleep(0)
         if isinstance(brightness, int):
-            for color in self._brightness:
-                self._brightness[color] = brightness
+            self._apply_scalar_brightness(brightness)
             return
         if isinstance(brightness, Mapping):
-            for color, level in brightness.items():
-                if isinstance(color, str) and color in self._brightness:
-                    self._brightness[color] = level
+            self._apply_mapping_brightness(brightness)
             return
         for color, level in zip(self._brightness, brightness, strict=False):
             self._brightness[color] = level

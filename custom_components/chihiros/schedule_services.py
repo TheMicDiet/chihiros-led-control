@@ -72,80 +72,105 @@ SET_AUTO_CURVE_SCHEMA = vol.Schema(
 )
 
 
+async def _async_add_schedule_service(call: ServiceCall) -> None:
+    """Add one schedule period to the selected light."""
+    data = resolve_service_device(call.hass, call.data)
+    ensure_light_device(data)
+    validate_schedule_period(data, call.data)
+    await async_add_schedule_period(data, call.data)
+    await async_refresh_status(data)
+
+
+async def _async_remove_schedule_service(call: ServiceCall) -> None:
+    """Remove one schedule period from the selected light."""
+    data = resolve_service_device(call.hass, call.data)
+    ensure_light_device(data)
+    start = parse_schedule_time(call.data[ATTR_START])
+    end = parse_schedule_time(call.data[ATTR_END])
+    validate_time_range(start, end)
+    await data.device.remove_setting(
+        start,
+        end,
+        ramp_up_in_minutes=call.data[ATTR_RAMP_UP_MINUTES],
+        weekdays=parse_weekdays(call.data.get(ATTR_WEEKDAYS)),
+    )
+    await async_refresh_status(data)
+
+
+async def _async_reset_schedule_service(call: ServiceCall) -> None:
+    """Remove all schedule periods from the selected light."""
+    data = resolve_service_device(call.hass, call.data)
+    ensure_light_device(data)
+    await data.device.reset_settings()
+    await async_refresh_status(data)
+
+
+async def _async_set_schedule_service(call: ServiceCall) -> None:
+    """Replace the full schedule of the selected light."""
+    data = resolve_service_device(call.hass, call.data)
+    ensure_light_device(data)
+    validate_schedule_periods(data, call.data[ATTR_PERIODS])
+    await async_replace_schedule(data, call.data[ATTR_PERIODS])
+    await async_refresh_status(data)
+
+
+async def _async_start_curve_replacement(data: ChihirosData) -> None:
+    """Clear the stored curve so the replacement starts from a clean slate."""
+    try:
+        await data.device.reset_settings()
+    except Exception as ex:
+        raise HomeAssistantError(
+            f"Failed to start auto curve update for {data.device.name}; the existing curve may remain"
+        ) from ex
+
+
+async def _async_rollback_partial_curve(data: ChihirosData) -> None:
+    """Best-effort clear of a partially written auto curve."""
+    try:
+        await data.device.reset_settings()
+    except Exception:
+        _LOGGER.exception("Failed to clear a partial auto curve for %s", data.device.name)
+
+
+async def _async_write_auto_curve(data: ChihirosData, points: list[tuple[int, int, int]]) -> None:
+    """Write auto curve points, rolling back a partial replacement on failure."""
+    try:
+        await data.device.set_auto_curve(points)
+    except Exception as ex:
+        await _async_rollback_partial_curve(data)
+        raise HomeAssistantError(
+            f"Failed to write auto curve for {data.device.name}; "
+            "the previous curve cannot be restored and the integration "
+            "attempted to clear the partial replacement"
+        ) from ex
+
+
+async def _async_set_auto_curve_service(call: ServiceCall) -> None:
+    """Replace the device's auto curve with 0x5A/0x06 points (app format)."""
+    data = resolve_service_device(call.hass, call.data)
+    ensure_light_device(data)
+    curve = call.data[ATTR_CURVE]
+    validate_auto_curve(data, curve)
+    points = [
+        (channel, minutes, level) for channel, channel_points in curve.items() for minutes, level in channel_points
+    ]
+    await _async_start_curve_replacement(data)
+    await _async_write_auto_curve(data, points)
+    await async_refresh_status(data)
+
+
+_SCHEDULE_SERVICE_REGISTRATIONS = (
+    (SERVICE_ADD_SCHEDULE, _async_add_schedule_service, ADD_SCHEDULE_SCHEMA),
+    (SERVICE_REMOVE_SCHEDULE, _async_remove_schedule_service, REMOVE_SCHEDULE_SCHEMA),
+    (SERVICE_RESET_SCHEDULE, _async_reset_schedule_service, RESET_SCHEDULE_SCHEMA),
+    (SERVICE_SET_SCHEDULE, _async_set_schedule_service, SET_SCHEDULE_SCHEMA),
+    (SERVICE_SET_AUTO_CURVE, _async_set_auto_curve_service, SET_AUTO_CURVE_SCHEMA),
+)
+
+
 def async_register_schedule_services(hass: HomeAssistant) -> None:
     """Register schedule services for configured light devices."""
-
-    async def async_add_schedule(call: ServiceCall) -> None:
-        data = resolve_service_device(hass, call.data)
-        ensure_light_device(data)
-        validate_schedule_period(data, call.data)
-        await async_add_schedule_period(data, call.data)
-        await async_refresh_status(data)
-
-    async def async_remove_schedule(call: ServiceCall) -> None:
-        data = resolve_service_device(hass, call.data)
-        ensure_light_device(data)
-        start = parse_schedule_time(call.data[ATTR_START])
-        end = parse_schedule_time(call.data[ATTR_END])
-        validate_time_range(start, end)
-        await data.device.remove_setting(
-            start,
-            end,
-            ramp_up_in_minutes=call.data[ATTR_RAMP_UP_MINUTES],
-            weekdays=parse_weekdays(call.data.get(ATTR_WEEKDAYS)),
-        )
-        await async_refresh_status(data)
-
-    async def async_reset_schedule(call: ServiceCall) -> None:
-        data = resolve_service_device(hass, call.data)
-        ensure_light_device(data)
-        await data.device.reset_settings()
-        await async_refresh_status(data)
-
-    async def async_set_schedule(call: ServiceCall) -> None:
-        data = resolve_service_device(hass, call.data)
-        ensure_light_device(data)
-        validate_schedule_periods(data, call.data[ATTR_PERIODS])
-        await async_replace_schedule(data, call.data[ATTR_PERIODS])
-        await async_refresh_status(data)
-
-    async def async_set_auto_curve(call: ServiceCall) -> None:
-        """Replace the device's auto curve with 0x5A/0x06 points (app format)."""
-        data = resolve_service_device(hass, call.data)
-        ensure_light_device(data)
-        curve = call.data[ATTR_CURVE]
-        validate_auto_curve(data, curve)
-        points = [
-            (channel, minutes, level) for channel, channel_points in curve.items() for minutes, level in channel_points
-        ]
-        try:
-            await data.device.reset_settings()
-        except Exception as ex:
-            raise HomeAssistantError(
-                f"Failed to start auto curve update for {data.device.name}; the existing curve may remain"
-            ) from ex
-        try:
-            await data.device.set_auto_curve(points)
-        except Exception as ex:
-            try:
-                await data.device.reset_settings()
-            except Exception:
-                _LOGGER.exception("Failed to clear a partial auto curve for %s", data.device.name)
-            raise HomeAssistantError(
-                f"Failed to write auto curve for {data.device.name}; "
-                "the previous curve cannot be restored and the integration "
-                "attempted to clear the partial replacement"
-            ) from ex
-        await async_refresh_status(data)
-
-    registrations = (
-        (SERVICE_ADD_SCHEDULE, async_add_schedule, ADD_SCHEDULE_SCHEMA),
-        (SERVICE_REMOVE_SCHEDULE, async_remove_schedule, REMOVE_SCHEDULE_SCHEMA),
-        (SERVICE_RESET_SCHEDULE, async_reset_schedule, RESET_SCHEDULE_SCHEMA),
-        (SERVICE_SET_SCHEDULE, async_set_schedule, SET_SCHEDULE_SCHEMA),
-        (SERVICE_SET_AUTO_CURVE, async_set_auto_curve, SET_AUTO_CURVE_SCHEMA),
-    )
-    for service, handler, schema in registrations:
+    for service, handler, schema in _SCHEDULE_SERVICE_REGISTRATIONS:
         if not hass.services.has_service(DOMAIN, service):
             hass.services.async_register(DOMAIN, service, handler, schema=schema)
 
@@ -247,10 +272,8 @@ async def async_replace_schedule(chihiros_data: ChihirosData, periods: list[dict
         ) from ex
 
 
-def validate_auto_curve(chihiros_data: ChihirosData, curve: dict[int, list[list[int]]]) -> None:
-    """Validate auto-curve points against the selected device before writing."""
-    if not curve:
-        raise HomeAssistantError("Auto curve must contain at least one channel with at least one point")
+def _validate_curve_channels(chihiros_data: ChihirosData, curve: dict[int, list[list[int]]]) -> int:
+    """Validate that every curve channel is controllable; return the channel count."""
     channels = chihiros_data.device.colors
     if not channels:
         raise HomeAssistantError(f"{chihiros_data.device.name} does not expose any controllable channels")
@@ -260,21 +283,34 @@ def validate_auto_curve(chihiros_data: ChihirosData, curve: dict[int, list[list[
             f"Channel {', '.join(str(channel) for channel in unsupported)} is not supported by "
             f"{chihiros_data.device.name}; supported channel ids: {', '.join(str(i) for i in range(channel_count))}"
         )
-    for channel, points in curve.items():
-        if not points:
+    return channel_count
+
+
+def _validate_curve_channel_points(chihiros_data: ChihirosData, channel: int, points: list[list[int]]) -> None:
+    """Validate the minutes/level values of one curve channel."""
+    if not points:
+        raise HomeAssistantError(
+            f"Auto curve channel {channel} for {chihiros_data.device.name} must contain at least one point"
+        )
+    for minutes, level in points:
+        if not 0 <= minutes <= AUTO_POINT_MAX_MINUTES:
             raise HomeAssistantError(
-                f"Auto curve channel {channel} for {chihiros_data.device.name} must contain at least one point"
+                f"Auto curve point minutes must be between 0 and {AUTO_POINT_MAX_MINUTES} for "
+                f"{chihiros_data.device.name}"
             )
-        for minutes, level in points:
-            if not 0 <= minutes <= AUTO_POINT_MAX_MINUTES:
-                raise HomeAssistantError(
-                    f"Auto curve point minutes must be between 0 and {AUTO_POINT_MAX_MINUTES} for "
-                    f"{chihiros_data.device.name}"
-                )
-            if not 0 <= level <= 100:
-                raise HomeAssistantError(
-                    f"Auto curve point level must be between 0 and 100 for {chihiros_data.device.name}"
-                )
+        if not 0 <= level <= 100:
+            raise HomeAssistantError(
+                f"Auto curve point level must be between 0 and 100 for {chihiros_data.device.name}"
+            )
+
+
+def validate_auto_curve(chihiros_data: ChihirosData, curve: dict[int, list[list[int]]]) -> None:
+    """Validate auto-curve points against the selected device before writing."""
+    if not curve:
+        raise HomeAssistantError("Auto curve must contain at least one channel with at least one point")
+    _validate_curve_channels(chihiros_data, curve)
+    for channel, points in curve.items():
+        _validate_curve_channel_points(chihiros_data, channel, points)
 
 
 def parse_schedule_time(value: str) -> datetime:

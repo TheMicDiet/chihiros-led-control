@@ -9,6 +9,8 @@ run against scripted bytes instead of Bluetooth hardware.
 from __future__ import annotations
 
 import asyncio
+import logging
+from datetime import datetime
 
 import pytest
 from bleak_retry_connector import BleakError
@@ -18,6 +20,7 @@ from chihiros_led_control import commands
 from chihiros_led_control.models import WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
 from chihiros_led_control.protocol import DosingTotalsNotification, RuntimeNotification
 from chihiros_led_control.testing import ScriptedTransport
+from chihiros_led_control.weekday_encoding import WeekdaySelect
 
 RUNTIME_FRAME = bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")
 
@@ -148,5 +151,109 @@ def test_scripted_fan_speed_can_fail_permanently(monkeypatch: pytest.MonkeyPatch
                 await device.set_fan_speed(50)
 
         assert transport.connections == 3  # initial attempt plus two retries
+
+    asyncio.run(run())
+
+
+def test_scripted_turn_on_and_off_write_manual_switch_and_levels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Turn on/off switch to manual mode and set every channel level."""
+    transport = ScriptedTransport()
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
+        with transport.patch_establish_connection():
+            await device.turn_on()
+            await device.turn_off()
+
+        writes = transport.writes
+        # Two transactions, each: prelude (3) + switch-to-manual + brightness.
+        assert len(writes) == 10
+        manual = [frame for frame in writes if frame[5] == 5 and frame[6] == 11]
+        assert len(manual) == 2
+        assert writes[4][5] == 7 and writes[4][6:8] == bytes([0, 100])
+        assert writes[9][5] == 7 and writes[9][6:8] == bytes([0, 0])
+
+    asyncio.run(run())
+
+
+def test_scripted_remove_setting_writes_delete_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    """remove_setting writes the delete auto-setting frame with padded channels."""
+    transport = ScriptedTransport()
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
+        with transport.patch_establish_connection():
+            await device.remove_setting(
+                datetime(2024, 1, 1, 6, 0),
+                datetime(2024, 1, 1, 18, 0),
+                ramp_up_in_minutes=30,
+                weekdays=[WeekdaySelect.monday, WeekdaySelect.friday],
+            )
+
+        writes = transport.writes
+        assert len(writes) == 4  # prelude (3) + delete frame
+        delete = writes[3]
+        assert delete[0] == 165 and delete[5] == 25
+        # sunrise 06:00, sunset 18:00, ramp 30, weekdays monday+friday = 64+4
+        assert delete[6:12] == bytes([6, 0, 18, 0, 30, 68])
+        # one white channel, remaining parameter slots padded with 255
+        assert delete[12] == 255
+        assert all(value == 255 for value in delete[13:-1])
+
+    asyncio.run(run())
+
+
+def test_scripted_reset_settings_writes_reset_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    """reset_settings writes the reset auto-settings frame."""
+    transport = ScriptedTransport()
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
+        with transport.patch_establish_connection():
+            await device.reset_settings()
+
+        writes = transport.writes
+        assert len(writes) == 4  # prelude (3) + reset frame
+        reset = writes[3]
+        assert reset[0] == 90 and reset[5] == 5
+        assert reset[6:9] == bytes([5, 255, 255])
+
+    asyncio.run(run())
+
+
+def test_scripted_disconnect_closes_connection_until_next_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit disconnect tears the client down; the next command reconnects."""
+    transport = ScriptedTransport()
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
+        with transport.patch_establish_connection():
+            await device.query_status()
+            assert transport.connections == 1
+            await device.disconnect()
+            assert device._client is None  # noqa: SLF001
+            await device.query_status()
+            assert transport.connections == 2
+
+    asyncio.run(run())
+
+
+def test_scripted_set_log_level_configures_device_logger() -> None:
+    """set_log_level accepts level names and numeric levels."""
+
+    async def run() -> None:
+        transport = ScriptedTransport()
+        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
+
+        device.set_log_level("DEBUG")
+        assert device._logger.level == logging.DEBUG  # noqa: SLF001
+        device.set_log_level(logging.WARNING)
+        assert device._logger.level == logging.WARNING  # noqa: SLF001
+        device.set_log_level("NOT-A-LEVEL")
+        assert device._logger.level == logging.INFO  # noqa: SLF001
 
     asyncio.run(run())

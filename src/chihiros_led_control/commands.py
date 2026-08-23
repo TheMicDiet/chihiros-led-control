@@ -116,6 +116,33 @@ def create_reset_auto_settings_command(msg_id: tuple[int, int]) -> bytearray:
 AUTO_POINT_MAX_MINUTES = 2880
 
 
+def _validate_auto_point_parameters(channel: int, minutes: int, level: int) -> None:
+    """Validate one auto-curve point payload."""
+    if not 0 <= channel <= 7:
+        raise ValueError("Channel must be between 0 and 7")
+    if not 0 <= minutes <= AUTO_POINT_MAX_MINUTES:
+        raise ValueError(f"Minutes must be between 0 and {AUTO_POINT_MAX_MINUTES}")
+    if not 0 <= level <= 100:
+        raise ValueError("Level must be between 0 and 100")
+
+
+def _auto_point_parameters(channel: int, minutes: int, level: int, *, sea_led_family: bool) -> list[int]:
+    """Encode the auto-curve point payload for a model family.
+
+    SeaLed devices use ``[channel, hour, minute, level]``; BleLed/NewBleLed
+    devices use ``[channel, 30-min-slot, level]`` with the app's rounding rule
+    (a remainder above 14 minutes advances to the next slot, up to 96 slots
+    for 48-hour cross-day curves).
+    """
+    if sea_led_family:
+        hour, minute = divmod(minutes, 60)
+        return [channel, hour, minute, level]
+    time_index, remainder = divmod(minutes, 30)
+    if remainder > 14:
+        time_index += 1
+    return [channel, time_index, level]
+
+
 def create_auto_point_command(
     msg_id: tuple[int, int],
     channel: int,
@@ -137,20 +164,8 @@ def create_auto_point_command(
     Payload bytes are sent as-is — a level of 90 stays 0x5A (the app does not
     escape parameter bytes).
     """
-    if not 0 <= channel <= 7:
-        raise ValueError("Channel must be between 0 and 7")
-    if not 0 <= minutes <= AUTO_POINT_MAX_MINUTES:
-        raise ValueError(f"Minutes must be between 0 and {AUTO_POINT_MAX_MINUTES}")
-    if not 0 <= level <= 100:
-        raise ValueError("Level must be between 0 and 100")
-    if sea_led_family:
-        hour, minute = divmod(minutes, 60)
-        parameters = [channel, hour, minute, level]
-    else:
-        time_index, remainder = divmod(minutes, 30)
-        if remainder > 14:
-            time_index += 1
-        parameters = [channel, time_index, level]
+    _validate_auto_point_parameters(channel, minutes, level)
+    parameters = _auto_point_parameters(channel, minutes, level, sea_led_family=sea_led_family)
     return create_command_encoding(90, 6, msg_id, parameters, avoid_reserved_byte=False)
 
 

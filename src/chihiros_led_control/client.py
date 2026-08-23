@@ -47,6 +47,41 @@ STATUS_NOTIFICATION_WAIT = 1.0
 BATCH_WRITE_DELAY = 0.03
 NotificationCallback = Callable[[ParsedNotification], None]
 
+# Per-notification-type: last-seen attribute, debug log message, and the
+# parsed fields interpolated into that message.
+_LAST_NOTIFICATION_FIELDS: dict[type, tuple[str, str, tuple[str, ...]]] = {
+    RuntimeNotification: (
+        "last_runtime_notification",
+        "Runtime notification received; firmware=%s runtime_minutes=%s",
+        ("firmware_version", "runtime_minutes"),
+    ),
+    FanStatusNotification: (
+        "last_fan_status_notification",
+        "Fan status notification received; firmware=%s fan_rpm=%s temperature_celsius=%s",
+        ("firmware_version", "fan_rpm", "temperature_celsius"),
+    ),
+    ScheduleSnapshotNotification: (
+        "last_schedule_snapshot_notification",
+        "Schedule snapshot notification received; firmware=%s points=%s",
+        ("firmware_version", "points"),
+    ),
+    DosingTotalsNotification: (
+        "last_dosing_totals_notification",
+        "Dosing totals notification received; total_dosed_ul=%s",
+        ("total_dosed_ul",),
+    ),
+    DosingDailyNotification: (
+        "last_dosing_daily_notification",
+        "Dosing daily notification received; dose_use_in_day_ul=%s",
+        ("dose_use_in_day_ul",),
+    ),
+    Vivid3FanStatusNotification: (
+        "last_vivid3_fan_status_notification",
+        "VIVID3 fan notification received; fan_rpm=%s temperature_celsius=%s",
+        ("fan_rpm", "temperature_celsius"),
+    ),
+}
+
 
 class ChihirosDevice:
     """Concrete BLE client for a Chihiros LED device."""
@@ -168,16 +203,8 @@ class ChihirosDevice:
             assert color_id is not None  # nosec
             self._validate_brightness_levels((brightness,))
             return {color_id: brightness}
-
         if isinstance(brightness, Mapping):
-            self._validate_brightness_levels(tuple(brightness.values()))
-            result: dict[int, int] = {}
-            for color, level in brightness.items():
-                color_id = self._color_id(color)
-                if color_id is None:
-                    raise ValueError(f"Color not supported: {color}")
-                result[color_id] = level
-            return result
+            return self._normalize_brightness_mapping(brightness)
 
         brightness_values = list(brightness)
         self._validate_brightness_levels(brightness_values)
@@ -189,6 +216,17 @@ class ChihirosDevice:
         if len(brightness_values) != channel_count:
             raise ValueError(f"Expected 1 or {channel_count} brightness levels")
         return dict(enumerate(brightness_values))
+
+    def _normalize_brightness_mapping(self, brightness: Mapping[str | int, int]) -> dict[int, int]:
+        """Normalize mapping-style brightness input to protocol channel ids."""
+        self._validate_brightness_levels(tuple(brightness.values()))
+        result: dict[int, int] = {}
+        for color, level in brightness.items():
+            color_id = self._color_id(color)
+            if color_id is None:
+                raise ValueError(f"Color not supported: {color}")
+            result[color_id] = level
+        return result
 
     def _channel_count(self) -> int:
         """Return number of protocol channel slots for this model."""
@@ -477,27 +515,36 @@ class ChihirosDevice:
                 self._logger.debug("%s: characteristic missing; RSSI: %s", self.name, self.rssi, exc_info=True)
                 raise
             except BLEAK_EXCEPTIONS as ex:
-                if isinstance(ex, BleakNotFoundError):
-                    self._logger.error("%s: device not found or poor RSSI: %s", self.name, self.rssi, exc_info=True)
-                self._logger.debug(
-                    "%s: communication attempt %s/%s failed: %s", self.name, attempt, attempts, ex, exc_info=True
-                )
-                if attempt == attempts:
-                    raise
-                if isinstance(ex, BleakDBusError):
-                    await asyncio.sleep(BLEAK_BACKOFF_TIME)
+                await self._handle_send_failure(ex, attempt, attempts)
             finally:
                 await self._execute_disconnect()
 
-    async def _execute_command_locked(self, commands_to_send: list[bytes]) -> None:
-        """Write commands to the BLE characteristic."""
-        assert self._client is not None  # nosec
+    async def _handle_send_failure(self, ex: Exception, attempt: int, attempts: int) -> None:
+        """Log a failed communication attempt and retry or give up."""
+        if isinstance(ex, BleakNotFoundError):
+            self._logger.error("%s: device not found or poor RSSI: %s", self.name, self.rssi, exc_info=True)
+        self._logger.debug(
+            "%s: communication attempt %s/%s failed: %s", self.name, attempt, attempts, ex, exc_info=True
+        )
+        if attempt == attempts:
+            raise
+        if isinstance(ex, BleakDBusError):
+            await asyncio.sleep(BLEAK_BACKOFF_TIME)
+
+    def _require_write_characteristics(self) -> BleakGATTCharacteristic:
+        """Return the write characteristic after checking both UART characteristics exist."""
         if not self._read_char:
             raise CharacteristicMissingError("Read characteristic missing")
         if not self._write_char:
             raise CharacteristicMissingError("Write characteristic missing")
+        return self._write_char
+
+    async def _execute_command_locked(self, commands_to_send: list[bytes]) -> None:
+        """Write commands to the BLE characteristic."""
+        assert self._client is not None  # nosec
+        write_char = self._require_write_characteristics()
         for index, command in enumerate(commands_to_send):
-            await self._client.write_gatt_char(self._write_char, command, False)
+            await self._client.write_gatt_char(write_char, command, False)
             if self._unexpected_disconnect.is_set():
                 raise BleakError("Device unexpectedly disconnected during command batch")
             if index < len(commands_to_send) - 1:
@@ -506,74 +553,25 @@ class ChihirosDevice:
     def _notification_handler(self, _sender: BleakGATTCharacteristic, data: bytearray) -> None:
         """Handle notification responses."""
         parsed = parse_notification(data, self.model.color_channels)
-        if isinstance(parsed, RuntimeNotification):
-            self.last_runtime_notification = parsed
-            self._logger.debug(
-                "%s: Runtime notification received; firmware=%s runtime_minutes=%s",
-                self.name,
-                parsed.firmware_version,
-                parsed.runtime_minutes,
-            )
-            self._notify_callbacks(parsed)
+        if parsed is None:
+            self._logger.debug("%s: Notification received: %s", self.name, data.hex())
             return
-        if isinstance(parsed, FanStatusNotification):
-            self.last_fan_status_notification = parsed
-            self._logger.debug(
-                "%s: Fan status notification received; firmware=%s fan_rpm=%s temperature_celsius=%s",
-                self.name,
-                parsed.firmware_version,
-                parsed.fan_rpm,
-                parsed.temperature_celsius,
-            )
-            self._notify_callbacks(parsed)
+        if isinstance(parsed, Vivid3FanStatusNotification) and not self.model.has_fan:
+            # 0xB6/0x16 frames are the VIVID3 fan readout; ignore on non-fan models.
+            self._logger.debug("%s: Ignoring fan readout frame on non-fan model %s", self.name, self.model.name)
             return
-        if isinstance(parsed, ScheduleSnapshotNotification):
-            self.last_schedule_snapshot_notification = parsed
-            self._logger.debug(
-                "%s: Schedule snapshot notification received; firmware=%s points=%s",
-                self.name,
-                parsed.firmware_version,
-                parsed.points,
-            )
-            self._notify_callbacks(parsed)
-            return
-        if isinstance(parsed, DosingTotalsNotification):
-            self.last_dosing_totals_notification = parsed
-            self._logger.debug(
-                "%s: Dosing totals notification received; total_dosed_ul=%s",
-                self.name,
-                parsed.total_dosed_ul,
-            )
-            self._notify_callbacks(parsed)
-            return
-        if isinstance(parsed, DosingDailyNotification):
-            self.last_dosing_daily_notification = parsed
-            self._logger.debug(
-                "%s: Dosing daily notification received; dose_use_in_day_ul=%s",
-                self.name,
-                parsed.dose_use_in_day_ul,
-            )
-            self._notify_callbacks(parsed)
-            return
-        if isinstance(parsed, Vivid3FanStatusNotification):
-            if not self.model.has_fan:
-                # 0xB6/0x16 frames are the VIVID3 fan readout; ignore on non-fan models.
-                self._logger.debug(
-                    "%s: Ignoring fan readout frame on non-fan model %s",
-                    self.name,
-                    self.model.name,
-                )
-                return
-            self.last_vivid3_fan_status_notification = parsed
-            self._logger.debug(
-                "%s: VIVID3 fan notification received; fan_rpm=%s temperature_celsius=%s",
-                self.name,
-                parsed.fan_rpm,
-                parsed.temperature_celsius,
-            )
-            self._notify_callbacks(parsed)
-            return
-        self._logger.debug("%s: Notification received: %s", self.name, data.hex())
+        self._record_notification(parsed)
+        self._notify_callbacks(parsed)
+
+    def _record_notification(self, parsed: ParsedNotification) -> None:
+        """Store a parsed notification on its last-seen attribute and log it."""
+        attribute, message, field_names = _LAST_NOTIFICATION_FIELDS[type(parsed)]
+        setattr(self, attribute, parsed)
+        self._logger.debug(
+            "%s: %s",
+            self.name,
+            message % tuple(getattr(parsed, field_name) for field_name in field_names),
+        )
 
     def _notify_callbacks(self, notification: ParsedNotification) -> None:
         """Notify subscribers about a parsed device notification."""
@@ -597,15 +595,13 @@ class ChihirosDevice:
 
     def _resolve_characteristics(self, services: BleakGATTServiceCollection) -> bool:
         """Resolve UART characteristics."""
-        for characteristic in [UART_TX_CHAR_UUID]:
-            if char := services.get_characteristic(characteristic):
-                self._read_char = char
-                break
-        for characteristic in [UART_RX_CHAR_UUID]:
-            if char := services.get_characteristic(characteristic):
-                self._write_char = char
-                break
+        self._read_char = services.get_characteristic(UART_TX_CHAR_UUID)
+        self._write_char = services.get_characteristic(UART_RX_CHAR_UUID)
         return bool(self._read_char and self._write_char)
+
+    def _is_connected(self) -> bool:
+        """Return whether an established BLE client exists."""
+        return bool(self._client and self._client.is_connected)
 
     async def _ensure_connected(self) -> None:
         """Ensure a BLE connection exists."""
@@ -615,48 +611,60 @@ class ChihirosDevice:
                 self.name,
                 self.rssi,
             )
-        if self._client and self._client.is_connected:
+        if self._is_connected():
             self._reset_disconnect_timer()
             return
         async with self._connect_lock:
-            if self._client and self._client.is_connected:
+            if self._is_connected():
                 self._reset_disconnect_timer()
                 return
-            self._logger.debug("%s: Connecting; RSSI: %s", self.name, self.rssi)
-            self._unexpected_disconnect.clear()
-            client = await establish_connection(
-                BleakClientWithServiceCache,
-                self._ble_device,
-                self.name,
-                self._disconnected,
-                use_services_cache=True,
-                ble_device_callback=lambda: self._ble_device,
-            )
-            self._logger.debug("%s: Connected; RSSI: %s", self.name, self.rssi)
-            try:
-                resolved = self._resolve_characteristics(client.services)
-                if not resolved:
-                    resolved = self._resolve_characteristics(await client.get_services())
-                if not resolved:
-                    raise CharacteristicMissingError("UART characteristics missing")
+            await self._establish_connection()
 
-                self._client = client
-                self._reset_disconnect_timer()
+    async def _establish_connection(self) -> None:
+        """Establish the BLE connection and configure it, cleaning up on failure."""
+        self._logger.debug("%s: Connecting; RSSI: %s", self.name, self.rssi)
+        self._unexpected_disconnect.clear()
+        client = await establish_connection(
+            BleakClientWithServiceCache,
+            self._ble_device,
+            self.name,
+            self._disconnected,
+            use_services_cache=True,
+            ble_device_callback=lambda: self._ble_device,
+        )
+        self._logger.debug("%s: Connected; RSSI: %s", self.name, self.rssi)
+        try:
+            await self._configure_client(client)
+        except Exception:
+            await self._abort_connection(client)
+            raise
 
-                self._logger.debug("%s: Subscribe to notifications; RSSI: %s", self.name, self.rssi)
-                await client.start_notify(self._read_char, self._notification_handler)  # type: ignore
-                await self._send_connection_prelude(client)
-            except Exception:
-                read_char = self._read_char
-                self._client = None
-                self._read_char = None
-                self._write_char = None
-                if self._disconnect_timer:
-                    self._disconnect_timer.cancel()
-                    self._disconnect_timer = None
-                self._expected_disconnect = True
-                await self._disconnect_client(client, read_char)
-                raise
+    async def _configure_client(self, client: BleakClientWithServiceCache) -> None:
+        """Resolve characteristics, subscribe to notifications, and run the prelude."""
+        resolved = self._resolve_characteristics(client.services)
+        if not resolved:
+            resolved = self._resolve_characteristics(await client.get_services())
+        if not resolved:
+            raise CharacteristicMissingError("UART characteristics missing")
+
+        self._client = client
+        self._reset_disconnect_timer()
+
+        self._logger.debug("%s: Subscribe to notifications; RSSI: %s", self.name, self.rssi)
+        await client.start_notify(self._read_char, self._notification_handler)  # type: ignore
+        await self._send_connection_prelude(client)
+
+    async def _abort_connection(self, client: BleakClientWithServiceCache) -> None:
+        """Tear down partial connection state after a failed setup."""
+        read_char = self._read_char
+        self._client = None
+        self._read_char = None
+        self._write_char = None
+        if self._disconnect_timer:
+            self._disconnect_timer.cancel()
+            self._disconnect_timer = None
+        self._expected_disconnect = True
+        await self._disconnect_client(client, read_char)
 
     async def _send_connection_prelude(self, client: BleakClientWithServiceCache) -> None:
         """Send the LED startup sequence observed in the vendor app/ESPHome flow."""

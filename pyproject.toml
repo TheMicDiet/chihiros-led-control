@@ -117,12 +117,17 @@ extend-exclude = [
 
 [tool.ruff.lint]
 select = [
+    "C90",
     "D",
     "E",
     "F",
     "I",
     "W",
 ]
+
+[tool.ruff.lint.mccabe]
+# Cyclomatic complexity must stay below 6.
+max-complexity = 5
 ignore = [
     "D203",
     "D213",

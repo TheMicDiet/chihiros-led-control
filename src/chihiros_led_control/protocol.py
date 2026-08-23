@@ -210,34 +210,73 @@ def _parse_legacy_notification(
 ) -> ParsedNotification | None:
     """Parse 0x5B legacy LED/accessory notification frames."""
     firmware_version = data[1]
-    if mode == 0x0A and len(data) >= 8:
-        runtime_minutes = (data[6] << 8) | data[7]
-        return RuntimeNotification(firmware_version, runtime_minutes, bytes(data))
-
-    if mode == 0x0B and len(data) >= 9:
-        fan_rpm = (data[6] << 8) | data[7]
-        temperature_celsius = data[8]
-        return FanStatusNotification(firmware_version, fan_rpm, temperature_celsius, bytes(data))
-
+    if mode == 0x0A:
+        return _parse_runtime_notification(data, firmware_version)
+    if mode == 0x0B:
+        return _parse_fan_status_notification(data, firmware_version)
     if mode == 0xFE:
-        if color_channels is None:
-            return None
-        channels = _notification_channels(color_channels)
-        points: list[SchedulePoint] = []
-        for index in range(SCHEDULE_SNAPSHOT_POINTS_START, len(data), SCHEDULE_POINT_SIZE):
-            point = data[index : index + SCHEDULE_POINT_SIZE]
-            if len(point) < SCHEDULE_POINT_SIZE:
-                break
-            hour, minute, level = point
-            levels = {color: level for color, _channel_id in channels}
-            if hour > 23 or minute > 59 or level > 100:
-                continue
-            if hour == 0 and minute == 0 and all(level == 0 for level in levels.values()):
-                continue
-            points.append(SchedulePoint(hour, minute, levels))
-        return ScheduleSnapshotNotification(firmware_version, tuple(points), bytes(data))
-
+        return _parse_schedule_snapshot(data, firmware_version, color_channels)
     return None
+
+
+def _parse_runtime_notification(data: bytes | bytearray, firmware_version: int) -> ParsedNotification | None:
+    """Parse 0x5B mode 0x0A runtime/status frames."""
+    if len(data) < 8:
+        return None
+    runtime_minutes = (data[6] << 8) | data[7]
+    return RuntimeNotification(firmware_version, runtime_minutes, bytes(data))
+
+
+def _parse_fan_status_notification(data: bytes | bytearray, firmware_version: int) -> ParsedNotification | None:
+    """Parse 0x5B mode 0x0B fan status frames."""
+    if len(data) < 9:
+        return None
+    fan_rpm = (data[6] << 8) | data[7]
+    temperature_celsius = data[8]
+    return FanStatusNotification(firmware_version, fan_rpm, temperature_celsius, bytes(data))
+
+
+def _parse_schedule_snapshot(
+    data: bytes | bytearray,
+    firmware_version: int,
+    color_channels: Mapping[str, int] | None,
+) -> ParsedNotification | None:
+    """Parse 0x5B mode 0xFE schedule snapshot frames."""
+    if color_channels is None:
+        return None
+    channels = _notification_channels(color_channels)
+    points = _parse_schedule_points(data, channels)
+    return ScheduleSnapshotNotification(firmware_version, points, bytes(data))
+
+
+def _parse_schedule_points(
+    data: bytes | bytearray,
+    channels: tuple[tuple[str, int], ...],
+) -> tuple[SchedulePoint, ...]:
+    """Decode the trailing schedule point payload of a snapshot frame."""
+    points: list[SchedulePoint] = []
+    for index in range(SCHEDULE_SNAPSHOT_POINTS_START, len(data), SCHEDULE_POINT_SIZE):
+        point = data[index : index + SCHEDULE_POINT_SIZE]
+        if len(point) < SCHEDULE_POINT_SIZE:
+            break
+        hour, minute, level = point
+        levels = {color: level for color, _channel_id in channels}
+        if _is_valid_schedule_point(hour, minute, level, levels):
+            points.append(SchedulePoint(hour, minute, levels))
+    return tuple(points)
+
+
+def _is_valid_schedule_point(hour: int, minute: int, level: int, levels: Mapping[str, int]) -> bool:
+    """Return whether a raw snapshot point should be kept.
+
+    Points outside the valid hour/minute/level ranges are dropped, as is the
+    all-channel-off midnight placeholder the devices report.
+    """
+    if hour > 23 or minute > 59 or level > 100:
+        return False
+    if hour == 0 and minute == 0:
+        return any(level_value != 0 for level_value in levels.values())
+    return True
 
 
 def _parse_newer_notification(data: bytes | bytearray, mode: int) -> ParsedNotification | None:

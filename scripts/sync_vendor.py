@@ -61,31 +61,45 @@ def _copy_runtime_tree() -> None:
             shutil.copy2(source_path, target_path)
 
 
-def _compare_dirs(left: Path, right: Path) -> list[str]:
-    """Return a list of differences between two directories."""
+def _missing_or_extra(comparison: filecmp.dircmp) -> list[str]:
+    """Return names present on only one side of the comparison."""
     differences: list[str] = []
-    if not right.exists():
-        return [f"missing directory: {right.relative_to(REPO_ROOT)}"]
-
-    comparison = filecmp.dircmp(left, right, ignore=sorted(EXCLUDED_DIRS))
     for name in comparison.left_only:
         if not _is_excluded(Path(name)):
             differences.append(f"missing from vendor: {name}")
     for name in comparison.right_only:
         if not _is_excluded(Path(name)):
             differences.append(f"extra in vendor: {name}")
-    for name in comparison.common_files:
-        if _is_excluded(Path(name)):
-            continue
-        if not filecmp.cmp(left / name, right / name, shallow=False):
-            differences.append(f"changed: {name}")
+    return differences
+
+
+def _changed_files(left: Path, right: Path, comparison: filecmp.dircmp) -> list[str]:
+    """Return common files whose contents differ."""
+    return [
+        f"changed: {name}"
+        for name in comparison.common_files
+        if not _is_excluded(Path(name)) and not filecmp.cmp(left / name, right / name, shallow=False)
+    ]
+
+
+def _compare_entries(left: Path, right: Path, comparison: filecmp.dircmp) -> list[str]:
+    """Return differences for files and directories of one comparison level."""
+    return [*_missing_or_extra(comparison), *_changed_files(left, right, comparison)]
+
+
+def _compare_dirs(left: Path, right: Path) -> list[str]:
+    """Return a list of differences between two directories."""
+    if not right.exists():
+        return [f"missing directory: {right.relative_to(REPO_ROOT)}"]
+
+    differences: list[str] = []
+    comparison = filecmp.dircmp(left, right, ignore=sorted(EXCLUDED_DIRS))
+    differences.extend(_compare_entries(left, right, comparison))
     for name in comparison.subdirs:
         if _is_excluded(Path(name)):
             continue
-        sub_left = left / name
-        sub_right = right / name
-        for difference in _compare_dirs(sub_left, sub_right):
-            differences.append(str(Path(name) / difference))
+        sub_differences = _compare_dirs(left / name, right / name)
+        differences.extend(str(Path(name) / difference) for difference in sub_differences)
     return differences
 
 

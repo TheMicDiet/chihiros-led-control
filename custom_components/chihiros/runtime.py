@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from bleak.backends.device import BLEDevice
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
@@ -143,6 +144,26 @@ class ChihirosRuntime:
     always_available: bool = False
 
 
+def _resolve_fake_runtime(address: str, entry: ConfigEntry) -> ChihirosRuntime:
+    """Build a fake development client for a fake device address."""
+    return ChihirosRuntime(
+        client=create_fake_device(address, normalize_pump_count(entry.data.get(CONF_PUMP_COUNT))),
+        address=address,
+        always_available=True,
+    )
+
+
+def _apply_entry_name(ble_device: BLEDevice, entry: ConfigEntry) -> None:
+    """Fall back to the entry title for devices that advertise without a name."""
+    entry_name = entry.data.get(CONF_NAME)
+    if not entry_name:
+        return
+    try:
+        ble_device.name = entry_name
+    except Exception:
+        pass
+
+
 async def resolve_chihiros_runtime(hass: HomeAssistant, entry: ConfigEntry) -> ChihirosRuntime:
     """Resolve a config entry to either a real BLE client or a development fake client."""
     if entry.unique_id is None:
@@ -150,24 +171,19 @@ async def resolve_chihiros_runtime(hass: HomeAssistant, entry: ConfigEntry) -> C
 
     address: str = entry.unique_id
     if fake_devices_enabled() and is_fake_address(address):
-        return ChihirosRuntime(
-            client=create_fake_device(address, normalize_pump_count(entry.data.get(CONF_PUMP_COUNT))),
-            address=address,
-            always_available=True,
-        )
+        return _resolve_fake_runtime(address, entry)
+    return await _resolve_ble_runtime(hass, entry, address)
 
+
+async def _resolve_ble_runtime(hass: HomeAssistant, entry: ConfigEntry, address: str) -> ChihirosRuntime:
+    """Resolve a config entry to a real BLE client."""
     ble_device = bluetooth.async_ble_device_from_address(hass, address.upper(), True)
     if not ble_device:
         raise ConfigEntryNotReady(f"Could not find Chihiros BLE device with address {address}")
     if not ble_device.name:
         raise ConfigEntryNotReady(f"Found Chihiros BLE device with address {address} but can not find its name")
     if needs_device_type(ble_device.name):
-        entry_name = entry.data.get(CONF_NAME)
-        if entry_name:
-            try:
-                ble_device.name = entry_name
-            except Exception:
-                pass
+        _apply_entry_name(ble_device, entry)
 
     try:
         client = create_device(ble_device, device_type=entry.data.get("device_type"))

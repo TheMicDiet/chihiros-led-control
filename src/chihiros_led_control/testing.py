@@ -132,6 +132,17 @@ class ScriptedResponder:
             )
         )
 
+    @staticmethod
+    def _params_match(rule: _ScriptRule, frame: bytes) -> bool:
+        """Return whether the frame's parameter bytes start with the rule's."""
+        if rule.params is None:
+            return True
+        return frame[6 : 6 + len(rule.params)] == bytes(rule.params)
+
+    def _rule_matches(self, rule: _ScriptRule, frame: bytes) -> bool:
+        """Return whether a written frame matches a registered rule."""
+        return frame[0] == rule.cmd_id and frame[5] == rule.cmd_mode and self._params_match(rule, frame)
+
     def replies_for(self, frame: bytes) -> tuple[bytes, ...] | object | None:
         """Return reply frames for a written command.
 
@@ -139,9 +150,7 @@ class ScriptedResponder:
         ``None`` when no rule matches, and a tuple of reply frames otherwise.
         """
         for rule in self._rules:
-            if frame[0] != rule.cmd_id or frame[5] != rule.cmd_mode:
-                continue
-            if rule.params is not None and frame[6 : 6 + len(rule.params)] != bytes(rule.params):
+            if not self._rule_matches(rule, frame):
                 continue
             if rule.fail:
                 return _FAIL

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -133,6 +134,15 @@ def test_dosing_pump_manual_dose_sends_auth_and_dose_batch() -> None:
     assert retry_attempts == [1]
 
 
+def _recording_stub(name: str, events: list[str]) -> Callable[..., Awaitable[None]]:
+    """Create an async stub appending ``name`` to ``events`` when called."""
+
+    async def stub(*_args: object) -> None:
+        events.append(name)
+
+    return stub
+
+
 def test_send_command_disconnects_after_command_batch() -> None:
     """Command batches do not keep the BLE connection alive."""
     events: list[str] = []
@@ -147,15 +157,12 @@ def test_send_command_disconnects_after_command_batch() -> None:
         async def execute_command(commands: list[bytes]) -> None:
             events.append(f"send:{len(commands)}")
 
-        async def execute_disconnect() -> None:
-            events.append("disconnect")
-
         async def capture_sleep(delay: float) -> None:
             sleeps.append(delay)
 
         device._ensure_connected = ensure_connected  # type: ignore[method-assign]
         device._execute_command_locked = execute_command  # type: ignore[method-assign]
-        device._execute_disconnect = execute_disconnect  # type: ignore[method-assign]
+        device._execute_disconnect = _recording_stub("disconnect", events)  # type: ignore[method-assign]
         original_sleep = asyncio.sleep
         asyncio.sleep = capture_sleep  # type: ignore[method-assign]
 
@@ -199,33 +206,38 @@ def test_concurrent_commands_serialize_complete_transactions() -> None:
     assert events == ["connect", "write:01", "disconnect", "connect", "write:02", "disconnect"]
 
 
+def _retry_write_stub(failures: int, writes: list[int]) -> Callable[[list[bytes]], Awaitable[None]]:
+    """Create an async write stub failing the first ``failures`` calls."""
+
+    async def write(_commands: list[bytes]) -> None:
+        writes[0] += 1
+        if writes[0] <= failures:
+            raise BleakError("temporary")
+
+    return write
+
+
 @pytest.mark.parametrize("failures", [1, 3])
 def test_transient_write_retry_reconnects_and_exhausts(failures: int) -> None:
     """Every transient retry reconnects and exhausted retries preserve the BLE error."""
     connects = 0
     disconnects = 0
-    writes = 0
+    writes = [0]
 
     async def run() -> None:
-        nonlocal connects, disconnects, writes
+        nonlocal connects, disconnects
         device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
 
         async def connect() -> None:
             nonlocal connects
             connects += 1
 
-        async def write(_commands: list[bytes]) -> None:
-            nonlocal writes
-            writes += 1
-            if writes <= failures:
-                raise BleakError("temporary")
-
         async def disconnect() -> None:
             nonlocal disconnects
             disconnects += 1
 
         device._ensure_connected = connect  # type: ignore[method-assign]
-        device._execute_command_locked = write  # type: ignore[method-assign]
+        device._execute_command_locked = _retry_write_stub(failures, writes)  # type: ignore[method-assign]
         device._execute_disconnect = disconnect  # type: ignore[method-assign]
         if failures == 3:
             with pytest.raises(BleakError, match="temporary"):
@@ -235,7 +247,7 @@ def test_transient_write_retry_reconnects_and_exhausts(failures: int) -> None:
 
     asyncio.run(run())
     expected = 3 if failures == 3 else 2
-    assert (connects, disconnects, writes) == (expected, expected, expected)
+    assert (connects, disconnects, writes[0]) == (expected, expected, expected)
 
 
 def test_missing_characteristics_and_prelude_failure_clean_up_connection() -> None:
@@ -263,29 +275,32 @@ def test_missing_characteristics_and_prelude_failure_clean_up_connection() -> No
     asyncio.run(run())
 
 
+class _PreludeFailureClient:
+    """Fake client whose first write fails during the connection prelude."""
+
+    is_connected = True
+    services = SimpleNamespace(get_characteristic=lambda uuid: uuid)
+    stopped = False
+
+    async def start_notify(self, *_args: object) -> None:
+        return None
+
+    async def write_gatt_char(self, *_args: object) -> None:
+        raise BleakError("prelude failed")
+
+    async def stop_notify(self, _char: object) -> None:
+        self.stopped = True
+
+    async def disconnect(self) -> None:
+        self.is_connected = False
+
+
 def test_connection_prelude_failure_cleans_up_connection() -> None:
     """A failed startup write stops notifications and disconnects the temporary client."""
 
-    class FakeClient:
-        is_connected = True
-        services = SimpleNamespace(get_characteristic=lambda uuid: uuid)
-        stopped = False
-
-        async def start_notify(self, *_args: object) -> None:
-            return None
-
-        async def write_gatt_char(self, *_args: object) -> None:
-            raise BleakError("prelude failed")
-
-        async def stop_notify(self, _char: object) -> None:
-            self.stopped = True
-
-        async def disconnect(self) -> None:
-            self.is_connected = False
-
     async def run() -> None:
         device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
-        client = FakeClient()
+        client = _PreludeFailureClient()
         with patch("chihiros_led_control.client.establish_connection", return_value=client):
             with pytest.raises(BleakError, match="prelude failed"):
                 await device._ensure_connected()  # noqa: SLF001
