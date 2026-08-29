@@ -37,7 +37,12 @@ from typing import Any
 from bleak_retry_connector import BleakClientWithServiceCache, BleakError
 
 from . import client as _client_module
-from .const import UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
+from .const import (
+    HM10_RX_CHAR_UUID,
+    HM10_TX_CHAR_UUID,
+    UART_RX_CHAR_UUID,
+    UART_TX_CHAR_UUID,
+)
 from .models import DOSING_PUMP, FALLBACK, DeviceModel
 
 NotificationHandler = Callable[[object, bytearray], None]
@@ -65,13 +70,15 @@ class _ScriptedCharacteristic:
 
 
 class _ScriptedServices:
-    """GATT service collection answering only for the Chihiros UART UUIDs."""
+    """GATT service collection answering for Chihiros UART UUIDs (Nordic + HM-10)."""
 
     def __init__(self) -> None:
         """Create the UART TX/RX characteristics."""
         self._characteristics = {
             UART_TX_CHAR_UUID: _ScriptedCharacteristic(UART_TX_CHAR_UUID),
             UART_RX_CHAR_UUID: _ScriptedCharacteristic(UART_RX_CHAR_UUID),
+            HM10_TX_CHAR_UUID: _ScriptedCharacteristic(HM10_TX_CHAR_UUID),
+            HM10_RX_CHAR_UUID: _ScriptedCharacteristic(HM10_RX_CHAR_UUID),
         }
 
     def get_characteristic(self, uuid: str) -> _ScriptedCharacteristic | None:

@@ -23,7 +23,12 @@ from bleak_retry_connector import (
 )
 
 from . import commands
-from .const import UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
+from .const import (
+    HM10_RX_CHAR_UUID,
+    HM10_TX_CHAR_UUID,
+    UART_RX_CHAR_UUID,
+    UART_TX_CHAR_UUID,
+)
 from .exceptions import CharacteristicMissingError
 from .models import FALLBACK, DeviceModel
 from .protocol import (
@@ -594,9 +599,16 @@ class ChihirosDevice:
         self._unexpected_disconnect.set()
 
     def _resolve_characteristics(self, services: BleakGATTServiceCollection) -> bool:
-        """Resolve UART characteristics."""
+        """Resolve UART characteristics.
+
+        Tries Nordic UART first (SeaLed / NewBleLed / VIVID III), then falls back
+        to HM-10 (BleLed devices).
+        """
         self._read_char = services.get_characteristic(UART_TX_CHAR_UUID)
         self._write_char = services.get_characteristic(UART_RX_CHAR_UUID)
+        if not (self._read_char and self._write_char):
+            self._read_char = services.get_characteristic(HM10_TX_CHAR_UUID)
+            self._write_char = services.get_characteristic(HM10_RX_CHAR_UUID)
         return bool(self._read_char and self._write_char)
 
     def _is_connected(self) -> bool:
