@@ -7,6 +7,10 @@
       "connectable": true
     },
     {
+      "local_name": "DYZSD*",
+      "connectable": true
+    },
+    {
       "local_name": "DYDD*",
       "connectable": true
     },
@@ -15,31 +19,83 @@
       "connectable": true
     },
     {
-      "local_name": "DYNWRGB*",
+      "local_name": "DYA*",
       "connectable": true
     },
     {
-      "local_name": "DYNW30*",
+      "local_name": "DYARGB*",
       "connectable": true
     },
     {
-      "local_name": "DYNW45*",
+      "local_name": "DYRGBA*",
       "connectable": true
     },
     {
-      "local_name": "DYNW60*",
+      "local_name": "DYNARGB*",
       "connectable": true
     },
     {
-      "local_name": "DYNW90*",
+      "local_name": "DYREE*",
       "connectable": true
     },
     {
-      "local_name": "DYNW12P*",
+      "local_name": "DYRGBV*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYNV*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYSEA*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYONE*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYTWO*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYC*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYCOM*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYNC2*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYNT90*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYWRGB*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYNW*",
       "connectable": true
     },
     {
       "local_name": "DYWPR*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYSILN*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYSL*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYVVD3*",
       "connectable": true
     },
     {
@@ -55,31 +111,23 @@
       "connectable": true
     },
     {
-      "local_name": "DYNC2N*",
-      "connectable": true
-    },
-    {
-      "local_name": "DYCOM*",
-      "connectable": true
-    },
-    {
-      "local_name": "DYSILN*",
-      "connectable": true
-    },
-    {
-      "local_name": "DYSL*",
-      "connectable": true
-    },
-    {
       "local_name": "DYLED*",
       "connectable": true
     },
     {
-      "local_name": "DYZSD*",
+      "local_name": "DYNLED*",
       "connectable": true
     },
     {
       "local_name": "DYDOSE*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYTDOS*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYNDOS*",
       "connectable": true
     },
     {

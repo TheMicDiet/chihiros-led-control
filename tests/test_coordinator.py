@@ -18,7 +18,12 @@ try:
     import custom_components.chihiros as chihiros_integration
     from custom_components.chihiros.const import DOMAIN
     from custom_components.chihiros.coordinator import (
+        ATTR_DOSING_DAILY_UL,
+        ATTR_DOSING_LIFETIME_UL,
+        ATTR_FAN_RPM,
+        ATTR_FAN_TEMPERATURE_CELSIUS,
         ATTR_FIRMWARE_VERSION,
+        ATTR_LAST_NOTIFICATION,
         ATTR_RUNTIME_MINUTES,
         ATTR_SCHEDULE_POINTS,
         ChihirosDataUpdateCoordinator,
@@ -36,10 +41,13 @@ except ImportError as err:
 
 from custom_components.chihiros.vendor.chihiros_led_control.models import RGB_CHANNELS, DeviceModel
 from custom_components.chihiros.vendor.chihiros_led_control.protocol import (
+    DosingDailyNotification,
+    DosingTotalsNotification,
     ParsedNotification,
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
+    Vivid3FanStatusNotification,
 )
 
 pytestmark = [
@@ -243,3 +251,35 @@ async def test_handle_schedule_snapshot_notification_populates_data(
     assert coordinator.data[ATTR_FIRMWARE_VERSION] == 23
     points = coordinator.data[ATTR_SCHEDULE_POINTS]
     assert points == ({"time": "08:05", "levels": {"red": 10}},)
+
+
+async def test_handle_newer_notifications_populates_data_without_firmware(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Newer pump and VIVID3 notifications do not require a firmware field."""
+    _entry, _client, coordinator = await _setup(hass, monkeypatch)
+    updates = 0
+
+    def _listener() -> None:
+        nonlocal updates
+        updates += 1
+
+    coordinator.async_add_listener(_listener)
+    coordinator._async_handle_notification(
+        DosingTotalsNotification((105500, 0), bytes.fromhex("b6 10 10 00 01 3c 04 1f 00 00"))
+    )
+    coordinator._async_handle_notification(
+        DosingDailyNotification((10000, 40000), bytes.fromhex("b6 10 0e 00 01 44 00 64 01 90"))
+    )
+    coordinator._async_handle_notification(
+        Vivid3FanStatusNotification(600, 25, bytes.fromhex("b6 00 00 00 01 16 02 58 19"))
+    )
+    await _flush()
+
+    assert coordinator.data[ATTR_DOSING_LIFETIME_UL] == (105500, 0)
+    assert coordinator.data[ATTR_DOSING_DAILY_UL] == (10000, 40000)
+    assert coordinator.data[ATTR_FAN_RPM] == 600
+    assert coordinator.data[ATTR_FAN_TEMPERATURE_CELSIUS] == 25
+    assert coordinator.data[ATTR_LAST_NOTIFICATION]["firmware_version"] is None
+    assert updates == 3

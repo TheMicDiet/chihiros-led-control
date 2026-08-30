@@ -58,7 +58,10 @@ command.
 Older LED protocol paths avoid the reserved byte `0x5a` in message ID bytes,
 parameters, and checksums:
 
-- Message ID high and low bytes skip `0x5a`.
+- Message ID high and low bytes skip `0x5a` (the legacy command header). The
+  2.8.59 app's sequence counters skip **only** `0x5a` (`0x59` → `0x5b`), so
+  `0x5b` *can* appear as a sequence byte even though it is the notification
+  header.
 - Parameter bytes equal to `0x5a` are sent as `0x59`.
 - If the calculated checksum would be `0x5a`, the message ID is incremented and
   the frame is rebuilt.
@@ -114,6 +117,58 @@ Captured example for channel `0` at `100%`:
 5a 01 07 00 20 07 00 64 45
 ```
 
+### Max Brightness Per Channel
+
+The vendor app's offline device registry (`config/device_offline.dart`)
+assigns a per-channel `max_level` to every LED device. Every LED model this
+repository supports is registered as a plain `BleLed` with
+`max_level: [100, ...]`, so the wire level `0..100` is both the UI percentage
+and the channel maximum. The registry also defines the channel layout used by
+`SUPPORTED_MODELS`:
+
+| Device label(s) | Category | `device_type` | `max_level` | Channels |
+| --- | --- | --- | --- | --- |
+| `DYLED` | Commander 4 / 四路控制器 | `BleLed` | `[100, 100, 100, 100]` | 4 (red/green/blue/white) |
+| `DYNLED` | Commander 4 / 四路控制器 | `SeaLed` | `[100, 100, 100, 100]` | 4 (red/green/blue/white) |
+| `DYARGB`, `DYRGBA+`, `DYNARGB` | RGB+APLUS | `BleLed` | `[100, 100, 100]` | 3 (RGB) |
+| `DYREE` | RGB VIVID | `BleLed` | `[100, 100, 100]` | 3 (RGB) |
+| `DYONE` | Commander X / 一路控制器 | `BleLed` | `[100]` | 1 |
+| `DYTWO` | X300 | `BleLed` | `[100, 100]` | 2 (white/warm) |
+| `DYA` | A series / A系列 | `BleLed` | `[100]` | 1 |
+| `DYWRGB` | WRGB2 | `BleLed` | `[100, 100, 100]` | 3 (RGB) |
+| `DYNWRGB`, `DYNW90`, `DYNW30/45/60/12P` | WRGB2 | `SeaLed` | `[100, 100, 100]` | 3 (RGB) |
+| `DYC` | New C / C系列 | `BleLed` | `[100]` | 1 |
+| `DYNC2`, `DYNC2N` | New C / C II | `SeaLed` | `[100]` | 1 |
+| `DYSEA` | SEA_LED / 海水灯 | `SeaLed` | `[100, 100, 100, 100]` | 4 (WRGB) |
+| `DYRGBV` | RGB VIVID2 | `NewBleLed` | `[115, 130, 200]` | 3 (RGB) |
+| `DYNVVD`, `DYNV` | RGB VIVID2 | `SeaLed` | `[115, 130, 200]` | 3 (RGB) |
+| `DYWPRO30–90`, `DYWPR120` | WRGB II Pro | `SeaLed`¹ | `[100, 100, 100, 100]` | 4 (WRGB) |
+| `DYSILN`, `DYSL30–120` | WRGB II Slim | `SeaLed`¹ | `[100, 100, 100]` | 3 (RGB) |
+| `DYU550–1500` | Universal WRGB | `SeaLed`¹ | `[100, 100, 100, 100]` | 4 (WRGB) |
+| `DYVVD3` | WRGB VIVID III | `SeaLed`² | `[100, 100, 100, 100]` | 4 (WRGB) + fan |
+
+¹ device_type is server metadata (not in the 2.8.59 offline registry); SeaLed
+is inferred from the vendor's new-gen convention and the numeric suffix being
+light length (see `models.py`).
+
+² binary-verified: the VIVID III's device_type is `"NewVivid3"` (factory key
+`pp+0xfe08` → `NewVivid3` class, which has no `setAuto` override), and
+`"NewVivid3"` is not in `{BleLed, NewBleLed}`, so `_judgeNewLed` sets
+`field_147` true → SeaLed family.
+
+Findings from the 2.8.59 app decompilation:
+
+- The model factory maps `BleLed`, `NewBleLed`, and `SeaLed` to the base
+  `ChihirosLed` class, whose `setManual(channel, level)` sends the level
+  verbatim on the wire (`0x5a / 0x07`). Even `RGB VIVID2` with a `[115, 130,
+  200]` max level therefore uses `0..100` wire values; `max_level` is metadata
+  (used by the app for power/display estimation), not a wire scale.
+- Only the `NewA2Led` device type maps to the scaling `NewASeriesLed` class,
+  which converts `level` to `max(1, floor(level * 100 / max_level[channel]))`
+  before sending. No repository-supported model uses this class.
+- This matches the existing behaviour: brightness validation is `0..100` and
+  schedule snapshot levels above `100` are treated as invalid.
+
 ## Auto Mode
 
 Auto mode can be enabled with:
@@ -121,6 +176,18 @@ Auto mode can be enabled with:
 - Command ID: `0x5a` / `90`
 - Mode: `0x05` / `5`
 - Parameters: `[18, 255, 255]`
+
+The same payload is the vendor app's `switchToScene()` frame: it activates the
+stored auto schedule. Manual mode uses the vendor app's `switchToManual()`
+frame `[11, 255, 255]` (see below). The vendor app's own `switchToAuto()`
+frame uses `[3, 255, 255]`; this repository keeps the `[18, 255, 255]`
+schedule-driven form used by LED devices.
+
+Manual mode can be entered with:
+
+- Command ID: `0x5a` / `90`
+- Mode: `0x05` / `5`
+- Parameters: `[11, 255, 255]`
 
 Auto mode and its settings can be reset with:
 
@@ -132,11 +199,20 @@ Other observed `0x5a / 0x05` first parameters:
 
 | First parameter | Observed meaning |
 | ---: | --- |
+| `3` | `switchToAuto` (the 2.8.59 app's own auto-mode switch) |
 | `4` | Stop/exit demo in the old app |
 | `5` | Reset auto settings |
 | `6` | Temporary/new-firmware demo in the old app |
-| `11` / `0x0b` | First-connect/manual setup command; sent by the app before manual slider control on the WRGB VIVID III, likely switches to manual mode |
-| `18` | Enable auto mode |
+| `11` / `0x0b` | `switchToManual`; sent by the vendor app before manual slider control on the WRGB VIVID III |
+| `17` | `autoFan` (the 2.8.59 app's fan-auto-mode switch, `[0x11, 0xFF, 0xFF]`) |
+| `18` | `switchToScene` / enable auto schedule |
+| `40` | `resetLedQuick`, reset scene data (used after scene delete) |
+| `48` / `49` | VIVID III `vvd3tempProtect` off / on (`[0x30\|0x31, 0xFF, 0xFF]`) |
+| `49` / `50` | VIVID III `vvd3BluetoothLed` off / on (`[0x31\|0x32, 0xFF, 0xFF]`) |
+| `0x22` / `0x23` | `setFanEco` on / off (standalone fan echo mode) |
+| `0x2c` / `0x2d` | `setTemType` °C / °F (heater) |
+| `0x2e` / `0x2f` | `setHeaterAuto` on / off |
+| `58` | `heaterResetWorkTime` |
 
 ## Auto Schedule Settings
 
@@ -188,6 +264,31 @@ selects every weekday, and `0x71` is the valid XOR checksum.
 
 Only one setting can be configured per day, so settings cannot conflict. There
 is a maximum of 7 settings.
+
+### Auto Curve Points (0x5a / 0x06)
+
+The vendor app stores the auto curve as one frame per point per channel
+(`ChihirosLed::setAuto`, verified in `chihiros_led.dart`). The time encoding
+depends on the device family (`field_147 = device_type not in
+{"BleLed", "NewBleLed"}`):
+
+- **SeaLed family** (`DYNLED` Commander 4, `DYSEA`, `DYNVVD`/`DYNV`,
+  `DYNARGB`, `DYNWRGB`/`DYNW90`, `DYNA2`, `DYNC2`): `[channel, hour, minute,
+  level]`
+- **BleLed family** (`DYLED` Commander 4, `DYCOM`, `DYONE`, `DYTWO`, `DYWRGB`,
+  ...): `[channel, minutes // 30, level]`, rounded to the nearest 30-minute
+  slot (a remainder above 14 advances to the next slot); the app's BleLed
+  capacity allows up to 96 slots for 48-hour cross-day curves
+
+Payload bytes are sent **verbatim**: the 2.8.59 app's `formatData` does not
+escape `0x5A` payload bytes, so a level of 90 stays `0x5A` on the wire. The
+`create_auto_point_command` helper in this repository follows the app here
+(`avoid_reserved_byte=False`). A full curve is a burst of these frames, 30 ms
+apart, sent in one BLE transaction; clear the stored curve first with
+`0x5a / 0x05 [5, 255, 255]`. The Home Assistant `chihiros.set_auto_curve`
+service writes curves in this format. (Note: the BleLed/SeaLed *model lists*
+above are inferred from each model's registry `device_type`; the encoding
+selection itself is binary-verified.)
 
 Single-channel A2 devices also have a distinct point-based custom-curve
 protocol using a four-parameter `0x5a / 0x06` command. It is not interchangeable
@@ -296,8 +397,8 @@ snapshot as a status payload whose checksum/trailer is not yet confirmed.
 | Command ID | Mode | Parameters | Meaning |
 | ---: | ---: | --- | --- |
 | `0x5a` / `90` | `0x04` / `4` | `[1]` | Query LED runtime/status |
-| `0x5a` / `90` | `0x06` / `6` | `[color, time_index, level]` | Old 48-point auto curve variant; `time_index` is `0..47` in 30-minute steps |
-| `0x5a` / `90` | `0x06` / `6` | `[channel, hour, minute, level]` | A2 custom-curve point variant; see [the capture note](a2-custom-schedule-protocol.md) |
+| `0x5a` / `90` | `0x06` / `6` | `[channel, hour, minute, level]` | Auto-curve point, **SeaLed family** (per the 2.8.59 app's registry `device_type`; encoder verified in the binary: `ChihirosLed::setAuto` @ `0xe7a680` calls `setSeaLedAutoCode` for SeaLed. Includes `DYNLED` Commander 4, `DYSEA`, `DYNVVD`/`DYNV`, `DYNARGB`, `DYNWRGB`/`DYNW90`, `DYNA2`, `DYNC2`. Captured on a real `DYNA2` — see `a2-custom-schedule-protocol.md`) |
+| `0x5a` / `90` | `0x06` / `6` | `[channel, time_index, level]` | Auto-curve point, **BleLed/NewBleLed family** (per the 2.8.59 app's registry `device_type`; encoder verified in the binary: `setAutoCode` for BleLed. `time_index = minutes/30` with the app's rounding rule; up to 96 slots for 48-hour cross-day curves. Includes `DYLED` Commander 4, `DYCOM`, `DYONE`, `DYTWO`, `DYWRGB`, `DYRGBV`, ...) |
 | `0x5a` / `90` | `0x07` / `7` | `[color, brightness]` | Manual brightness |
 | `0x5a` / `90` | `0x09` / `9` | `[year - 2000, month, date_field, hour, minute, second]` | Set device time |
 | `0x5a` / `90` | `0x0f` / `15` | `[speed_percent]` | Fan speed, `0` to `100`; confirmed on WRGB VIVID III |
@@ -323,6 +424,49 @@ connected. It uses the `0x5b` header with mode `0x0b`:
 The trailing byte is not a valid XOR checksum for this mode, so parsers should
 treat bytes after offset `8` as opaque. Fan speed is set with the
 `0x5a / 0x0f` command listed above; measured RPM follows the set percentage.
+
+Some VIVID III firmware revisions instead report the fan readout with the
+newer `0xb6` header and mode `0x16` (the vendor app's `vvd3_fan_widget`):
+`rpm = (data[6] << 8) | data[7]`, `temperature = data[8]`. This repository
+parses both frame shapes into fan notifications.
+
+Fan control on the VIVID III has a manual speed and a temperature-controlled
+auto mode (both confirmed in `dataMaker.dart`):
+
+| Action | Frame | Payload |
+| --- | --- | --- |
+| Manual speed | `0x5a / 0x0f` | `[speed_percent]` (clamped to a 25 % minimum) |
+| Auto mode | `0x5a / 0x05` | `[0x11, 0xff, 0xff]` — `LedInfo::setFanAuto` → `autoFan` |
+| Start/stop temps | `0xa5 / 0x2d` | `[start ?? 38, stop ?? 33]` — `vvd3FanStartStopTemp` |
+
+In auto mode the fan starts at the start temperature and stops at the stop
+temperature (defaults 38 / 33 °C, a 5 °C hysteresis). The vendor app tracks
+`fan_mode` app-side (`"auto"` or the manual speed string); the integration
+exposes Auto/Manual presets on the fan entity and start/stop temperature
+numbers.
+
+### VIVID III Switches
+
+The 2.8.59 app's `Vivid3Info` (beyond the shared `LedInfo` set) adds two
+boolean settings, both binary-verified in the encoder disassembly. Neither has
+a readback notification, so state is tracked optimistically:
+
+| Action | Frame | Payload |
+| --- | --- | --- |
+| Temperature protection | `0x5a / 0x05` | `[0x31\|0x30, 0xff, 0xff]` — `vvd3tempProtect`, byte 0 = 49 (on) / 48 (off) |
+| Indicator LED | `0x5a / 0x05` | `[0x32\|0x31, 0xff, 0xff]` — `vvd3BluetoothLed`, byte 0 = 50 (on) / 49 (off) |
+
+Example frames (msg id `00 01`):
+
+```text
+5a 01 08 00 01 05 31 ff ff 3c   temperature protection ON
+5a 01 08 00 01 05 30 ff ff 3d   temperature protection OFF
+5a 01 08 00 01 05 32 ff ff 3f   indicator LED ON
+5a 01 08 00 01 05 31 ff ff 3c   indicator LED OFF
+```
+
+The integration exposes both as optimistic switch entities that restore their
+last state across restarts (without re-sending it to the device).
 
 The VIVID III also sends a constant `0x5b` notification with mode `0x36` after
 each auth/status query. Its payload is static and its meaning is unknown; it
@@ -376,7 +520,7 @@ Manual dose command:
 
 Parameter details:
 
-- `pump`: zero-based pump index, `0` to `3`.
+- `pump`: zero-based pump index, `0` to `7` (the vendor app exposes eight channels).
 - Dose volume is encoded in tenths of a milliliter as `ml_hi * 25.6 mL + ml_lo * 0.1 mL`.
 - The Home Assistant integration currently accepts `0.2 mL` to `999.9 mL`.
 
@@ -392,6 +536,28 @@ Example for pump `0`, `2.0 mL`:
 ```text
 165 1 10 0 6 27 0 0 0 0 20 2
 ```
+
+### Dosing Pump Notifications
+
+Dosing pumps report counters with the newer `0xb6` header (not the `0x5b` LED
+header). Two frame types are parsed by this repository:
+
+| Byte 5 | Meaning | Payload |
+| ---: | --- | --- |
+| `0x3c` / `60` | Lifetime totals | Per channel `i`: `(data[6+2i] << 8 | data[7+2i]) * 100` µL |
+| `0x44` / `68` | Dosed today | Per channel `i`: `(data[6+2i] << 8 | data[7+2i]) * 100` µL |
+
+Example lifetime frame (channels `0..1` = `105.5 mL`, `0 mL`):
+
+```text
+b6 10 10 00 01 3c 04 1f 00 00
+```
+
+The Home Assistant integration stores these device-reported counters in the
+coordinator data and exposes them as attributes on the per-pump dosing sensors
+(`device_total_ml`, `device_dosed_today_ml`), so doses made from the pump or
+the vendor app are reflected even though the daily/lifetime sensors themselves
+stay locally tracked for immediate feedback.
 
 ## Decompiler Notes
 

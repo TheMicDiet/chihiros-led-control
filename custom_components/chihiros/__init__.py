@@ -21,6 +21,7 @@ from .models import ChihirosData
 from .runtime import resolve_chihiros_runtime
 from .schedule_services import (
     ATTR_BRIGHTNESS,
+    ATTR_CURVE,
     ATTR_END,
     ATTR_LEVELS,
     ATTR_PERIODS,
@@ -30,6 +31,7 @@ from .schedule_services import (
     SERVICE_ADD_SCHEDULE,
     SERVICE_REMOVE_SCHEDULE,
     SERVICE_RESET_SCHEDULE,
+    SERVICE_SET_AUTO_CURVE,
     SERVICE_SET_SCHEDULE,
     async_register_schedule_services,
     async_remove_schedule_services,
@@ -56,6 +58,9 @@ from .schedule_services import (
     parse_weekdays as _parse_weekdays,
 )
 from .schedule_services import (
+    validate_auto_curve as _validate_auto_curve,
+)
+from .schedule_services import (
     validate_schedule_period as _validate_schedule_period,
 )
 from .schedule_services import (
@@ -72,6 +77,7 @@ from .service_utils import (
 __all__ = [
     "ATTR_ADDRESS",
     "ATTR_BRIGHTNESS",
+    "ATTR_CURVE",
     "ATTR_END",
     "ATTR_ENTRY_ID",
     "ATTR_LEVELS",
@@ -85,6 +91,7 @@ __all__ = [
     "SERVICE_DOSE_ML",
     "SERVICE_REMOVE_SCHEDULE",
     "SERVICE_RESET_SCHEDULE",
+    "SERVICE_SET_AUTO_CURVE",
     "SERVICE_SET_SCHEDULE",
     "_async_add_schedule_period",
     "_async_refresh_status",
@@ -94,6 +101,7 @@ __all__ = [
     "_parse_schedule_time",
     "_parse_weekdays",
     "_resolve_service_device",
+    "_validate_auto_curve",
     "_validate_schedule_period",
     "_validate_schedule_periods",
     "async_trigger_dose_ml",

@@ -92,6 +92,7 @@ default-groups = []
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 pythonpath = ["."]
+testpaths = ["tests"]
 markers = [
     "integration: tests that load the integration through Home Assistant",
     "unit: isolated tests that do not load a Home Assistant config entry",
@@ -117,6 +118,7 @@ extend-exclude = [
 
 [tool.ruff.lint]
 select = [
+    "C90",
     "D",
     "E",
     "F",
@@ -127,3 +129,7 @@ ignore = [
     "D203",
     "D213",
 ]
+
+[tool.ruff.lint.mccabe]
+# Cyclomatic complexity must stay below 6.
+max-complexity = 5

@@ -166,3 +166,6 @@ dev/homeassistant/config/*
 
 # Local deployment helper
 scripts/deploy_gigapi.py
+
+# Local scratch (agent review loops)
+tmp/

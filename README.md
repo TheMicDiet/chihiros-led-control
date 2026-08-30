@@ -1,6 +1,6 @@
 ﻿# Chihiros LED Control
 
-This repository contains a python **CLI** script as well as a **Home Assistant integration** that can be used to control Chihiros LEDs for aquariums via bluetooth without the vendor app. It also includes first Home Assistant support for Chihiros dosing pumps. For this purpose, the protocol to control the devices has been reversed engineered with the help of decompiling the old *Magic App* as well as sniffing and analyzing of bluetooth packages that are sent by the new *My Chihiros App*. The new app is based on flutter and only contains a binary that can not easily be analyzed.
+This repository contains a python **CLI** script as well as a **Home Assistant integration** that can be used to control Chihiros LEDs for aquariums via bluetooth without the vendor app. It also includes first Home Assistant support for Chihiros dosing pumps. For this purpose, the protocol to control the devices has been reversed engineered and is based on both the old *Magic App* and the new *My Chihiros App*: the old app was decompiled from its Android sources, the new app's Flutter binary was unpacked to extract and analyze its Dart snapshot, and the resulting frame encoding was verified byte-for-byte against the app's `dataMaker.dart` logic as well as sniffed Bluetooth traffic.
 
 > [!WARNING]
 > This is an independent, unofficial, community-developed project. It is not
@@ -17,16 +17,24 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 > project, including damage to aquarium equipment, livestock, or other property.
 
 ## Supported Devices
-- [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
-- [Chihiros WRGB II](https://www.chihirosaquaticstudio.com/products/chihiros-wrgb-ii-led-built-in-bluetooth) (Regular, Pro, Slim; Pro is true WRGB)
-- Chihiros WRGB VIVID III (true WRGB, including fan speed control and fan RPM/temperature sensors)
-- Chihiros Tiny Terrarium Egg
+- Chihiros A Series
 - Chihiros C II (RGB, White)
-- Chihiros Universal WRGB
-- Chihiros Z Light TINY
 - Chihiros Commander 1
 - Chihiros Commander 4
-- Chihiros dosing pump (`DYDOSE*`) with first Home Assistant support for manual dosing, daily dose totals, and lifetime pump cycle/ml counters
+- Chihiros Commander X
+- Chihiros dosing pump (`DYDOSE*`, `DYNDOS`) with first Home Assistant support for manual dosing, daily dose totals, and lifetime pump cycle/ml counters
+- [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
+- Chihiros New C
+- Chihiros RGB+APLUS
+- Chihiros RGB VIVID
+- Chihiros RGB VIVID II
+- Chihiros SEA_LED (WRGB)
+- Chihiros Tiny Terrarium Egg
+- Chihiros Universal WRGB
+- [Chihiros WRGB II](https://www.chihirosaquaticstudio.com/products/chihiros-wrgb-ii-led-built-in-bluetooth) (Regular, Pro, Slim; Pro is true WRGB)
+- Chihiros WRGB VIVID III (true WRGB, including fan speed control and fan RPM/temperature sensors)
+- Chihiros X300 (white/warm)
+- Chihiros Z Light TINY
 - other LED models might work as well but are not tested
 
 
@@ -53,6 +61,17 @@ The integration provides services for changing the auto mode schedule from
 - `chihiros.remove_schedule`: remove one schedule period.
 - `chihiros.reset_schedule`: remove all schedule periods.
 - `chihiros.set_schedule`: replace the complete schedule.
+- `chihiros.set_auto_curve`: replace the device's stored auto curve with the
+  vendor app's per-point `0x5A/0x06` format (channel id → list of
+  `[minutes, level]` pairs). Clears the stored curve first. The curve is
+  stored but only active while the device is in auto mode (toggle the
+  Auto Mode switch).
+
+> **Upgrade note:** Commander 4 (`DYLED`/`DYNLED`) now auto-detects its
+> verified 4-channel layout instead of asking for a generic device type.
+> Existing entries that had picked "white" or "rgb" get a single RGBW light
+> entity (unique id `-rgbw`) replacing the old per-channel entity; entries
+> that picked "wrgb" are unaffected.
 
 If only one Chihiros device is configured, `entry_id` and `address` can be
 omitted. If multiple devices are configured, include either the config entry ID
@@ -202,7 +221,9 @@ uv run chihirosctl dose-ml <device-address> 1 2.5
 ## Protocol
 
 The Bluetooth command format and known modes are documented in
-[docs/protocol.md](docs/protocol.md).
+[docs/protocol.md](docs/protocol.md). Command encodings were verified against
+the 2.8.59 build of the official My Chihiros app (see
+[docs/protocol.md](docs/protocol.md) for the app-verified details).
 
 ## Contributing
 Reusable library and CLI code lives in `src/chihiros_led_control/`. The Home
@@ -246,6 +267,7 @@ uv --cache-dir .uv-cache run python scripts/sync_vendor.py --check
 ```
 
 For local Home Assistant testing with Docker Compose, see [docs/home-assistant-docker.md](docs/home-assistant-docker.md).
+For testing without any Chihiros hardware (fake devices and a scripted BLE transport), see [docs/testing-without-hardware.md](docs/testing-without-hardware.md).
 
 Successful pushes to `main` create an automatic GitHub release after the `HA Validation` workflow passes. The release workflow reads `custom_components/chihiros/manifest.json`, creates a tag named `v<version>`, and uses GitHub generated release notes. If that tag already exists, the release is skipped.
 

@@ -27,7 +27,7 @@ This repository contains a Python library/CLI and a Home Assistant custom integr
 
 Target Python 3.13. Use 4-space indentation, type hints for public APIs, and descriptive snake_case names for modules, functions, and variables. Classes should use PascalCase; constants should use UPPER_SNAKE_CASE.
 
-Ruff is the formatter and linter. The configured line length is 120 characters, and lint rules include docstrings, pycodestyle, pyflakes, imports, and warnings. The vendored integration copy is excluded from Ruff checks; edit `src/chihiros_led_control/` first, then sync vendor code.
+Ruff is the formatter and linter. The configured line length is 120 characters, and lint rules include docstrings, pycodestyle, pyflakes, imports, warnings, and cyclomatic complexity (mccabe, max complexity 5 — functions must stay below 6). The vendored integration copy is excluded from Ruff checks; edit `src/chihiros_led_control/` first, then sync vendor code.
 
 ## Testing Guidelines
 

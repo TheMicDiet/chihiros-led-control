@@ -7,3 +7,7 @@ class CharacteristicMissingError(Exception):
 
 class DeviceNotFound(Exception):
     """Raised when BLE device is not found."""
+
+
+class UnsupportedDeviceError(Exception):
+    """Raised when a known non-LED device is passed to the LED client factory."""

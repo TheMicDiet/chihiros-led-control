@@ -24,6 +24,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .coordinator import (
+    ATTR_DOSING_DAILY_UL,
+    ATTR_DOSING_LIFETIME_UL,
     ATTR_FAN_RPM,
     ATTR_FAN_TEMPERATURE_CELSIUS,
     ATTR_FIRMWARE_VERSION,
@@ -95,6 +97,7 @@ async def async_setup_entry(
                 ChihirosDosingLifetimeCyclesSensor(chihiros_data.coordinator, chihiros_data.device, totals, pump_idx)
             )
         async_add_entities(entities)
+        hass.async_create_task(_async_request_initial_status(chihiros_data.coordinator))
         return
 
     async_add_entities(
@@ -168,7 +171,7 @@ class ChihirosNotificationSensor(
         if self.entity_description.key == ATTR_LAST_NOTIFICATION:
             if not isinstance(value, dict):
                 return None
-            return value.get("mode")
+            return value.get("mode") or value.get("parsed_type")
         if self.entity_description.key == ATTR_SCHEDULE_POINTS:
             if value is None:
                 return None
@@ -198,7 +201,10 @@ class ChihirosNotificationSensor(
             raise HomeAssistantError(f"Failed to request status for {self._device.name}") from ex
 
 
-class ChihirosDosingSensorBase(SensorEntity):
+class ChihirosDosingSensorBase(
+    PassiveBluetoothCoordinatorEntity[ChihirosDataUpdateCoordinator],
+    SensorEntity,
+):
     """Shared base for locally tracked dosing counters."""
 
     _attr_should_poll = False
@@ -213,7 +219,9 @@ class ChihirosDosingSensorBase(SensorEntity):
         name_suffix: str,
     ) -> None:
         """Initialize the dosing counter sensor."""
+        super().__init__(coordinator)
         self._device = device
+        self._coordinator = coordinator
         self._totals = totals
         self._pump_idx = pump_idx
         self._attr_name = chihiros_entity_name(device, name_suffix)
@@ -221,10 +229,18 @@ class ChihirosDosingSensorBase(SensorEntity):
         self._attr_device_info = chihiros_device_info(device, coordinator.address)
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to dosing total updates."""
+        """Subscribe to coordinator and local dosing total updates."""
+        await super().async_added_to_hass()
         self.async_on_remove(
             async_dispatcher_connect(self.hass, self._totals.address_signal, self.async_write_ha_state)
         )
+
+    @property
+    def available(self) -> bool:
+        """Return whether the dosing sensor is available."""
+        if self.coordinator.always_available:
+            return True
+        return super().available
 
 
 class ChihirosDosingDailyTotalSensor(ChihirosDosingSensorBase):
@@ -256,6 +272,14 @@ class ChihirosDosingDailyTotalSensor(ChihirosDosingSensorBase):
     def native_value(self) -> float:
         """Return today's tracked total."""
         return self._totals.total_ml(self._pump_idx)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return the pump-reported dosed-today value when a notification arrived."""
+        device_value = _dosing_ul_value(self._coordinator.data.get(ATTR_DOSING_DAILY_UL), self._pump_idx)
+        if device_value is None:
+            return None
+        return {"device_dosed_today_ml": device_value}
 
 
 class ChihirosDosingLifetimeTotalSensor(ChihirosDosingSensorBase):
@@ -289,6 +313,14 @@ class ChihirosDosingLifetimeTotalSensor(ChihirosDosingSensorBase):
         """Return the lifetime tracked total volume."""
         return self._totals.lifetime_ml(self._pump_idx)
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return the pump-reported lifetime total when a notification arrived."""
+        device_value = _dosing_ul_value(self._coordinator.data.get(ATTR_DOSING_LIFETIME_UL), self._pump_idx)
+        if device_value is None:
+            return None
+        return {"device_total_ml": device_value}
+
 
 class ChihirosDosingLifetimeCyclesSensor(ChihirosDosingSensorBase):
     """Sensor for the lifetime dose count of one pump."""
@@ -319,6 +351,16 @@ class ChihirosDosingLifetimeCyclesSensor(ChihirosDosingSensorBase):
     def native_value(self) -> int:
         """Return the lifetime tracked dose count."""
         return self._totals.lifetime_cycles(self._pump_idx)
+
+
+def _dosing_ul_value(values: object, pump_idx: int) -> float | None:
+    """Return one pump's device-reported microliter counter in mL, if present."""
+    if not isinstance(values, (list, tuple)) or pump_idx >= len(values):
+        return None
+    value = values[pump_idx]
+    if not isinstance(value, (int, float)):
+        return None
+    return round(value / 1000, 1)
 
 
 def _format_schedule_state(points: tuple[dict[str, Any], ...]) -> str:

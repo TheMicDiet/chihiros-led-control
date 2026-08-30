@@ -22,6 +22,7 @@ from .vendor.chihiros_led_control import (
     create_device,
     needs_device_type,
 )
+from .vendor.chihiros_led_control.factory import is_known_unsupported_device
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,6 +44,8 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle the bluetooth discovery step."""
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
+        if is_known_unsupported_device(discovery_info.name):
+            return self.async_abort(reason="not_supported")
         device = create_device(discovery_info.device)
         self._discovery_info = discovery_info
         self._discovered_device = device
@@ -117,60 +120,82 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(step_id="fallback_config", data_schema=data_schema, errors=errors)
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Handle the user step to pick discovered device."""
-        errors: dict[str, str] = {}
+    async def _async_handle_fake_submission(self, discovery: ChihirosDiscovery) -> ConfigFlowResult:
+        """Register a discovered fake device and continue its flow."""
+        await self.async_set_unique_id(discovery.address, raise_on_progress=False)
+        self._abort_if_unique_id_configured()
+        self._entry_title = discovery.name
+        self._entry_address = discovery.address
+        if discovery.fake_info and is_dosing_capable(discovery.fake_info.model):
+            return await self.async_step_dosing_config()
+        return self.async_create_entry(title=discovery.name, data=discovery.entry_data())
 
-        if user_input is not None:
-            address = user_input[CONF_ADDRESS]
-            discovery = self._discovered_devices[address]
-            if discovery.is_fake:
-                await self.async_set_unique_id(discovery.address, raise_on_progress=False)
-                self._abort_if_unique_id_configured()
-                self._entry_title = discovery.name
-                self._entry_address = discovery.address
-                if discovery.fake_info and is_dosing_capable(discovery.fake_info.model):
-                    return await self.async_step_dosing_config()
-                return self.async_create_entry(title=discovery.name, data=discovery.entry_data())
+    async def _async_handle_bluetooth_submission(self, discovery: ChihirosDiscovery) -> ConfigFlowResult:
+        """Register a discovered Bluetooth device and continue its flow."""
+        discovery_info = discovery.bluetooth_info
+        assert discovery_info is not None
+        await self.async_set_unique_id(discovery_info.address, raise_on_progress=False)
+        self._abort_if_unique_id_configured()
+        device = create_device(discovery_info.device)
 
-            discovery_info = discovery.bluetooth_info
-            assert discovery_info is not None
-            await self.async_set_unique_id(discovery_info.address, raise_on_progress=False)
-            self._abort_if_unique_id_configured()
-            device = create_device(discovery_info.device)
+        self._discovery_info = discovery_info
+        self._discovered_device = device
+        if needs_device_type(discovery_info.name):
+            return await self.async_step_fallback_config()
 
-            self._discovery_info = discovery_info
-            self._discovered_device = device
-            if needs_device_type(discovery_info.name):
-                return await self.async_step_fallback_config()
+        title = discovery_title(device, discovery)
+        self._entry_title = title
+        self._entry_address = discovery_info.address
+        if is_dosing_capable(device):
+            return await self.async_step_dosing_config()
+        return self.async_create_entry(title=title, data={CONF_ADDRESS: discovery_info.address})
 
-            title = discovery_title(device, discovery)
-            self._entry_title = title
-            self._entry_address = discovery_info.address
-            if is_dosing_capable(device):
-                return await self.async_step_dosing_config()
-            return self.async_create_entry(title=title, data={CONF_ADDRESS: discovery_info.address})
+    async def _async_handle_user_submission(self, user_input: dict[str, Any]) -> ConfigFlowResult:
+        """Continue the flow for the device the user picked."""
+        address = user_input[CONF_ADDRESS]
+        discovery = self._discovered_devices[address]
+        if discovery.is_fake:
+            return await self._async_handle_fake_submission(discovery)
+        return await self._async_handle_bluetooth_submission(discovery)
 
+    def _is_new_discovery(self, discovery: BluetoothServiceInfoBleak | None, current_addresses: set[str]) -> bool:
+        """Return whether a Bluetooth service info should be offered in the picker."""
+        return (
+            discovery is not None
+            and discovery.address not in current_addresses
+            and discovery.address not in self._discovered_devices
+            and not is_known_unsupported_device(discovery.name)
+        )
+
+    def _async_gather_bluetooth_discoveries(self) -> None:
+        """Populate the picker from the active discovery info or the scanner cache."""
         if discovery := self._discovery_info:
             self._discovered_devices[discovery.address] = ChihirosDiscovery.from_bluetooth(discovery)
-        else:
-            current_addresses = self._async_current_ids()
-            for discovery in async_discovered_service_info(self.hass):
-                if (
-                    discovery is not None
-                    and discovery.address not in current_addresses
-                    and discovery.address not in self._discovered_devices
-                ):
-                    self._discovered_devices[discovery.address] = ChihirosDiscovery.from_bluetooth(discovery)
+            return
+        current_addresses = self._async_current_ids()
+        for discovery in async_discovered_service_info(self.hass):
+            if self._is_new_discovery(discovery, current_addresses):
+                self._discovered_devices[discovery.address] = ChihirosDiscovery.from_bluetooth(discovery)
 
+    def _async_gather_fake_discoveries(self) -> None:
+        """Add enabled fake devices to the picker without overwriting entries."""
         current_addresses = self._async_current_ids()
         for fake_device in iter_enabled_fake_devices(current_addresses):
             fake_discovery = ChihirosDiscovery.from_fake(fake_device)
             self._discovered_devices.setdefault(fake_discovery.address, fake_discovery)
 
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Handle the user step to pick discovered device."""
+        if user_input is not None:
+            return await self._async_handle_user_submission(user_input)
+
+        self._async_gather_bluetooth_discoveries()
+        self._async_gather_fake_discoveries()
+
         if not self._discovered_devices:
             return self.async_abort(reason="no_devices_found")
 
+        errors: dict[str, str] = {}
         data_schema = vol.Schema(
             {
                 vol.Required(CONF_ADDRESS): vol.In(

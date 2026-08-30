@@ -19,7 +19,7 @@ STORAGE_KEY = f"{DOMAIN}_dosing_daily_totals"
 STORAGE_VERSION = 1
 CONF_PUMP_COUNT = "pump_count"
 PUMP_COUNT = 4
-PUMP_COUNT_OPTIONS = (2, 4)
+PUMP_COUNT_OPTIONS = (2, 4, 8)
 SIGNAL_DOSING_TOTALS_UPDATED = f"{DOMAIN}_dosing_totals_updated"
 
 

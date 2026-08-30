@@ -20,6 +20,15 @@ DEVICE_SELECTOR_SCHEMA = {
 }
 
 
+def _resolve_by_address(entries: dict[str, ChihirosData], address: str) -> ChihirosData:
+    """Find one configured device by Bluetooth address (case-insensitive)."""
+    normalized_address = address.upper()
+    for chihiros_data in entries.values():
+        if chihiros_data.device.address.upper() == normalized_address:
+            return chihiros_data
+    raise HomeAssistantError(f"Chihiros device address not found: {address}")
+
+
 def resolve_service_device(hass: HomeAssistant, data: dict[str, Any]) -> ChihirosData:
     """Resolve a service call to one configured Chihiros device."""
     entries: dict[str, ChihirosData] = hass.data.get(DOMAIN, {})
@@ -29,11 +38,7 @@ def resolve_service_device(hass: HomeAssistant, data: dict[str, Any]) -> Chihiro
         raise HomeAssistantError(f"Chihiros config entry not found: {entry_id}")
 
     if address := data.get(ATTR_ADDRESS):
-        normalized_address = address.upper()
-        for chihiros_data in entries.values():
-            if chihiros_data.device.address.upper() == normalized_address:
-                return chihiros_data
-        raise HomeAssistantError(f"Chihiros device address not found: {address}")
+        return _resolve_by_address(entries, address)
 
     if len(entries) == 1:
         return next(iter(entries.values()))

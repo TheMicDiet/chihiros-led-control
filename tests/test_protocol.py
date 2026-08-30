@@ -7,10 +7,13 @@ import datetime
 from chihiros_led_control import commands
 from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS
 from chihiros_led_control.protocol import (
+    DosingDailyNotification,
+    DosingTotalsNotification,
     FanStatusNotification,
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
+    Vivid3FanStatusNotification,
     calculate_checksum,
     create_command_encoding,
     encode_timestamp,
@@ -56,13 +59,18 @@ def framed(values: list[int]) -> bytearray:
 
 
 def test_next_message_id_skips_reserved_lower_byte() -> None:
-    """Message ids skip reserved lower byte 90."""
+    """Message ids skip the reserved lower byte 90 (0x5A)."""
     assert next_message_id((0, 89)) == (0, 91)
 
 
 def test_next_message_id_skips_reserved_higher_byte() -> None:
-    """Message ids skip reserved higher byte 90."""
+    """Message ids skip the reserved higher byte 90 (0x5A)."""
     assert next_message_id((89, 255)) == (91, 0)
+
+
+def test_next_message_id_does_not_skip_notification_header_byte() -> None:
+    """0x5B is NOT skipped as a sequence byte (the 2.8.59 app skips only 0x5A)."""
+    assert next_message_id((0, 90)) == (0, 91)
 
 
 def test_next_message_id_preserves_higher_byte() -> None:
@@ -71,7 +79,7 @@ def test_next_message_id_preserves_higher_byte() -> None:
 
 
 def test_next_message_id_skips_reserved_lower_byte_with_higher_byte() -> None:
-    """Message ids skip reserved lower byte without resetting the higher byte."""
+    """Message ids skip the reserved lower byte without resetting the higher byte."""
     assert next_message_id((1, 89)) == (1, 91)
 
 
@@ -100,7 +108,7 @@ def test_command_encoding_can_keep_reserved_parameter_for_newer_protocols() -> N
 
 
 def test_command_encoding_normalizes_reserved_message_id() -> None:
-    """Command encoding avoids reserved message IDs passed directly."""
+    """Command encoding avoids the reserved message ID 0x5A passed directly."""
     command = create_command_encoding(90, 7, (0, 90), [0, 100])
 
     assert command[3:5] == bytearray([0, 91])
@@ -189,6 +197,70 @@ def test_delete_auto_setting_command_matches_captured_frame() -> None:
     )
 
     assert command == bytearray.fromhex("A5 01 13 00 17 19 02 1E 05 0A 01 7F FF FF FF FF FF FF FF FF 71")
+
+
+def test_auto_point_command_sea_led_family_uses_hour_minute_encoding() -> None:
+    """SeaLed-family auto points encode [channel, hour, minute, level] (app's setSeaLedAutoCode)."""
+    command = commands.create_auto_point_command((0, 1), 2, 8 * 60 + 30, 80, sea_led_family=True)
+
+    # 0x5A, 6, [2, 8, 30, 80] with checksum over bytes 1..n-2
+    assert command[0] == 0x5A
+    assert command[2] == 4 + 5
+    assert command[5] == 6
+    assert command[6:-1] == bytearray([2, 8, 30, 80])
+    assert command[-1] == calculate_checksum(command[:-1])
+
+
+def test_auto_point_command_bleled_family_uses_30_minute_slots() -> None:
+    """BleLed-family auto points encode [channel, 30-minute-slot, level] (app's setAutoCode)."""
+    command = commands.create_auto_point_command((0, 1), 3, 8 * 60 + 30, 60, sea_led_family=False)
+
+    # 8:30 is slot 17; 3-byte payload [3, 17, 60]
+    assert command[6:-1] == bytearray([3, 17, 60])
+
+    # 8:45 rounds up to slot 18 (remainder 15 > 14, matching the app's rule)
+    command = commands.create_auto_point_command((0, 1), 3, 8 * 60 + 45, 60, sea_led_family=False)
+    assert command[6:-1] == bytearray([3, 18, 60])
+
+    # 8:44 stays in slot 17 (remainder 14 is not above the rounding threshold)
+    command = commands.create_auto_point_command((0, 1), 3, 8 * 60 + 44, 60, sea_led_family=False)
+    assert command[6:-1] == bytearray([3, 17, 60])
+
+
+def test_auto_point_command_slot_boundaries() -> None:
+    """BleLed slot boundaries: midnight is slot 0, 23:59 wraps to slot 48, 48 h is slot 96."""
+    assert commands.create_auto_point_command((0, 1), 0, 0, 0, sea_led_family=False)[6:-1] == bytearray([0, 0, 0])
+    assert commands.create_auto_point_command((0, 1), 0, 1439, 0, sea_led_family=False)[6:-1] == bytearray([0, 48, 0])
+    assert commands.create_auto_point_command((0, 1), 0, 2880, 0, sea_led_family=False)[6:-1] == bytearray([0, 96, 0])
+
+
+def test_auto_point_command_sea_led_family_hour_boundary() -> None:
+    """SeaLed auto points wrap minutes into hour/minute fields (48 h → hour 48)."""
+    command = commands.create_auto_point_command((0, 1), 1, 2880, 90, sea_led_family=True)
+
+    assert command[6:-1] == bytearray([1, 48, 0, 0x5A])
+
+
+def test_auto_point_command_sends_reserved_byte_verbatim() -> None:
+    """Level 90 (0x5A) is sent verbatim: the 2.8.59 app's formatData does not escape payload bytes."""
+    command = commands.create_auto_point_command((0, 1), 1, 10 * 60, 90, sea_led_family=True)
+
+    assert command[6:-1] == bytearray([1, 10, 0, 0x5A])
+
+
+def test_auto_point_command_validates_range() -> None:
+    """Auto point commands reject out-of-range channels, minutes, and levels."""
+    for kwargs in (
+        {"channel": 8, "minutes": 60, "level": 50},
+        {"channel": 0, "minutes": -1, "level": 50},
+        {"channel": 0, "minutes": 2881, "level": 50},
+        {"channel": 0, "minutes": 60, "level": 101},
+    ):
+        try:
+            commands.create_auto_point_command((0, 1), sea_led_family=False, **kwargs)
+        except ValueError:
+            continue
+        raise AssertionError(f"Expected ValueError for {kwargs}")
 
 
 def test_encode_timestamp() -> None:
@@ -398,4 +470,104 @@ def test_parse_schedule_snapshot_notification_skips_metadata_prefix() -> None:
             SchedulePoint(hour=21, minute=15, levels={"white": 100}),
             SchedulePoint(hour=21, minute=45, levels={"white": 0}),
         ),
+    )
+
+
+def test_parse_dosing_totals_notification() -> None:
+    """Dosing lifetime totals use 0xB6 header, mode 0x3C, 16-bit x100 uL counters."""
+    frame = bytearray([0xB6, 0x10, 0x10, 0x00, 0x01, 0x3C, 0x04, 0x1F, 0x00, 0x00, 0x05, 0xDC, 0x00, 0x00])
+    notification = parse_notification(frame)
+
+    assert notification == DosingTotalsNotification(total_dosed_ul=(105500, 0, 150000, 0), raw=bytes(frame))
+
+
+def test_parse_dosing_daily_notification() -> None:
+    """Dosing dosed-today totals use 0xB6 header, mode 0x44, 16-bit x100 uL counters."""
+    frame = bytearray([0xB6, 0x10, 0x0E, 0x00, 0x01, 0x44, 0x00, 0x64, 0x01, 0x90])
+    notification = parse_notification(frame)
+
+    assert notification == DosingDailyNotification(dose_use_in_day_ul=(10000, 40000), raw=bytes(frame))
+
+
+def test_parse_dosing_notification_requires_minimum_length() -> None:
+    """Dosing notifications without a full channel counter are ignored."""
+    assert parse_notification(bytearray([0xB6, 0, 0, 0, 0, 0x3C, 0])) is None
+    assert parse_notification(bytearray([0xB6, 0, 0, 0, 0, 0x44, 0])) is None
+
+
+def test_parse_vivid3_fan_status_notification() -> None:
+    """VIVID3 fan readouts use 0xB6 header, mode 0x16, with RPM and temperature."""
+    frame = bytearray([0xB6, 0x00, 0x00, 0x00, 0x01, 0x16, 0x02, 0x58, 25])
+    notification = parse_notification(frame)
+
+    assert notification == Vivid3FanStatusNotification(fan_rpm=600, temperature_celsius=25, raw=bytes(frame))
+
+
+def test_parse_unknown_b6_modes_are_ignored() -> None:
+    """Unknown 0xB6 frames (heater, standalone fan) are not misparsed."""
+    assert parse_notification(bytearray([0xB6, 0, 0, 0, 0, 0x4A, 1, 2, 3, 4, 5, 6])) is None
+
+
+def test_switch_to_manual_mode_command_encoding() -> None:
+    """Manual mode switch uses the vendor app's [11, 255, 255] payload."""
+    assert commands.create_switch_to_manual_mode_command((0, 1)) == bytearray([90, 1, 8, 0, 1, 5, 11, 255, 255, 6])
+
+
+def test_manual_dose_command_accepts_eight_channels() -> None:
+    """Dosing pumps expose up to eight channels."""
+    command = commands.create_manual_dose_command((0, 6), 7, 2.0)
+    assert command[6] == 7
+    for pump_idx in (-1, 8):
+        try:
+            commands.create_manual_dose_command((0, 6), pump_idx, 2.0)
+        except ValueError:
+            continue
+        raise AssertionError(f"Expected ValueError for pump index {pump_idx}")
+
+
+def test_fan_auto_mode_command_encoding() -> None:
+    """Fan auto mode uses the vendor app's autoFan frame (0x5A, 5, [0x11, 0xFF, 0xFF])."""
+    assert commands.create_fan_auto_mode_command((0, 1)) == bytearray.fromhex("5a 01 08 00 01 05 11 ff ff 1c")
+
+
+def test_vivid3_fan_start_stop_temp_command_encoding() -> None:
+    """VIVID3 fan start/stop temps use (0xA5, 45, [start, stop])."""
+    assert commands.create_vivid3_fan_start_stop_temp_command((0, 2), 38, 33) == bytearray.fromhex(
+        "a5 01 07 00 02 2d 26 21 2e"
+    )
+
+
+def test_vivid3_fan_start_stop_temp_preserves_reserved_byte() -> None:
+    """Temperature payload bytes are sent verbatim even when they equal 0x5A."""
+    command = commands.create_vivid3_fan_start_stop_temp_command((0, 4), 90, 30)
+    assert command[6:8] == bytearray([90, 30])
+
+
+def test_vivid3_fan_start_stop_temp_validates_range() -> None:
+    """Fan start/stop temperatures must fit a single byte."""
+    for start, stop in ((-1, 33), (38, 256), (300, 33)):
+        try:
+            commands.create_vivid3_fan_start_stop_temp_command((0, 1), start, stop)
+        except ValueError:
+            continue
+        raise AssertionError(f"Expected ValueError for temperatures {start}/{stop}")
+
+
+def test_vivid3_temp_protect_command_encoding() -> None:
+    """VIVID3 temperature protection uses (0x5A, 5, [0x31|0x30, 0xFF, 0xFF])."""
+    assert commands.create_vivid3_temp_protect_command((0, 1), True) == bytearray.fromhex(
+        "5a 01 08 00 01 05 31 ff ff 3c"
+    )
+    assert commands.create_vivid3_temp_protect_command((0, 1), False) == bytearray.fromhex(
+        "5a 01 08 00 01 05 30 ff ff 3d"
+    )
+
+
+def test_vivid3_bluetooth_led_command_encoding() -> None:
+    """VIVID3 indicator LED uses (0x5A, 5, [0x32|0x31, 0xFF, 0xFF])."""
+    assert commands.create_vivid3_bluetooth_led_command((0, 1), True) == bytearray.fromhex(
+        "5a 01 08 00 01 05 32 ff ff 3f"
+    )
+    assert commands.create_vivid3_bluetooth_led_command((0, 1), False) == bytearray.fromhex(
+        "5a 01 08 00 01 05 31 ff ff 3c"
     )

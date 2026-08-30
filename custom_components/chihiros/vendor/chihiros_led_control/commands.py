@@ -13,7 +13,7 @@ DOSE_VOLUME_BUCKET_TENTHS_ML = 256
 
 
 def create_base_auth_command(msg_id: tuple[int, int]) -> bytearray:
-    """Create the base LED auth/status command used at connection startup."""
+    """Create the base LED auth/status command used at connection startup (app's getDeviceInfo())."""
     return create_command_encoding(90, 4, msg_id, [1])
 
 
@@ -40,10 +40,10 @@ def create_manual_dose_command(msg_id: tuple[int, int], pump_idx: int, volume_ml
 
     Volumes are encoded as ``high * 25.6 mL + low * 0.1 mL``. This is compatible
     with the older single-byte examples for doses up to 25.5 mL because
-    ``high`` is then zero.
+    ``high`` is then zero. Dosing pumps expose up to eight channels.
     """
-    if pump_idx < 0 or pump_idx > 3:
-        raise ValueError("Pump index must be between 0 and 3")
+    if pump_idx < 0 or pump_idx > 7:
+        raise ValueError("Pump index must be between 0 and 7")
     high, low = split_dose_volume_ml(volume_ml)
     return create_command_encoding(165, 27, msg_id, [pump_idx, 0, 0, high, low], avoid_reserved_byte=False)
 
@@ -113,9 +113,74 @@ def create_reset_auto_settings_command(msg_id: tuple[int, int]) -> bytearray:
     return create_command_encoding(90, 5, msg_id, [5, 255, 255])
 
 
+AUTO_POINT_MAX_MINUTES = 2880
+
+
+def _validate_auto_point_parameters(channel: int, minutes: int, level: int) -> None:
+    """Validate one auto-curve point payload."""
+    if not 0 <= channel <= 7:
+        raise ValueError("Channel must be between 0 and 7")
+    if not 0 <= minutes <= AUTO_POINT_MAX_MINUTES:
+        raise ValueError(f"Minutes must be between 0 and {AUTO_POINT_MAX_MINUTES}")
+    if not 0 <= level <= 100:
+        raise ValueError("Level must be between 0 and 100")
+
+
+def _auto_point_parameters(channel: int, minutes: int, level: int, *, sea_led_family: bool) -> list[int]:
+    """Encode the auto-curve point payload for a model family.
+
+    SeaLed devices use ``[channel, hour, minute, level]``; BleLed/NewBleLed
+    devices use ``[channel, 30-min-slot, level]`` with the app's rounding rule
+    (a remainder above 14 minutes advances to the next slot, up to 96 slots
+    for 48-hour cross-day curves).
+    """
+    if sea_led_family:
+        hour, minute = divmod(minutes, 60)
+        return [channel, hour, minute, level]
+    time_index, remainder = divmod(minutes, 30)
+    if remainder > 14:
+        time_index += 1
+    return [channel, time_index, level]
+
+
+def create_auto_point_command(
+    msg_id: tuple[int, int],
+    channel: int,
+    minutes: int,
+    level: int,
+    *,
+    sea_led_family: bool,
+) -> bytearray:
+    """Create one auto-curve point (``0x5A, 6``) for a Commander/LED device.
+
+    Time encoding depends on the model family (see ``models.sea_led_family``
+    and docs/protocol.md): SeaLed devices use ``[channel, hour, minute,
+    level]``; BleLed/NewBleLed devices use ``[channel, 30-min-slot, level]``
+    with the app's rounding rule (a remainder above 14 minutes advances to the
+    next slot, up to 96 slots for 48-hour cross-day curves).
+
+    ``minutes`` is minutes since midnight (0..1439; up to
+    :data:`AUTO_POINT_MAX_MINUTES` for cross-day curves), ``level`` is 0..100.
+    Payload bytes are sent as-is — a level of 90 stays 0x5A (the app does not
+    escape parameter bytes).
+    """
+    _validate_auto_point_parameters(channel, minutes, level)
+    parameters = _auto_point_parameters(channel, minutes, level, sea_led_family=sea_led_family)
+    return create_command_encoding(90, 6, msg_id, parameters, avoid_reserved_byte=False)
+
+
 def create_switch_to_auto_mode_command(msg_id: tuple[int, int]) -> bytearray:
-    """Create a switch to auto mode command."""
+    """Create a switch to auto mode command.
+
+    Sends the schedule-driven scene frame ``(0x5A, 5, [18, 255, 255])``; the
+    app's other auto variant ``switchToAuto()`` uses ``[3, 255, 255]``.
+    """
     return create_command_encoding(90, 5, msg_id, [18, 255, 255])
+
+
+def create_switch_to_manual_mode_command(msg_id: tuple[int, int]) -> bytearray:
+    """Create a switch to manual mode command (app's ``switchToManual()`` frame)."""
+    return create_command_encoding(90, 5, msg_id, [11, 255, 255])
 
 
 def create_set_fan_speed_command(msg_id: tuple[int, int], speed_percent: int) -> bytearray:
@@ -123,3 +188,46 @@ def create_set_fan_speed_command(msg_id: tuple[int, int], speed_percent: int) ->
     if speed_percent < 0 or speed_percent > 100:
         raise ValueError("Fan speed must be between 0 and 100 percent")
     return create_command_encoding(90, 15, msg_id, [speed_percent])
+
+
+def create_fan_auto_mode_command(msg_id: tuple[int, int]) -> bytearray:
+    """Create a fan auto mode command.
+
+    Matches the app's ``autoFan()`` frame ``(0x5A, 5, [0x11, 0xFF, 0xFF])``;
+    the device then starts/stops the fan from its temperature thresholds.
+    """
+    return create_command_encoding(90, 5, msg_id, [0x11, 0xFF, 0xFF])
+
+
+def create_vivid3_fan_start_stop_temp_command(
+    msg_id: tuple[int, int],
+    start_temp: int,
+    stop_temp: int,
+) -> bytearray:
+    """Create a VIVID3 fan start/stop temperature command.
+
+    Matches the app's ``vvd3FanStartStopTemp()`` frame ``(0xA5, 45, ...)`` with
+    38/33 °C defaults (5 °C hysteresis). Temperatures are payload bytes sent
+    verbatim (reserved-byte avoidance disabled).
+    """
+    if not 0 <= start_temp <= 255 or not 0 <= stop_temp <= 255:
+        raise ValueError("Fan temperatures must be between 0 and 255")
+    return create_command_encoding(165, 45, msg_id, [start_temp, stop_temp], avoid_reserved_byte=False)
+
+
+def create_vivid3_temp_protect_command(msg_id: tuple[int, int], enabled: bool) -> bytearray:
+    """Create a VIVID3 temperature-protection switch command.
+
+    Matches the app's ``vvd3tempProtect()`` frame ``(0x5A, 5, [0x31|0x30, 0xFF, 0xFF])``:
+    payload byte 0 is 49 (on) or 48 (off).
+    """
+    return create_command_encoding(90, 5, msg_id, [0x31 if enabled else 0x30, 0xFF, 0xFF])
+
+
+def create_vivid3_bluetooth_led_command(msg_id: tuple[int, int], enabled: bool) -> bytearray:
+    """Create a VIVID3 indicator-LED switch command.
+
+    Matches the app's ``vvd3BluetoothLed()`` frame ``(0x5A, 5, [0x32|0x31, 0xFF, 0xFF])``:
+    payload byte 0 is 50 (on) or 49 (off).
+    """
+    return create_command_encoding(90, 5, msg_id, [0x32 if enabled else 0x31, 0xFF, 0xFF])

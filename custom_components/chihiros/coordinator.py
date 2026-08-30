@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from homeassistant.components import bluetooth
@@ -13,11 +14,14 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 
 from .runtime import ChihirosClient
 from .vendor.chihiros_led_control.protocol import (
+    DosingDailyNotification,
+    DosingTotalsNotification,
     FanStatusNotification,
     ParsedNotification,
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
+    Vivid3FanStatusNotification,
 )
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
@@ -29,6 +33,8 @@ ATTR_LAST_NOTIFICATION = "last_notification"
 ATTR_SCHEDULE_POINTS = "schedule_points"
 ATTR_FAN_RPM = "fan_rpm"
 ATTR_FAN_TEMPERATURE_CELSIUS = "fan_temperature_celsius"
+ATTR_DOSING_LIFETIME_UL = "dosing_lifetime_ul"
+ATTR_DOSING_DAILY_UL = "dosing_daily_ul"
 
 
 class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
@@ -100,22 +106,10 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         """Store parsed notification data and update entities."""
         if self._closed:
             return
-        if isinstance(notification, RuntimeNotification):
-            self.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
-            self.data[ATTR_RUNTIME_MINUTES] = notification.runtime_minutes
-            self.data[ATTR_RUNTIME_NOTIFICATION] = notification.raw.hex(" ")
-            self.data[ATTR_RUNTIME_NOTIFICATION_PAYLOAD] = notification.raw[6:].hex(" ")
-            self.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "runtime")
-        elif isinstance(notification, FanStatusNotification):
-            self.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
-            self.data[ATTR_FAN_RPM] = notification.fan_rpm
-            self.data[ATTR_FAN_TEMPERATURE_CELSIUS] = notification.temperature_celsius
-            self.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "fan_status")
-        elif isinstance(notification, ScheduleSnapshotNotification):
-            self.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
-            self.data[ATTR_SCHEDULE_POINTS] = tuple(_schedule_point_to_dict(point) for point in notification.points)
-            self.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "schedule_snapshot")
-        self.async_update_listeners()
+        apply_notification = _NOTIFICATION_APPLIERS.get(type(notification))
+        if apply_notification is not None:
+            apply_notification(self, notification)
+            self.async_update_listeners()
 
     @callback
     def _async_handle_bluetooth_event(
@@ -142,17 +136,77 @@ def _schedule_point_to_dict(point: SchedulePoint) -> dict[str, Any]:
     }
 
 
-def _notification_to_debug_dict(
-    notification: RuntimeNotification | FanStatusNotification | ScheduleSnapshotNotification,
-    parsed_type: str,
-) -> dict[str, Any]:
+def _notification_to_debug_dict(notification: ParsedNotification, parsed_type: str) -> dict[str, Any]:
     """Return a Home Assistant-friendly raw notification diagnostic payload."""
     raw = notification.raw
     mode = raw[5] if len(raw) > 5 else None
     return {
-        "firmware_version": notification.firmware_version,
+        "firmware_version": getattr(notification, "firmware_version", None),
         "frame": raw.hex(" "),
         "payload": raw[6:].hex(" "),
         "mode": f"0x{mode:02x}" if mode is not None else None,
         "parsed_type": parsed_type,
     }
+
+
+def _apply_runtime_notification(coordinator: ChihirosDataUpdateCoordinator, notification: RuntimeNotification) -> None:
+    """Store runtime/status notification data."""
+    coordinator.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
+    coordinator.data[ATTR_RUNTIME_MINUTES] = notification.runtime_minutes
+    coordinator.data[ATTR_RUNTIME_NOTIFICATION] = notification.raw.hex(" ")
+    coordinator.data[ATTR_RUNTIME_NOTIFICATION_PAYLOAD] = notification.raw[6:].hex(" ")
+    coordinator.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "runtime")
+
+
+def _apply_fan_status_notification(
+    coordinator: ChihirosDataUpdateCoordinator, notification: FanStatusNotification
+) -> None:
+    """Store fan status notification data."""
+    coordinator.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
+    coordinator.data[ATTR_FAN_RPM] = notification.fan_rpm
+    coordinator.data[ATTR_FAN_TEMPERATURE_CELSIUS] = notification.temperature_celsius
+    coordinator.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "fan_status")
+
+
+def _apply_schedule_snapshot_notification(
+    coordinator: ChihirosDataUpdateCoordinator, notification: ScheduleSnapshotNotification
+) -> None:
+    """Store schedule snapshot notification data."""
+    coordinator.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
+    coordinator.data[ATTR_SCHEDULE_POINTS] = tuple(_schedule_point_to_dict(point) for point in notification.points)
+    coordinator.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "schedule_snapshot")
+
+
+def _apply_dosing_totals_notification(
+    coordinator: ChihirosDataUpdateCoordinator, notification: DosingTotalsNotification
+) -> None:
+    """Store dosing totals notification data."""
+    coordinator.data[ATTR_DOSING_LIFETIME_UL] = notification.total_dosed_ul
+    coordinator.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "dosing_totals")
+
+
+def _apply_dosing_daily_notification(
+    coordinator: ChihirosDataUpdateCoordinator, notification: DosingDailyNotification
+) -> None:
+    """Store dosing daily notification data."""
+    coordinator.data[ATTR_DOSING_DAILY_UL] = notification.dose_use_in_day_ul
+    coordinator.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "dosing_daily")
+
+
+def _apply_vivid3_fan_notification(
+    coordinator: ChihirosDataUpdateCoordinator, notification: Vivid3FanStatusNotification
+) -> None:
+    """Store VIVID3 fan readout data."""
+    coordinator.data[ATTR_FAN_RPM] = notification.fan_rpm
+    coordinator.data[ATTR_FAN_TEMPERATURE_CELSIUS] = notification.temperature_celsius
+    coordinator.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "vivid3_fan_status")
+
+
+_NOTIFICATION_APPLIERS: dict[type, Callable[[ChihirosDataUpdateCoordinator, ParsedNotification], None]] = {
+    RuntimeNotification: _apply_runtime_notification,
+    FanStatusNotification: _apply_fan_status_notification,
+    ScheduleSnapshotNotification: _apply_schedule_snapshot_notification,
+    DosingTotalsNotification: _apply_dosing_totals_notification,
+    DosingDailyNotification: _apply_dosing_daily_notification,
+    Vivid3FanStatusNotification: _apply_vivid3_fan_notification,
+}

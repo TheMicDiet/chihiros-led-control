@@ -23,14 +23,22 @@ from bleak_retry_connector import (
 )
 
 from . import commands
-from .const import UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
+from .const import (
+    CUSTOM_NOTIFY_CHAR_UUID,
+    HM10_RX_CHAR_UUID,
+    UART_RX_CHAR_UUID,
+    UART_TX_CHAR_UUID,
+)
 from .exceptions import CharacteristicMissingError
 from .models import FALLBACK, DeviceModel
 from .protocol import (
+    DosingDailyNotification,
+    DosingTotalsNotification,
     FanStatusNotification,
     ParsedNotification,
     RuntimeNotification,
     ScheduleSnapshotNotification,
+    Vivid3FanStatusNotification,
     next_message_id,
     parse_notification,
 )
@@ -40,7 +48,44 @@ DEFAULT_ATTEMPTS = 3
 BLEAK_BACKOFF_TIME = 0.25
 COMMAND_NOTIFICATION_WAIT = 0.5
 STATUS_NOTIFICATION_WAIT = 1.0
+# Vendor app paces frames inside one command batch 30 ms apart.
+BATCH_WRITE_DELAY = 0.03
 NotificationCallback = Callable[[ParsedNotification], None]
+
+# Per-notification-type: last-seen attribute, debug log message, and the
+# parsed fields interpolated into that message.
+_LAST_NOTIFICATION_FIELDS: dict[type, tuple[str, str, tuple[str, ...]]] = {
+    RuntimeNotification: (
+        "last_runtime_notification",
+        "Runtime notification received; firmware=%s runtime_minutes=%s",
+        ("firmware_version", "runtime_minutes"),
+    ),
+    FanStatusNotification: (
+        "last_fan_status_notification",
+        "Fan status notification received; firmware=%s fan_rpm=%s temperature_celsius=%s",
+        ("firmware_version", "fan_rpm", "temperature_celsius"),
+    ),
+    ScheduleSnapshotNotification: (
+        "last_schedule_snapshot_notification",
+        "Schedule snapshot notification received; firmware=%s points=%s",
+        ("firmware_version", "points"),
+    ),
+    DosingTotalsNotification: (
+        "last_dosing_totals_notification",
+        "Dosing totals notification received; total_dosed_ul=%s",
+        ("total_dosed_ul",),
+    ),
+    DosingDailyNotification: (
+        "last_dosing_daily_notification",
+        "Dosing daily notification received; dose_use_in_day_ul=%s",
+        ("dose_use_in_day_ul",),
+    ),
+    Vivid3FanStatusNotification: (
+        "last_vivid3_fan_status_notification",
+        "VIVID3 fan notification received; fan_rpm=%s temperature_celsius=%s",
+        ("fan_rpm", "temperature_celsius"),
+    ),
+}
 
 
 class ChihirosDevice:
@@ -68,10 +113,18 @@ class ChihirosDevice:
         self._expected_disconnect = False
         self._unexpected_disconnect = asyncio.Event()
         self._msg_id = next_message_id()
+        self._fan_auto = False
+        self._fan_start_temp = 38
+        self._fan_stop_temp = 33
+        self._temp_protect = False
+        self._bluetooth_led = False
         self._notification_callbacks: set[NotificationCallback] = set()
         self.last_runtime_notification: RuntimeNotification | None = None
         self.last_fan_status_notification: FanStatusNotification | None = None
         self.last_schedule_snapshot_notification: ScheduleSnapshotNotification | None = None
+        self.last_dosing_totals_notification: DosingTotalsNotification | None = None
+        self.last_dosing_daily_notification: DosingDailyNotification | None = None
+        self.last_vivid3_fan_status_notification: Vivid3FanStatusNotification | None = None
         self.loop = asyncio.get_running_loop()
 
     def set_log_level(self, level: int | str) -> None:
@@ -155,16 +208,8 @@ class ChihirosDevice:
             assert color_id is not None  # nosec
             self._validate_brightness_levels((brightness,))
             return {color_id: brightness}
-
         if isinstance(brightness, Mapping):
-            self._validate_brightness_levels(tuple(brightness.values()))
-            result: dict[int, int] = {}
-            for color, level in brightness.items():
-                color_id = self._color_id(color)
-                if color_id is None:
-                    raise ValueError(f"Color not supported: {color}")
-                result[color_id] = level
-            return result
+            return self._normalize_brightness_mapping(brightness)
 
         brightness_values = list(brightness)
         self._validate_brightness_levels(brightness_values)
@@ -177,6 +222,17 @@ class ChihirosDevice:
             raise ValueError(f"Expected 1 or {channel_count} brightness levels")
         return dict(enumerate(brightness_values))
 
+    def _normalize_brightness_mapping(self, brightness: Mapping[str | int, int]) -> dict[int, int]:
+        """Normalize mapping-style brightness input to protocol channel ids."""
+        self._validate_brightness_levels(tuple(brightness.values()))
+        result: dict[int, int] = {}
+        for color, level in brightness.items():
+            color_id = self._color_id(color)
+            if color_id is None:
+                raise ValueError(f"Color not supported: {color}")
+            result[color_id] = level
+        return result
+
     def _channel_count(self) -> int:
         """Return number of protocol channel slots for this model."""
         return max(self.model.color_channels.values()) + 1
@@ -187,11 +243,18 @@ class ChihirosDevice:
         return [brightness_by_channel.get(channel_id, 255) for channel_id in range(self._channel_count())]
 
     async def set_brightness(self, brightness: int | Sequence[int] | Mapping[str | int, int]) -> None:
-        """Set light brightness."""
+        """Switch to manual mode and set light brightness.
+
+        The vendor app sends ``switchToManual()`` before manual slider writes;
+        keeping both in one paced transaction avoids racing auto mode.
+        """
         brightness_by_channel = self._normalize_brightness(brightness)
         commands_to_send = [
-            commands.create_set_brightness_command(self.get_next_msg_id(), color_id, brightness_level)
-            for color_id, brightness_level in brightness_by_channel.items()
+            commands.create_switch_to_manual_mode_command(self.get_next_msg_id()),
+            *(
+                commands.create_set_brightness_command(self.get_next_msg_id(), color_id, brightness_level)
+                for color_id, brightness_level in brightness_by_channel.items()
+            ),
         ]
         await self._send_command(commands_to_send, 3)
 
@@ -224,11 +287,94 @@ class ChihirosDevice:
         await self._send_command(cmd, 3, notification_wait=STATUS_NOTIFICATION_WAIT)
 
     async def set_fan_speed(self, speed_percent: int) -> None:
-        """Set the fan speed percentage on fan-equipped models."""
+        """Set the fan speed percentage on fan-equipped models.
+
+        Values below the model's minimum are clamped to it (the app clamps the
+        VIVID III to 25 %). Manual speed leaves temperature auto mode.
+        """
         if not self.model.has_fan:
             raise ValueError(f"Model does not support fan control: {self.model.name}")
+        if speed_percent < 0 or speed_percent > 100:
+            raise ValueError("Fan speed must be between 0 and 100 percent")
+        if 0 < speed_percent < self.model.min_fan_speed:
+            speed_percent = self.model.min_fan_speed
         cmd = commands.create_set_fan_speed_command(self.get_next_msg_id(), speed_percent)
         await self._send_command(cmd, 3)
+        self._fan_auto = False
+
+    async def set_fan_auto(self) -> None:
+        """Switch the fan to temperature-controlled auto mode.
+
+        Matches the vendor app's ``LedInfo::setFanAuto()`` frame; the fan then
+        starts/stops from the configured start/stop temperatures.
+        """
+        if not self.model.has_fan:
+            raise ValueError(f"Model does not support fan control: {self.model.name}")
+        cmd = commands.create_fan_auto_mode_command(self.get_next_msg_id())
+        await self._send_command(cmd, 3)
+        self._fan_auto = True
+
+    async def set_fan_start_stop_temp(self, start_temp: int, stop_temp: int) -> None:
+        """Set the VIVID3 fan start/stop temperatures used by auto mode."""
+        if not self.model.has_fan:
+            raise ValueError(f"Model does not support fan control: {self.model.name}")
+        cmd = commands.create_vivid3_fan_start_stop_temp_command(
+            self.get_next_msg_id(),
+            start_temp,
+            stop_temp,
+        )
+        await self._send_command(cmd, 3)
+        self._fan_start_temp = start_temp
+        self._fan_stop_temp = stop_temp
+
+    async def set_temp_protect(self, enabled: bool) -> None:
+        """Toggle the VIVID3 temperature protection.
+
+        Matches the vendor app's ``Vivid3Info::tempProtect()`` frame. The device
+        sends no acknowledgement, so the new state is tracked optimistically.
+        """
+        if not self.model.is_vivid3:
+            raise ValueError(f"Model does not support temperature protection: {self.model.name}")
+        cmd = commands.create_vivid3_temp_protect_command(self.get_next_msg_id(), enabled)
+        await self._send_command(cmd, 3)
+        self._temp_protect = enabled
+
+    async def set_bluetooth_led(self, enabled: bool) -> None:
+        """Toggle the VIVID3 indicator LED.
+
+        Matches the vendor app's ``Vivid3Info::setLed()`` frame. The device
+        sends no acknowledgement, so the new state is tracked optimistically.
+        """
+        if not self.model.is_vivid3:
+            raise ValueError(f"Model does not support the indicator LED switch: {self.model.name}")
+        cmd = commands.create_vivid3_bluetooth_led_command(self.get_next_msg_id(), enabled)
+        await self._send_command(cmd, 3)
+        self._bluetooth_led = enabled
+
+    @property
+    def temp_protect(self) -> bool:
+        """Return the optimistically tracked temperature-protection state."""
+        return self._temp_protect
+
+    @property
+    def bluetooth_led(self) -> bool:
+        """Return the optimistically tracked indicator-LED state."""
+        return self._bluetooth_led
+
+    @property
+    def fan_auto(self) -> bool:
+        """Return whether the fan is in temperature-controlled auto mode."""
+        return self._fan_auto
+
+    @property
+    def fan_start_temp(self) -> int:
+        """Return the last fan start temperature in whole degrees Celsius."""
+        return self._fan_start_temp
+
+    @property
+    def fan_stop_temp(self) -> int:
+        """Return the last fan stop temperature in whole degrees Celsius."""
+        return self._fan_stop_temp
 
     async def add_setting(
         self,
@@ -277,6 +423,53 @@ class ChihirosDevice:
         cmd = commands.create_reset_auto_settings_command(self.get_next_msg_id())
         await self._send_command(cmd, 3)
 
+    async def set_auto_point(self, channel: int, minutes: int, level: int) -> None:
+        """Write one auto-curve point (``0x5A, 6``) for a channel.
+
+        Time encoding follows the model family (see ``create_auto_point_command``);
+        prefer :meth:`set_auto_curve` when writing more than one point.
+        """
+        self._validate_auto_point(channel, minutes, level)
+        cmd = commands.create_auto_point_command(
+            self.get_next_msg_id(),
+            channel,
+            minutes,
+            level,
+            sea_led_family=self.model.sea_led_family,
+        )
+        await self._send_command(cmd, 3)
+
+    async def set_auto_curve(self, points: Sequence[tuple[int, int, int]]) -> None:
+        """Replace the auto curve with ``0x5A, 6`` points in one paced transaction.
+
+        Call :meth:`reset_settings` first to clear the stored curve (the app
+        sends ``0x5A, 5, [5, 255, 255]`` before re-applying a saved curve).
+        """
+        if not points:
+            raise ValueError("Auto curve must contain at least one point")
+        for channel, minutes, level in points:
+            self._validate_auto_point(channel, minutes, level)
+        commands_to_send = [
+            bytes(
+                commands.create_auto_point_command(
+                    self.get_next_msg_id(),
+                    channel,
+                    minutes,
+                    level,
+                    sea_led_family=self.model.sea_led_family,
+                )
+            )
+            for channel, minutes, level in points
+        ]
+        await self._send_command(commands_to_send, 3)
+
+    def _validate_auto_point(self, channel: int, minutes: int, level: int) -> None:
+        """Validate one auto-curve point against this model."""
+        if not self.model.color_channels:
+            raise ValueError(f"Model does not support auto curve points: {self.model.name}")
+        if not 0 <= channel < self._channel_count():
+            raise ValueError(f"Channel must be between 0 and {self._channel_count() - 1}")
+
     async def enable_auto_mode(self, timestamp: datetime | None = None) -> None:
         """Enable auto mode."""
         time_cmd = commands.create_set_time_command(self.get_next_msg_id(), timestamp)
@@ -285,16 +478,21 @@ class ChihirosDevice:
         await self._send_command(switch_cmd, 3)
 
     async def set_manual_mode(self) -> None:
-        """Switch to manual mode."""
-        await self.turn_on()
+        """Switch to manual mode without changing brightness."""
+        cmd = commands.create_switch_to_manual_mode_command(self.get_next_msg_id())
+        await self._send_command(cmd, 3)
 
     async def _send_command(
         self,
         command: list[bytes] | bytes | bytearray,
         retry: int | None = None,
-        notification_wait: float = COMMAND_NOTIFICATION_WAIT,
+        notification_wait: float | None = None,
     ) -> None:
-        """Send commands to the device."""
+        """Send commands to the device.
+
+        ``notification_wait`` defaults to :data:`COMMAND_NOTIFICATION_WAIT` and
+        is resolved at call time so callers (and tests) can override it.
+        """
         commands_to_send = command if isinstance(command, list) else [bytes(command)]
         attempts = DEFAULT_ATTEMPTS if retry is None else retry
         if attempts < 1:
@@ -302,6 +500,8 @@ class ChihirosDevice:
         self._logger.debug("%s: Sending commands %s", self.name, [item.hex() for item in commands_to_send])
         if self._operation_lock.locked():
             self._logger.debug("%s: Operation already in progress, waiting; RSSI: %s", self.name, self.rssi)
+        if notification_wait is None:
+            notification_wait = COMMAND_NOTIFICATION_WAIT
         async with self._operation_lock:
             await self._send_command_locked(commands_to_send, attempts, notification_wait)
 
@@ -320,65 +520,65 @@ class ChihirosDevice:
                 self._logger.debug("%s: characteristic missing; RSSI: %s", self.name, self.rssi, exc_info=True)
                 raise
             except BLEAK_EXCEPTIONS as ex:
-                if isinstance(ex, BleakNotFoundError):
-                    self._logger.error("%s: device not found or poor RSSI: %s", self.name, self.rssi, exc_info=True)
-                self._logger.debug(
-                    "%s: communication attempt %s/%s failed: %s", self.name, attempt, attempts, ex, exc_info=True
-                )
-                if attempt == attempts:
-                    raise
-                if isinstance(ex, BleakDBusError):
-                    await asyncio.sleep(BLEAK_BACKOFF_TIME)
+                await self._handle_send_failure(ex, attempt, attempts)
             finally:
                 await self._execute_disconnect()
+
+    async def _handle_send_failure(self, ex: Exception, attempt: int, attempts: int) -> None:
+        """Log a failed communication attempt and retry or give up."""
+        if isinstance(ex, BleakNotFoundError):
+            self._logger.error("%s: device not found or poor RSSI: %s", self.name, self.rssi, exc_info=True)
+        self._logger.debug(
+            "%s: communication attempt %s/%s failed: %s", self.name, attempt, attempts, ex, exc_info=True
+        )
+        if attempt == attempts:
+            raise
+        if isinstance(ex, BleakDBusError):
+            await asyncio.sleep(BLEAK_BACKOFF_TIME)
+
+    def _require_write_characteristics(self) -> BleakGATTCharacteristic:
+        """Return the write characteristic, raising if it is missing.
+
+        Mirrors the app: the write queue only needs the write characteristic;
+        a missing notify characteristic does not block commands (fire-and-forget).
+        """
+        if not self._write_char:
+            raise CharacteristicMissingError("Write characteristic missing")
+        return self._write_char
 
     async def _execute_command_locked(self, commands_to_send: list[bytes]) -> None:
         """Write commands to the BLE characteristic."""
         assert self._client is not None  # nosec
-        if not self._read_char:
-            raise CharacteristicMissingError("Read characteristic missing")
-        if not self._write_char:
-            raise CharacteristicMissingError("Write characteristic missing")
-        for command in commands_to_send:
-            await self._client.write_gatt_char(self._write_char, command, False)
+        write_char = self._require_write_characteristics()
+        for index, command in enumerate(commands_to_send):
+            await self._client.write_gatt_char(write_char, command, False)
             if self._unexpected_disconnect.is_set():
                 raise BleakError("Device unexpectedly disconnected during command batch")
+            if index < len(commands_to_send) - 1:
+                await asyncio.sleep(BATCH_WRITE_DELAY)
 
     def _notification_handler(self, _sender: BleakGATTCharacteristic, data: bytearray) -> None:
         """Handle notification responses."""
         parsed = parse_notification(data, self.model.color_channels)
-        if isinstance(parsed, RuntimeNotification):
-            self.last_runtime_notification = parsed
-            self._logger.debug(
-                "%s: Runtime notification received; firmware=%s runtime_minutes=%s",
-                self.name,
-                parsed.firmware_version,
-                parsed.runtime_minutes,
-            )
-            self._notify_callbacks(parsed)
+        if parsed is None:
+            self._logger.debug("%s: Notification received: %s", self.name, data.hex())
             return
-        if isinstance(parsed, FanStatusNotification):
-            self.last_fan_status_notification = parsed
-            self._logger.debug(
-                "%s: Fan status notification received; firmware=%s fan_rpm=%s temperature_celsius=%s",
-                self.name,
-                parsed.firmware_version,
-                parsed.fan_rpm,
-                parsed.temperature_celsius,
-            )
-            self._notify_callbacks(parsed)
+        if isinstance(parsed, Vivid3FanStatusNotification) and not self.model.has_fan:
+            # 0xB6/0x16 frames are the VIVID3 fan readout; ignore on non-fan models.
+            self._logger.debug("%s: Ignoring fan readout frame on non-fan model %s", self.name, self.model.name)
             return
-        if isinstance(parsed, ScheduleSnapshotNotification):
-            self.last_schedule_snapshot_notification = parsed
-            self._logger.debug(
-                "%s: Schedule snapshot notification received; firmware=%s points=%s",
-                self.name,
-                parsed.firmware_version,
-                parsed.points,
-            )
-            self._notify_callbacks(parsed)
-            return
-        self._logger.debug("%s: Notification received: %s", self.name, data.hex())
+        self._record_notification(parsed)
+        self._notify_callbacks(parsed)
+
+    def _record_notification(self, parsed: ParsedNotification) -> None:
+        """Store a parsed notification on its last-seen attribute and log it."""
+        attribute, message, field_names = _LAST_NOTIFICATION_FIELDS[type(parsed)]
+        setattr(self, attribute, parsed)
+        self._logger.debug(
+            "%s: %s",
+            self.name,
+            message % tuple(getattr(parsed, field_name) for field_name in field_names),
+        )
 
     def _notify_callbacks(self, notification: ParsedNotification) -> None:
         """Notify subscribers about a parsed device notification."""
@@ -401,16 +601,31 @@ class ChihirosDevice:
         self._unexpected_disconnect.set()
 
     def _resolve_characteristics(self, services: BleakGATTServiceCollection) -> bool:
-        """Resolve UART characteristics."""
-        for characteristic in [UART_TX_CHAR_UUID]:
-            if char := services.get_characteristic(characteristic):
-                self._read_char = char
-                break
-        for characteristic in [UART_RX_CHAR_UUID]:
-            if char := services.get_characteristic(characteristic):
-                self._write_char = char
-                break
-        return bool(self._read_char and self._write_char)
+        """Resolve characteristics exactly like the official app.
+
+        Mirrors ``BleController::_prepareToTransport`` (verified): matching is
+        strictly by UUID string, never by characteristic properties —
+
+        * write:  ``0000ffe1-…`` (classic) or ``6e400002-…`` (AIX/Nordic UART RX)
+        * notify: ``8ec90003-…`` (classic custom) or ``6e400003-…`` (Nordic UART TX)
+
+        The notify characteristic may legitimately be absent (e.g. "RGB A Plus",
+        where ``ffe1`` itself is full duplex). Like the app, this does not fail:
+        the notify subscription is simply skipped and the client runs
+        fire-and-forget. Returns whether a write characteristic was found;
+        commands cannot be sent without one.
+        """
+        self._write_char = services.get_characteristic(HM10_RX_CHAR_UUID) or services.get_characteristic(
+            UART_RX_CHAR_UUID
+        )
+        self._read_char = services.get_characteristic(CUSTOM_NOTIFY_CHAR_UUID) or services.get_characteristic(
+            UART_TX_CHAR_UUID
+        )
+        return self._write_char is not None
+
+    def _is_connected(self) -> bool:
+        """Return whether an established BLE client exists."""
+        return bool(self._client and self._client.is_connected)
 
     async def _ensure_connected(self) -> None:
         """Ensure a BLE connection exists."""
@@ -420,48 +635,70 @@ class ChihirosDevice:
                 self.name,
                 self.rssi,
             )
-        if self._client and self._client.is_connected:
+        if self._is_connected():
             self._reset_disconnect_timer()
             return
         async with self._connect_lock:
-            if self._client and self._client.is_connected:
+            if self._is_connected():
                 self._reset_disconnect_timer()
                 return
-            self._logger.debug("%s: Connecting; RSSI: %s", self.name, self.rssi)
-            self._unexpected_disconnect.clear()
-            client = await establish_connection(
-                BleakClientWithServiceCache,
-                self._ble_device,
+            await self._establish_connection()
+
+    async def _establish_connection(self) -> None:
+        """Establish the BLE connection and configure it, cleaning up on failure."""
+        self._logger.debug("%s: Connecting; RSSI: %s", self.name, self.rssi)
+        self._unexpected_disconnect.clear()
+        client = await establish_connection(
+            BleakClientWithServiceCache,
+            self._ble_device,
+            self.name,
+            self._disconnected,
+            use_services_cache=True,
+            ble_device_callback=lambda: self._ble_device,
+        )
+        self._logger.debug("%s: Connected; RSSI: %s", self.name, self.rssi)
+        try:
+            await self._configure_client(client)
+        except Exception:
+            await self._abort_connection(client)
+            raise
+
+    async def _configure_client(self, client: BleakClientWithServiceCache) -> None:
+        """Resolve characteristics, subscribe to notifications, and run the prelude."""
+        resolved = self._resolve_characteristics(client.services)
+        if not resolved:
+            resolved = self._resolve_characteristics(await client.get_services())
+        if not resolved:
+            raise CharacteristicMissingError("Write characteristic missing")
+
+        self._client = client
+        self._reset_disconnect_timer()
+
+        if self._read_char is not None:
+            self._logger.debug("%s: Subscribe to notifications; RSSI: %s", self.name, self.rssi)
+            await client.start_notify(self._read_char, self._notification_handler)  # type: ignore
+        else:
+            # App behaviour (verified): with no 8ec90003/6e400003 characteristic the
+            # app never subscribes and keeps sending commands fire-and-forget.
+            self._logger.warning(
+                "%s: No notify characteristic (8ec90003/6e400003) found; "
+                "running fire-and-forget without state notifications; RSSI: %s",
                 self.name,
-                self._disconnected,
-                use_services_cache=True,
-                ble_device_callback=lambda: self._ble_device,
+                self.rssi,
             )
-            self._logger.debug("%s: Connected; RSSI: %s", self.name, self.rssi)
-            try:
-                resolved = self._resolve_characteristics(client.services)
-                if not resolved:
-                    resolved = self._resolve_characteristics(await client.get_services())
-                if not resolved:
-                    raise CharacteristicMissingError("UART characteristics missing")
+        await self._send_connection_prelude(client)
 
-                self._client = client
-                self._reset_disconnect_timer()
-
-                self._logger.debug("%s: Subscribe to notifications; RSSI: %s", self.name, self.rssi)
-                await client.start_notify(self._read_char, self._notification_handler)  # type: ignore
-                await self._send_connection_prelude(client)
-            except Exception:
-                read_char = self._read_char
-                self._client = None
-                self._read_char = None
-                self._write_char = None
-                if self._disconnect_timer:
-                    self._disconnect_timer.cancel()
-                    self._disconnect_timer = None
-                self._expected_disconnect = True
-                await self._disconnect_client(client, read_char)
-                raise
+    async def _abort_connection(self, client: BleakClientWithServiceCache) -> None:
+        """Tear down partial connection state after a failed setup."""
+        read_char = self._read_char
+        self._client = None
+        self._read_char = None
+        self._write_char = None
+        if self._disconnect_timer:
+            self._disconnect_timer.cancel()
+            self._disconnect_timer = None
+        self._expected_disconnect = True
+        await self._disconnect_client(client, read_char)
 
     async def _send_connection_prelude(self, client: BleakClientWithServiceCache) -> None:
         """Send the LED startup sequence observed in the vendor app/ESPHome flow."""
@@ -477,8 +714,10 @@ class ChihirosDevice:
             self.name,
             [command.hex() for command in prelude],
         )
-        for command in prelude:
+        for index, command in enumerate(prelude):
             await client.write_gatt_char(self._write_char, command, False)
+            if index < len(prelude) - 1:
+                await asyncio.sleep(BATCH_WRITE_DELAY)
 
     def _reset_disconnect_timer(self) -> None:
         """Reset connection state without scheduling a delayed keepalive."""

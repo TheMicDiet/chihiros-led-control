@@ -20,7 +20,7 @@ ATTR_PUMP = "pump"
 DOSE_ML_SCHEMA = vol.Schema(
     {
         **DEVICE_SELECTOR_SCHEMA,
-        vol.Required(ATTR_PUMP): vol.All(vol.Coerce(int), vol.Range(min=1, max=4)),
+        vol.Required(ATTR_PUMP): vol.All(vol.Coerce(int), vol.Range(min=1, max=8)),
         vol.Required(ATTR_ML): vol.All(vol.Coerce(float), vol.Range(min=0.2, max=999.9)),
     }
 )

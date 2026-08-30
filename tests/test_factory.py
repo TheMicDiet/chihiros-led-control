@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from chihiros_led_control.client import ChihirosDosingPump
+from chihiros_led_control.exceptions import UnsupportedDeviceError
 from chihiros_led_control.factory import (
     create_device,
     detect_model,
@@ -28,6 +31,48 @@ def test_detect_model_matches_name_prefix() -> None:
     assert detect_model("DYNW601234567890").name == "WRGB II"
 
 
+def test_detect_model_wrgb2_generation_split() -> None:
+    """WRGB2 new-gen codes are SeaLed; legacy DYWRGB is BleLed."""
+    assert detect_model("DYWRGB1234567890").sea_led_family is False
+    # DYN-prefixed new gen (length suffixes are light sizes): SeaLed
+    for name in (
+        "DYNT901234567890",
+        "DYNW301234567890",
+        "DYNW451234567890",
+        "DYNW601234567890",
+        "DYNW901234567890",
+        "DYNW12P1234567890",
+        "DYNWRGB1234567890",
+    ):
+        model = detect_model(name)
+        assert model.name == "WRGB II"
+        assert model.sea_led_family is True
+
+
+def test_detect_model_new_gen_families_are_sea_led() -> None:
+    """Pro/Slim/Universal/C II/C II RGB are SeaLed (length suffix = light size)."""
+    sea_led_cases = {
+        "DYWPRO301234567890": "WRGB II Pro",
+        "DYWPRO901234567890": "WRGB II Pro",
+        "DYWPR1201234567890": "WRGB II Pro",
+        "DYSILN1234567890": "WRGB II Slim",
+        "DYSL301234567890": "WRGB II Slim",
+        "DYSL1201234567890": "WRGB II Slim",
+        "DYNC2N1234567890": "C II",
+        "DYNCRGP1234567890": "C II RGB",
+        "DYNCRGB1234567890": "C II RGB",
+        "DYU5501234567890": "Universal WRGB",
+        "DYU15001234567890": "Universal WRGB",
+    }
+    for name, expected in sea_led_cases.items():
+        model = detect_model(name)
+        assert model.name == expected
+        assert model.sea_led_family is True, name
+    # WRGB VIVID III: device_type "NewVivid3" is not in {BleLed, NewBleLed},
+    # so _judgeNewLed sets field_147 true → SeaLed family (binary-verified).
+    assert detect_model("DYVVD31234567890").sea_led_family is True
+
+
 def test_detect_model_matches_legacy_wrgb_prefix() -> None:
     """Model detection matches the legacy WRGB prefix from app templates."""
     assert detect_model("DYWRGB1234567890").name == "WRGB II"
@@ -46,6 +91,7 @@ def test_detect_model_does_not_rely_on_fixed_slicing() -> None:
 def test_detect_model_matches_dosing_pump_prefix() -> None:
     """Model detection matches dosing pump advertisements."""
     assert detect_model("DYDOSE1234567890").name == "Dosing Pump"
+    assert detect_model("DYNDOSCDA1ECD07A4D").name == "Dosing Pump"
 
 
 def test_detect_model_matches_wrgb_vivid_iii_prefix() -> None:
@@ -64,7 +110,7 @@ def test_unknown_model_needs_device_type() -> None:
 
 
 def test_commander_model_needs_device_type() -> None:
-    """Commander devices need a user-selected generic type."""
+    """Legacy Commander 1 (unknown layout) still asks for a generic type."""
     assert needs_device_type("DYCOM123456789") is True
 
 
@@ -89,6 +135,16 @@ def test_factory_created_device_uses_generic_wrgb_model() -> None:
     assert colors == {"white": 3, "red": 0, "green": 1, "blue": 2}
 
 
+def test_factory_rejects_known_unsupported_devices() -> None:
+    """Known non-LED devices cannot be constructed as fallback LED clients."""
+
+    async def create() -> None:
+        create_device(FakeBLEDevice("DYCO2-123"))  # type: ignore[arg-type]
+
+    with pytest.raises(UnsupportedDeviceError, match="Unsupported Chihiros device"):
+        asyncio.run(create())
+
+
 def test_factory_created_dosing_pump_uses_dosing_client() -> None:
     """Factory-created dosing pump devices use the dosing client class."""
 
@@ -100,3 +156,77 @@ def test_factory_created_dosing_pump_uses_dosing_client() -> None:
     assert isinstance(device, ChihirosDosingPump)
     assert device.model_name == "Dosing Pump"
     assert device.colors == {}
+
+
+def test_detect_model_matches_rgb_aplus_prefixes() -> None:
+    """RGB+APLUS advertisements (old and new generation) resolve to a 3-channel RGB model."""
+    for name in ("DYARGB1234567890", "DYRGBA+1234567890", "DYRGBA1234567890", "DYNARGB1234567890"):
+        model = detect_model(name)
+
+        assert model.name == "RGB+APLUS"
+        assert dict(model.color_channels) == {"red": 0, "green": 1, "blue": 2}
+
+
+def test_detect_model_matches_rgb_vivid_prefixes() -> None:
+    """RGB VIVID and RGB VIVID II advertisements resolve to RGB models.
+
+    DYRGBV is NewBleLed device_type; DYNVVD/DYNV are SeaLed (2.8.59 registry
+    "RGB VIVID2"), which selects the [ch, hour, minute, level] auto-point form.
+    """
+    assert detect_model("DYREE1234567890").name == "RGB VIVID"
+    dyrgbv = detect_model("DYRGBV1234567890")
+    assert dyrgbv.name == "RGB VIVID II"
+    assert dict(dyrgbv.color_channels) == {"red": 0, "green": 1, "blue": 2}
+    assert dyrgbv.sea_led_family is False
+    for name in ("DYNVVD1234567890", "DYNV1234567890"):
+        model = detect_model(name)
+
+        assert model.name == "RGB VIVID II"
+        assert dict(model.color_channels) == {"red": 0, "green": 1, "blue": 2}
+        assert model.sea_led_family is True
+
+
+def test_detect_model_matches_single_channel_white_prefixes() -> None:
+    """A series, New C, and Commander X are single-channel white devices."""
+    assert dict(detect_model("DYA1234567890").color_channels) == {"white": 0}
+    assert detect_model("DYA1234567890").name == "A Series"
+    assert detect_model("DYC1234567890").name == "New C"
+    assert dict(detect_model("DYNC2CDA1ECD07A4D").color_channels) == {"white": 0}
+    assert detect_model("DYONE1234567890").name == "Commander X"
+
+
+def test_detect_model_rejects_unsupported_short_prefix_collisions() -> None:
+    """Known non-LED accessories must not be classified as short-prefix LEDs."""
+    for name in ("DYAPRCO2-123", "DYCHIL-123", "DYCO2-123"):
+        assert detect_model(name) is FALLBACK
+
+
+def test_detect_model_matches_x300_two_channel_prefix() -> None:
+    """X300 is a two-channel white plus warm device."""
+    model = detect_model("DYTWO1234567890")
+
+    assert model.name == "X300"
+    assert dict(model.color_channels) == {"white": 0, "warm": 1}
+
+
+def test_detect_model_matches_sea_led_prefix() -> None:
+    """SEA_LED is a four-channel WRGB device."""
+    model = detect_model("DYSEA1234567890")
+
+    assert model.name == "SEA_LED"
+    assert dict(model.color_channels) == {"white": 3, "red": 0, "green": 1, "blue": 2}
+
+
+def test_detect_model_matches_new_gen_commander_prefix() -> None:
+    """Commander 4 auto-detects its verified 4-channel layout (no generic type prompt)."""
+    dyled = detect_model("DYLED1234567890")
+    assert dyled.name == "Commander 4"
+    assert dict(dyled.color_channels) == {"white": 3, "red": 0, "green": 1, "blue": 2}
+    assert dyled.needs_device_type is False
+    assert dyled.sea_led_family is False  # BleLed device_type → [ch, minutes/30, level] auto points
+
+    dynled = detect_model("DYNLED1234567890")
+    assert dynled.name == "Commander 4"
+    assert dict(dynled.color_channels) == {"white": 3, "red": 0, "green": 1, "blue": 2}
+    assert needs_device_type("DYNLED1234567890") is False
+    assert dynled.sea_led_family is True  # SeaLed device_type → [ch, hour, minute, level] auto points

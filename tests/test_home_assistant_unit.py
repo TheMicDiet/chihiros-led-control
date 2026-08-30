@@ -29,6 +29,7 @@ from custom_components.chihiros import (
     _parse_schedule_time,
     _parse_weekdays,
     _resolve_service_device,
+    _validate_auto_curve,
     _validate_schedule_period,
     _validate_schedule_periods,
 )
@@ -37,6 +38,7 @@ from custom_components.chihiros.coordinator import _notification_to_debug_dict, 
 from custom_components.chihiros.discovery import ChihirosDiscovery, discovery_title
 from custom_components.chihiros.dosing import PUMP_COUNT, _coerce_total, is_dosing_capable, normalize_pump_count
 from custom_components.chihiros.fake import FAKE_DEVICES, create_fake_device, is_fake_address
+from custom_components.chihiros.schedule_services import SET_AUTO_CURVE_SCHEMA
 from custom_components.chihiros.vendor.chihiros_led_control.models import DOSING_PUMP
 from custom_components.chihiros.vendor.chihiros_led_control.protocol import (
     FanStatusNotification,
@@ -76,6 +78,41 @@ def _data(*, colors: dict[str, int] | None = None, dosing: bool = False) -> Simp
         colors={"red": 1, "green": 2, "blue": 3} if colors is None else colors,
     )
     return SimpleNamespace(device=device, dosing_totals=object() if dosing else None)
+
+
+@pytest.mark.parametrize(
+    ("curve", "message"),
+    [
+        ({}, "at least one channel"),
+        ({0: []}, "at least one point"),
+        ({9: [[60, 50]]}, "Channel 9 is not supported"),
+        ({0: [[2881, 50]]}, "minutes must be between 0 and 2880"),
+        ({0: [[60, 101]]}, "level must be between 0 and 100"),
+    ],
+)
+def test_validate_auto_curve_rejects_invalid_curves(curve: dict[int, list[list[int]]], message: str) -> None:
+    """Auto curves reject empty input, unknown channels, and out-of-range points."""
+    data = _data(colors={"red": 0, "green": 1, "blue": 2, "white": 3})
+
+    with pytest.raises(HomeAssistantError, match=message):
+        _validate_auto_curve(data, curve)
+
+
+def test_validate_auto_curve_accepts_valid_curve() -> None:
+    """A valid per-channel curve passes validation."""
+    data = _data(colors={"red": 0, "green": 1, "blue": 2, "white": 3})
+
+    _validate_auto_curve(data, {0: [[480, 100], [720, 0]], 3: [[480, 40]]})
+
+
+def test_set_auto_curve_schema_coerces_channel_keys() -> None:
+    """The service schema coerces string channel keys and validates point shape."""
+    coerced = SET_AUTO_CURVE_SCHEMA({"curve": {"0": [[480, 100]], 1: [[720, 0]]}})
+
+    assert coerced["curve"] == {0: [[480, 100]], 1: [[720, 0]]}
+
+    with pytest.raises(Exception):
+        SET_AUTO_CURVE_SCHEMA({"curve": {0: [[480]]}})
 
 
 @pytest.mark.parametrize(
@@ -295,6 +332,30 @@ async def test_fake_device_without_fan_rejects_fan_speed() -> None:
 
     with pytest.raises(ValueError, match="fan control"):
         await device.set_fan_speed(50)
+
+
+@pytest.mark.asyncio
+async def test_fake_devices_cover_new_led_families() -> None:
+    """The development roster exposes the LED families added for 2.8.59 alignment."""
+    by_code = {code: info for info in FAKE_DEVICES for code in info.model.advertised_codes}
+    for code in ("DYA", "DYC", "DYARGB", "DYREE", "DYRGBV", "DYSEA", "DYONE", "DYTWO", "DYNLED"):
+        assert code in by_code, f"no fake device advertises {code}"
+    assert dict(by_code["DYTWO"].model.color_channels) == {"white": 0, "warm": 1}
+    # Commander 4 (DYNLED fake) uses the app-verified 4-channel layout and is no
+    # longer forced through the generic device-type prompt.
+    assert dict(by_code["DYNLED"].model.color_channels) == {"white": 3, "red": 0, "green": 1, "blue": 2}
+    assert by_code["DYNLED"].model.needs_device_type is False
+    assert by_code["DYNLED"].model.sea_led_family is True
+
+
+@pytest.mark.asyncio
+async def test_every_fake_device_accepts_brightness_writes() -> None:
+    """Every fake device handles brightness writes for its advertised channels."""
+    for info in FAKE_DEVICES:
+        device = create_fake_device(info.address)
+        await device.set_brightness({color: 40 for color in device.colors})
+        await device.query_status()
+        assert device.address == info.address
 
 
 def test_discovery_helpers_for_fake_device() -> None:
