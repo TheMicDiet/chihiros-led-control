@@ -24,8 +24,8 @@ from bleak_retry_connector import (
 
 from . import commands
 from .const import (
+    CUSTOM_NOTIFY_CHAR_UUID,
     HM10_RX_CHAR_UUID,
-    HM10_TX_CHAR_UUID,
     UART_RX_CHAR_UUID,
     UART_TX_CHAR_UUID,
 )
@@ -537,9 +537,11 @@ class ChihirosDevice:
             await asyncio.sleep(BLEAK_BACKOFF_TIME)
 
     def _require_write_characteristics(self) -> BleakGATTCharacteristic:
-        """Return the write characteristic after checking both UART characteristics exist."""
-        if not self._read_char:
-            raise CharacteristicMissingError("Read characteristic missing")
+        """Return the write characteristic, raising if it is missing.
+
+        Mirrors the app: the write queue only needs the write characteristic;
+        a missing notify characteristic does not block commands (fire-and-forget).
+        """
         if not self._write_char:
             raise CharacteristicMissingError("Write characteristic missing")
         return self._write_char
@@ -599,17 +601,27 @@ class ChihirosDevice:
         self._unexpected_disconnect.set()
 
     def _resolve_characteristics(self, services: BleakGATTServiceCollection) -> bool:
-        """Resolve UART characteristics.
+        """Resolve characteristics exactly like the official app.
 
-        Tries Nordic UART first (SeaLed / NewBleLed / VIVID III), then falls back
-        to HM-10 (BleLed devices).
+        Mirrors ``BleController::_prepareToTransport`` (verified): matching is
+        strictly by UUID string, never by characteristic properties —
+
+        * write:  ``0000ffe1-…`` (classic) or ``6e400002-…`` (AIX/Nordic UART RX)
+        * notify: ``8ec90003-…`` (classic custom) or ``6e400003-…`` (Nordic UART TX)
+
+        The notify characteristic may legitimately be absent (older Telink
+        generation, e.g. RGB A Plus, where ``ffe1`` itself is full duplex). Like
+        the app, this does not fail: the notify subscription is simply skipped
+        and the client runs fire-and-forget. Returns whether a write
+        characteristic was found; commands cannot be sent without one.
         """
-        self._read_char = services.get_characteristic(UART_TX_CHAR_UUID)
-        self._write_char = services.get_characteristic(UART_RX_CHAR_UUID)
-        if not (self._read_char and self._write_char):
-            self._read_char = services.get_characteristic(HM10_TX_CHAR_UUID)
-            self._write_char = services.get_characteristic(HM10_RX_CHAR_UUID)
-        return bool(self._read_char and self._write_char)
+        self._write_char = services.get_characteristic(HM10_RX_CHAR_UUID) or services.get_characteristic(
+            UART_RX_CHAR_UUID
+        )
+        self._read_char = services.get_characteristic(CUSTOM_NOTIFY_CHAR_UUID) or services.get_characteristic(
+            UART_TX_CHAR_UUID
+        )
+        return self._write_char is not None
 
     def _is_connected(self) -> bool:
         """Return whether an established BLE client exists."""
@@ -657,13 +669,23 @@ class ChihirosDevice:
         if not resolved:
             resolved = self._resolve_characteristics(await client.get_services())
         if not resolved:
-            raise CharacteristicMissingError("UART characteristics missing")
+            raise CharacteristicMissingError("Write characteristic missing")
 
         self._client = client
         self._reset_disconnect_timer()
 
-        self._logger.debug("%s: Subscribe to notifications; RSSI: %s", self.name, self.rssi)
-        await client.start_notify(self._read_char, self._notification_handler)  # type: ignore
+        if self._read_char is not None:
+            self._logger.debug("%s: Subscribe to notifications; RSSI: %s", self.name, self.rssi)
+            await client.start_notify(self._read_char, self._notification_handler)  # type: ignore
+        else:
+            # App behaviour (verified): with no 8ec90003/6e400003 characteristic the
+            # app never subscribes and keeps sending commands fire-and-forget.
+            self._logger.warning(
+                "%s: No notify characteristic (8ec90003/6e400003) found; "
+                "running fire-and-forget without state notifications; RSSI: %s",
+                self.name,
+                self.rssi,
+            )
         await self._send_connection_prelude(client)
 
     async def _abort_connection(self, client: BleakClientWithServiceCache) -> None:

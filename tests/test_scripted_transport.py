@@ -57,6 +57,34 @@ def test_scripted_query_status_round_trip(monkeypatch: pytest.MonkeyPatch) -> No
     asyncio.run(run())
 
 
+def test_scripted_fire_and_forget_without_notify_characteristic(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Commands still work when no app-subscribed notify characteristic exists.
+
+    Telink-generation hardware (e.g. RGB A Plus) exposes no 8ec90003/6e400003
+    endpoint; the client skips the subscription and writes fire-and-forget, so
+    replies are dropped instead of parsed.
+    """
+    transport = ScriptedTransport(notify_characteristics=False)
+    transport.expect(90, 4, [1], respond=[RUNTIME_FRAME])
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
+        with caplog.at_level(logging.WARNING), transport.patch_establish_connection():
+            await device.query_status()
+
+        # Prelude (3) + query status execute without a notify subscription.
+        assert transport.connections == 1
+        assert [frame[5] for frame in transport.writes] == [4, 9, 9, 4]
+        # No handler is registered, so scripted replies are never delivered.
+        assert device.last_runtime_notification is None
+        assert "No notify characteristic" in caplog.text
+
+    asyncio.run(run())
+
+
 def test_scripted_fan_commands_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fan auto mode and manual speed write the expected frames."""
     transport = ScriptedTransport()

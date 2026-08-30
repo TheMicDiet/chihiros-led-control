@@ -38,8 +38,8 @@ from bleak_retry_connector import BleakClientWithServiceCache, BleakError
 
 from . import client as _client_module
 from .const import (
+    CUSTOM_NOTIFY_CHAR_UUID,
     HM10_RX_CHAR_UUID,
-    HM10_TX_CHAR_UUID,
     UART_RX_CHAR_UUID,
     UART_TX_CHAR_UUID,
 )
@@ -62,24 +62,40 @@ class ScriptedBLEDevice:
 
 
 class _ScriptedCharacteristic:
-    """GATT characteristic stand-in exposing a UUID."""
+    """GATT characteristic stand-in exposing a UUID and its properties."""
 
-    def __init__(self, uuid: str) -> None:
-        """Initialize the characteristic with its UUID."""
+    def __init__(self, uuid: str, properties: Sequence[str] = ()) -> None:
+        """Initialize the characteristic with its UUID and property set."""
         self.uuid = uuid
+        self.properties = frozenset(properties)
 
 
 class _ScriptedServices:
-    """GATT service collection answering for Chihiros UART UUIDs (Nordic + HM-10)."""
+    """GATT service collection answering for Chihiros UART UUIDs.
 
-    def __init__(self) -> None:
+    Exposes the Nordic UART pair (NUS) plus the classic BleLed layouts: FFE1
+    write + 8ec90003 notify (newer generation) and a full-duplex FFE1 (notify
+    + write + write-without-response, older Telink generation). With
+    ``include_notify=False`` the notify-only characteristics are omitted,
+    emulating Telink-generation hardware that exposes no notify endpoint the
+    app subscribes to.
+    """
+
+    def __init__(self, *, include_notify: bool = True) -> None:
         """Create the UART TX/RX characteristics."""
         self._characteristics = {
-            UART_TX_CHAR_UUID: _ScriptedCharacteristic(UART_TX_CHAR_UUID),
-            UART_RX_CHAR_UUID: _ScriptedCharacteristic(UART_RX_CHAR_UUID),
-            HM10_TX_CHAR_UUID: _ScriptedCharacteristic(HM10_TX_CHAR_UUID),
-            HM10_RX_CHAR_UUID: _ScriptedCharacteristic(HM10_RX_CHAR_UUID),
+            UART_RX_CHAR_UUID: _ScriptedCharacteristic(UART_RX_CHAR_UUID, ("write", "write-without-response")),
+            HM10_RX_CHAR_UUID: _ScriptedCharacteristic(
+                HM10_RX_CHAR_UUID, ("notify", "write", "write-without-response")
+            ),
         }
+        if include_notify:
+            self._characteristics.update(
+                {
+                    UART_TX_CHAR_UUID: _ScriptedCharacteristic(UART_TX_CHAR_UUID, ("notify", "read")),
+                    CUSTOM_NOTIFY_CHAR_UUID: _ScriptedCharacteristic(CUSTOM_NOTIFY_CHAR_UUID, ("notify",)),
+                }
+            )
 
     def get_characteristic(self, uuid: str) -> _ScriptedCharacteristic | None:
         """Return the characteristic with ``uuid``, if present."""
@@ -170,13 +186,13 @@ class ScriptedResponder:
 class _ScriptedBleClient:
     """In-memory GATT client that records writes and pushes scripted replies."""
 
-    def __init__(self, responder: ScriptedResponder) -> None:
+    def __init__(self, responder: ScriptedResponder, *, include_notify: bool = True) -> None:
         """Initialize the scripted GATT client."""
         self._responder = responder
         self._notification_handler: NotificationHandler | None = None
         self._disconnected_callback: DisconnectedCallback | None = None
         self.is_connected = False
-        self.services = _ScriptedServices()
+        self.services = _ScriptedServices(include_notify=include_notify)
 
     def attach(self, disconnected_callback: DisconnectedCallback) -> None:
         """Reset state for a fresh connection and remember the disconnect callback."""
@@ -229,13 +245,24 @@ class _ScriptedBleClient:
 class ScriptedTransport:
     """Bundle a scripted responder, GATT client, and ``establish_connection`` stand-in."""
 
-    def __init__(self, *, name: str = "DYNA2-test", address: str = "AA:BB:CC:DD:EE:FF") -> None:
-        """Initialize a transport with a fresh responder and client."""
+    def __init__(
+        self,
+        *,
+        name: str = "DYNA2-test",
+        address: str = "AA:BB:CC:DD:EE:FF",
+        notify_characteristics: bool = True,
+    ) -> None:
+        """Initialize a transport with a fresh responder and client.
+
+        ``notify_characteristics=False`` omits the notify endpoints the app
+        subscribes to, emulating Telink-generation devices that force the
+        client into fire-and-forget mode.
+        """
         self.name = name
         self.address = address
         self.responder = ScriptedResponder()
         self.connections = 0
-        self._client = _ScriptedBleClient(self.responder)
+        self._client = _ScriptedBleClient(self.responder, include_notify=notify_characteristics)
 
     @property
     def writes(self) -> list[bytes]:
