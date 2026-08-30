@@ -62,7 +62,7 @@ def test_scripted_fire_and_forget_without_notify_characteristic(
 ) -> None:
     """Commands still work when no app-subscribed notify characteristic exists.
 
-    Telink-generation hardware (e.g. RGB A Plus) exposes no 8ec90003/6e400003
+    Some classic devices (e.g. RGB A Plus) expose no 8ec90003/6e400003
     endpoint; the client skips the subscription and writes fire-and-forget, so
     replies are dropped instead of parsed.
     """

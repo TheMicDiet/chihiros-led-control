@@ -74,11 +74,10 @@ class _ScriptedServices:
     """GATT service collection answering for Chihiros UART UUIDs.
 
     Exposes the Nordic UART pair (NUS) plus the classic BleLed layouts: FFE1
-    write + 8ec90003 notify (newer generation) and a full-duplex FFE1 (notify
-    + write + write-without-response, older Telink generation). With
-    ``include_notify=False`` the notify-only characteristics are omitted,
-    emulating Telink-generation hardware that exposes no notify endpoint the
-    app subscribes to.
+    write + 8ec90003 notify and a full-duplex FFE1 (notify + write +
+    write-without-response) used by devices with no separate notify endpoint.
+    With ``include_notify=False`` the notify-only characteristics are omitted,
+    emulating devices that force the client into fire-and-forget mode.
     """
 
     def __init__(self, *, include_notify: bool = True) -> None:
@@ -255,8 +254,8 @@ class ScriptedTransport:
         """Initialize a transport with a fresh responder and client.
 
         ``notify_characteristics=False`` omits the notify endpoints the app
-        subscribes to, emulating Telink-generation devices that force the
-        client into fire-and-forget mode.
+        subscribes to, emulating devices that force the client into
+        fire-and-forget mode.
         """
         self.name = name
         self.address = address

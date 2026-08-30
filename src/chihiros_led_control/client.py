@@ -609,11 +609,11 @@ class ChihirosDevice:
         * write:  ``0000ffe1-…`` (classic) or ``6e400002-…`` (AIX/Nordic UART RX)
         * notify: ``8ec90003-…`` (classic custom) or ``6e400003-…`` (Nordic UART TX)
 
-        The notify characteristic may legitimately be absent (older Telink
-        generation, e.g. RGB A Plus, where ``ffe1`` itself is full duplex). Like
-        the app, this does not fail: the notify subscription is simply skipped
-        and the client runs fire-and-forget. Returns whether a write
-        characteristic was found; commands cannot be sent without one.
+        The notify characteristic may legitimately be absent (e.g. "RGB A Plus",
+        where ``ffe1`` itself is full duplex). Like the app, this does not fail:
+        the notify subscription is simply skipped and the client runs
+        fire-and-forget. Returns whether a write characteristic was found;
+        commands cannot be sent without one.
         """
         self._write_char = services.get_characteristic(HM10_RX_CHAR_UUID) or services.get_characteristic(
             UART_RX_CHAR_UUID
