@@ -23,6 +23,7 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 - Chihiros Commander 4
 - Chihiros Commander X
 - Chihiros dosing pump (`DYDOSE*`, `DYNDOS`) with first Home Assistant support for manual dosing, daily dose totals, and lifetime pump cycle/ml counters
+- Chihiros magnetic stirrer (`DYMIXR*`) with per-channel stir switches, speed and pre-run numbers, timer schedule programming, and master/slave mirroring of a linked dosing pump
 - [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
 - Chihiros New C
 - Chihiros RGB+APLUS
@@ -161,6 +162,98 @@ data:
   pump: 1
   ml: 2.5
 ```
+
+Magnetic stirrers (`DYMIXR`) expose one stir switch, a speed number (0-100 %,
+device default 40), and a pre-run number (0-999 s) per channel. The stirrer
+sends no status notifications, so all stirrer states are optimistic and
+restored across Home Assistant restarts (matching the vendor app, which also
+only shows its persisted model state). Replace a channel's timer schedule
+with `chihiros.set_stir_schedule`; run times are given in minutes and encoded
+with the vendor app's 0.6 mL/min equivalence, and points must be at least 2
+minutes apart:
+
+```yaml
+service: chihiros.set_stir_schedule
+data:
+  address: "AA:BB:CC:DD:EE:FF"
+  channel: 1
+  points:
+    - start: "08:00"
+      minutes: 30
+    - start: "20:00"
+      minutes: 15
+```
+
+### Master/slave mirroring (pump → stirrer)
+
+The vendor app mirrors a linked stirrer by broadcasting the pump's programming
+frames to every connected device. Home Assistant cannot broadcast, so the
+integration reproduces master/slave explicitly:
+
+- `chihiros.set_dosing_schedule` and `chihiros.set_channel_active` program a
+  dosing pump channel and record the write. While a stirrer is linked, every
+  write is replayed to the stirrer automatically.
+- `chihiros.set_stirrer_master` links a stirrer to a pump (persisted on the
+  stirrer's config entry) and replays the pump's recorded programming on
+  linking; call it without master fields to unlink.
+- `chihiros.mirror_stirrer` replays the linked pump's full programming on
+  demand (the vendor app's "start as slave" sequence, ending with the dose
+  delay frame — which always includes a `dosingSet` frame per channel, using
+  the recorded daily volume or the channel-model default of 0).
+- `chihiros.dose_ml` and `chihiros.reset_dosing_channel` broadcast their
+  frames verbatim to linked stirrers, exactly like the vendor app's BLE
+  broadcast (`tempDosing` and `resetDosingChannel` both apply the same
+  slave-linked broadcast rule; DOSING_CONTROL.md §5). The stirrer firmware
+  interprets a broadcast manual dose as an immediate stir.
+
+#### Stir-before-dose timing
+
+There are **no runtime coordination frames** between a linked pump and
+stirrer — both devices run the same mirrored schedule times on their own
+clocks, and ordering is achieved entirely by offsets programmed up front
+(all binary-verified, DOSING_CONTROL.md §6):
+
+- the stirrer starts stirring `pre_second` seconds **in advance** of each
+  schedule point (the app's "Run time in advance" setting; default 0); its
+  overlap validator (`duplicateJudge`) adds the pre-stir time on top of the
+  stir workload when checking the ≥2-minute point gap;
+- the pump optionally **waits** before dosing each supplement when its
+  dose-delay flag is set (app text: "Dose will wait for 30 seconds before
+  dosing each supplement"); the app mirrors this flag onto the stirrer when
+  linking (§6.4).
+
+So stirring precedes dosing **only if** the stirrer's pre-run is set (> 0)
+and/or the pump's dose delay is enabled — with both at their defaults, both
+devices act at the same scheduled instant. From Home Assistant:
+
+- set the stirrer's `Stir channel N pre-run` number (or the pre-run value in
+  any automation), and
+- set the pump's flag with `chihiros.set_dose_delay` — it is recorded and
+  mirrored to the linked stirrer, and `chihiros.mirror_stirrer` replays the
+  recorded flag.
+
+```yaml
+# Link the stirrer to the pump and mirror the pump's current programming:
+service: chihiros.set_stirrer_master
+data:
+  address: "AA:BB:CC:DD:EE:FF"   # stirrer
+  master_address: "11:22:33:44:55:66"
+
+# Program the master — the stirrer follows automatically:
+service: chihiros.set_dosing_schedule
+data:
+  address: "11:22:33:44:55:66"   # pump
+  channel: 1
+  mode: timer
+  points:
+    - start: "08:00"
+      ml: 2.5
+    - start: "20:00"
+      ml: 1.0
+```
+
+The link is the same persisted-only bookkeeping the vendor app uses (no BLE
+pairing frame exists); the app and Home Assistant links are independent.
 
 ## Requirements
 - a device with bluetooth LE support for sending the commands to the LED

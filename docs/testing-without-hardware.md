@@ -16,6 +16,8 @@ The roster currently covers:
 - `DYVVD3` WRGB VIVID III (fan manual speed, temperature auto mode, start/stop
   temperature numbers, RPM/temperature sensors)
 - `DYNW60` WRGB II, `DYWPRO60` WRGB II Pro, `DYNA2` A II
+- `DYMIXR` magnetic stirrer (per-channel stir switches, speed/pre-run numbers,
+  timer schedules)
 - The 2.8.59-aligned families: `DYA` A Series, `DYC` New C, `DYARGB`
   RGB+APLUS, `DYREE` RGB VIVID, `DYRGBV` RGB VIVID II, `DYSEA` SEA_LED,
   `DYONE` Commander X, `DYTWO` X300, `DYNLED` Commander 4

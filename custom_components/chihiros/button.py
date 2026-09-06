@@ -48,5 +48,5 @@ class ChihirosDosingButton(ButtonEntity):
     async def async_press(self) -> None:
         """Trigger a manual dose using this pump's configured volume."""
         await async_trigger_dose_ml(
-            self._chihiros_data, self._pump_idx, self._chihiros_data.dosing_volumes[self._pump_idx]
+            self.hass, self._chihiros_data, self._pump_idx, self._chihiros_data.dosing_volumes[self._pump_idx]
         )

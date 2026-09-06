@@ -11,6 +11,7 @@ from datetime import datetime
 from .dosing import normalize_pump_count
 from .vendor.chihiros_led_control.models import (
     DOSING_PUMP,
+    MAG_STIRRER,
     RGB_CHANNELS,
     WHITE_CHANNELS,
     WRGB_CHANNELS,
@@ -123,6 +124,11 @@ FAKE_DEVICES = (
             sea_led_family=True,
         ),
     ),
+    FakeChihirosDeviceInfo(
+        address=f"{FAKE_ADDRESS_PREFIX}:00:00:0F",
+        name="DYMIXR-fake",
+        model=MAG_STIRRER,
+    ),
 )
 FAKE_DEVICES_BY_ADDRESS = {device.address: device for device in FAKE_DEVICES}
 
@@ -174,6 +180,15 @@ class FakeChihirosDevice:
         self.last_schedule_snapshot_notification: ScheduleSnapshotNotification | None = None
         self.last_dosing_totals_notification: DosingTotalsNotification | None = None
         self.last_dosing_daily_notification: DosingDailyNotification | None = None
+        # Magnetic-stirrer recording state (channel index keyed).
+        self.stir_running: dict[int, bool] = {}
+        self.stir_speeds: dict[int, int] = {}
+        self.stir_pre_seconds: dict[int, int] = {}
+        self.stir_schedules: list[tuple[int, tuple[tuple[int, int, float], ...], int, bool]] = []
+        # Pump programming writes (set_channel_active/apply_dosing_settings/set_schedule/set_dose_delay).
+        self.dosing_programming_calls: list[dict[str, object]] = []
+        # Verbatim broadcast frames received via send_frame (master/slave replay).
+        self.broadcast_frames: list[bytes] = []
 
     @property
     def address(self) -> str:
@@ -355,7 +370,7 @@ class FakeChihirosDevice:
         await asyncio.sleep(0)
         self._auto_curve_points.extend(points)
 
-    async def dose_ml(self, pump_idx: int, volume_ml: float) -> None:
+    async def dose_ml(self, pump_idx: int, volume_ml: float) -> bytes:
         """Record a fake manual dose for local dosing pump testing."""
         await asyncio.sleep(0)
         self._dosed_ml[pump_idx] = round(self._dosed_ml[pump_idx] + volume_ml, 1)
@@ -363,6 +378,109 @@ class FakeChihirosDevice:
         self.last_dosing_daily_notification = self._dosing_daily_notification()
         self._notify_callbacks(self.last_dosing_totals_notification)
         self._notify_callbacks(self.last_dosing_daily_notification)
+        return b""
+
+    async def reset_channel(self, channel: int) -> bytes:
+        """Record a fake channel reset."""
+        await asyncio.sleep(0)
+        self.dosing_programming_calls.append({"kind": "reset", "channel": channel})
+        return b""
+
+    async def send_frame(self, frame: bytes | bytearray) -> None:
+        """Record a verbatim broadcast frame (master/slave replay)."""
+        await asyncio.sleep(0)
+        self.broadcast_frames.append(bytes(frame))
+
+    async def stir(self, channel: int, on: bool, *, seconds: int | None = None) -> None:
+        """Record a fake manual stir start/stop."""
+        await asyncio.sleep(0)
+        del seconds
+        self.stir_running[channel] = on
+
+    async def set_pre_second(self, channel: int, seconds: int, speed: int = 40) -> None:
+        """Record fake stir speed and pre-stir values."""
+        await asyncio.sleep(0)
+        self.stir_speeds[channel] = speed
+        self.stir_pre_seconds[channel] = seconds
+
+    async def set_stir_schedule(
+        self,
+        channel: int,
+        points: Sequence[object],
+        *,
+        frequency: int = 127,
+        active: bool = True,
+        is_first_setting: bool = True,
+    ) -> None:
+        """Record a fake timer-mode schedule write."""
+        await asyncio.sleep(0)
+        del is_first_setting
+        records = tuple(
+            (point.start_hour, point.start_minute, point.volume_ml)  # type: ignore[attr-defined]
+            for point in points
+        )
+        self.stir_schedules.append((channel, records, frequency, active))
+
+    async def set_channel_active(self, channel: int, *, active: bool = True, compensate: bool = False) -> None:
+        """Record a fake channel active/compensation write."""
+        await asyncio.sleep(0)
+        self.dosing_programming_calls.append(
+            {"kind": "active", "channel": channel, "active": active, "compensate": compensate}
+        )
+
+    async def apply_dosing_settings(
+        self,
+        channel: int,
+        dose_per_day_ml: float | None,
+        frequency: int = 127,
+        *,
+        is_first_setting: bool = True,
+    ) -> None:
+        """Record a fake dosingSet write."""
+        await asyncio.sleep(0)
+        self.dosing_programming_calls.append(
+            {"kind": "daily", "channel": channel, "ml": dose_per_day_ml, "frequency": frequency}
+        )
+
+    async def set_schedule(self, channel: int, mode: object, points: Sequence[object]) -> None:
+        """Record a fake dosingWorkNew write."""
+        await asyncio.sleep(0)
+        self.dosing_programming_calls.append(
+            {"kind": "schedule", "channel": channel, "mode": getattr(mode, "name", str(mode)), "points": tuple(points)}
+        )
+
+    async def set_dose_delay(self, enabled: bool) -> None:
+        """Record a fake dose-delay write."""
+        await asyncio.sleep(0)
+        self.dosing_programming_calls.append({"kind": "delay", "enabled": enabled})
+
+    async def program_channel(
+        self,
+        channel: int,
+        *,
+        active: bool,
+        compensate: bool = False,
+        dose_per_day_ml: float | None = None,
+        frequency: int = 127,
+        is_first_setting: bool = True,
+        mode: object = None,
+        points: Sequence[object] = (),
+    ) -> None:
+        """Record a fake single-transaction channel programming."""
+        await asyncio.sleep(0)
+        self.dosing_programming_calls.append(
+            {
+                "kind": "program",
+                "channel": channel,
+                "active": active,
+                "compensate": compensate,
+                "ml": dose_per_day_ml,
+                "frequency": frequency,
+                "first_setting": is_first_setting,
+                "mode": getattr(mode, "name", None),
+                "points": tuple(points),
+            }
+        )
 
     def _dosing_totals_notification(self) -> DosingTotalsNotification:
         """Return the fake pump's lifetime totals as a device notification."""

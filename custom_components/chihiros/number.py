@@ -19,6 +19,7 @@ from .const import DOMAIN
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData
 from .runtime import ChihirosClient
+from .stirrer import ChihirosStirPreRunNumber, ChihirosStirSpeedNumber, is_stirrer_capable
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -55,8 +56,24 @@ async def async_setup_entry(
             )
         )
 
+    entities.extend(_stirrer_numbers(chihiros_data))
+
     if entities:
         async_add_entities(entities)
+
+
+def _stirrer_numbers(chihiros_data: ChihirosData) -> list[NumberEntity]:
+    """Build the speed and pre-run numbers for a magnetic stirrer."""
+    if not (is_stirrer_capable(chihiros_data.device) and chihiros_data.stirrer_states):
+        return []
+    return [
+        entity
+        for channel in range(len(chihiros_data.stirrer_states))
+        for entity in (
+            ChihirosStirSpeedNumber(chihiros_data.device, chihiros_data, channel),
+            ChihirosStirPreRunNumber(chihiros_data.device, chihiros_data, channel),
+        )
+    ]
 
 
 class ChihirosDosingVolumeNumber(NumberEntity, RestoreEntity):

@@ -17,6 +17,7 @@ from .vendor.chihiros_led_control.models import DOSING_PUMP
 
 STORAGE_KEY = f"{DOMAIN}_dosing_daily_totals"
 STORAGE_VERSION = 1
+PROGRAMMING_STORAGE_KEY = f"{DOMAIN}_dosing_programming"
 CONF_PUMP_COUNT = "pump_count"
 PUMP_COUNT = 4
 PUMP_COUNT_OPTIONS = (2, 4, 8)
@@ -145,6 +146,79 @@ class DosingDailyTotals:
 def is_dosing_capable(device: object) -> bool:
     """Return whether a runtime client or model supports manual dosing."""
     return getattr(device, "model_name", getattr(device, "name", None)) == DOSING_PUMP.name
+
+
+@dataclass
+class DosingProgrammingTracker:
+    """Persisted record of one pump's channel programming.
+
+    Home Assistant cannot read schedules back from the device, so every
+    programming write made through Home Assistant is recorded here. The
+    master/slave mirror uses these records to replay a pump's channels onto a
+    linked stirrer (the app's ``startAsSlave``, DOSING_CONTROL.md §6.4).
+    Records are partial per channel and merged on update, so an
+    active-flag-only write keeps the stored schedule.
+
+    ``device_settings`` holds device-level flags (currently ``dose_delay``)
+    that the app mirrors onto the stirrer after the channel loop (§6.4).
+    """
+
+    hass: HomeAssistant
+    address: str
+    _store: Store[dict[str, Any]] = field(init=False)
+    _channels: dict[int, dict[str, Any]] = field(init=False, default_factory=dict)
+    _device: dict[str, Any] = field(init=False, default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Create the per-address store."""
+        self._store = Store(
+            self.hass,
+            STORAGE_VERSION,
+            f"{PROGRAMMING_STORAGE_KEY}_{self.address.lower().replace(':', '_')}",
+        )
+
+    async def async_load(self) -> None:
+        """Load recorded channel programming from Home Assistant storage."""
+        stored = await self._store.async_load()
+        if isinstance(stored, dict):
+            self._channels = {int(channel): record for channel, record in stored.get("channels", {}).items()}
+            device = stored.get("device")
+            if isinstance(device, dict):
+                self._device = device
+
+    @property
+    def channels(self) -> dict[int, dict[str, Any]]:
+        """Return a copy of the recorded per-channel programming."""
+        return {channel: dict(record) for channel, record in self._channels.items()}
+
+    @property
+    def device_settings(self) -> dict[str, Any]:
+        """Return a copy of the recorded device-level settings."""
+        return dict(self._device)
+
+    async def async_record(self, channel: int, setup: dict[str, Any]) -> None:
+        """Merge one channel's programming write into the record and persist it."""
+        self._channels[channel] = {**self._channels.get(channel, {}), **setup}
+        await self._async_save()
+
+    async def async_record_device(self, settings: dict[str, Any]) -> None:
+        """Merge device-level settings into the record and persist them."""
+        self._device = {**self._device, **settings}
+        await self._async_save()
+
+    async def async_clear_channel(self, channel: int) -> None:
+        """Drop one channel's record (app's ``resetChannel``) and persist."""
+        self._channels.pop(channel, None)
+        await self._async_save()
+
+    async def _async_save(self) -> None:
+        """Persist channels and device settings."""
+        await self._store.async_save(
+            {
+                "channels": {str(channel): record for channel, record in self._channels.items()},
+                "device": self._device,
+            }
+        )
 
 
 def normalize_pump_count(value: object) -> int:

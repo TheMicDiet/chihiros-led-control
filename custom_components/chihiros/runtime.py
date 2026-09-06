@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from bleak.backends.device import BLEDevice
 from homeassistant.components import bluetooth
@@ -33,8 +33,38 @@ NotificationCallback = Callable[[ParsedNotification], None]
 class DosingChihirosClient(Protocol):
     """Home Assistant-facing dosing pump client surface."""
 
-    async def dose_ml(self, pump_idx: int, volume_ml: float) -> None:
-        """Dose a volume in mL on a dosing pump channel."""
+    async def dose_ml(self, pump_idx: int, volume_ml: float) -> bytes:
+        """Dose a volume in mL on a dosing pump channel and return the frame."""
+
+
+class StirrerChihirosClient(Protocol):
+    """Home Assistant-facing magnetic stirrer client surface."""
+
+    async def stir(self, channel: int, on: bool, *, seconds: int | None = None) -> None:
+        """Manually start/stop one stir channel."""
+
+    async def set_pre_second(self, channel: int, seconds: int, speed: int = 40) -> None:
+        """Set a channel's pre-stir time and stir speed."""
+
+    async def set_stir_schedule(
+        self,
+        channel: int,
+        points: Sequence[object],
+        *,
+        frequency: int = 127,
+        active: bool = True,
+        is_first_setting: bool = True,
+    ) -> None:
+        """Replace one channel's timer-mode schedule."""
+
+    async def program_channel(self, channel: int, **kwargs: Any) -> None:
+        """Program one channel in a single transaction (mirror replay)."""
+
+    async def send_frame(self, frame: bytes | bytearray) -> None:
+        """Send a pre-built frame verbatim (broadcast replay)."""
+
+    async def set_dose_delay(self, enabled: bool) -> None:
+        """Set the dose-delay flag mirrored from the master."""
 
 
 class ChihirosClient(Protocol):

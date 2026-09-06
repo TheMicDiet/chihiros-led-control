@@ -72,6 +72,7 @@ def test_manifest_bluetooth_matchers_follow_app_prefix_discovery() -> None:
         "DYDOSE",
         "DYTDOS",
         "DYNDOS",
+        "DYMIXR",
     ]
     assert prefixes == expected
     missing = [
@@ -89,7 +90,7 @@ def test_manifest_bluetooth_matchers_exclude_unsupported_families() -> None:
     Three prefixes are unavoidably matched because the supported single-letter
     family codes `DYA` and `DYC` require the `DYA*` / `DYC*` matchers:
     ``DYAPRCO2`` (CO2), ``DYCHIL`` (chiller) and ``DYCO2``. Every other known
-    unsupported family (fans, heaters, gateways, stirrers, outlets, doctors,
+    unsupported family (fans, heaters, gateways, outlets, doctors,
     unsupported lights) must not be matched.
     """
     prefixes = _manifest_local_name_prefixes()
@@ -102,7 +103,6 @@ def test_manifest_bluetooth_matchers_exclude_unsupported_families() -> None:
         "DYFAN",  # cooling fan
         "DYGATE",  # gateway
         "DYHET",  # heater
-        "DYMIXR",  # magnetic stirrer
         "DYPWR",  # power outlet
         "DYPWSK",  # power socket
         "DYNDOC",  # doctor

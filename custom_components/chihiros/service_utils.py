@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from typing import Any
 
 import voluptuous as vol
@@ -43,3 +44,19 @@ def resolve_service_device(hass: HomeAssistant, data: dict[str, Any]) -> Chihiro
     if len(entries) == 1:
         return next(iter(entries.values()))
     raise HomeAssistantError("Multiple Chihiros devices are configured; provide entry_id or address")
+
+
+def parse_start_minutes(value: str | datetime.time) -> int:
+    """Parse an ``HH:MM``/``HH:MM:SS`` string or time into minutes since midnight."""
+    if isinstance(value, datetime.time):
+        return value.hour * 60 + value.minute
+    parts = str(value).strip().split(":")
+    if len(parts) not in (2, 3):
+        raise vol.Invalid(f"Invalid start time {value!r}, expected HH:MM")
+    try:
+        hour, minute = int(parts[0]), int(parts[1])
+    except ValueError as ex:
+        raise vol.Invalid(f"Invalid start time {value!r}, expected HH:MM") from ex
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise vol.Invalid(f"Invalid start time {value!r}")
+    return hour * 60 + minute

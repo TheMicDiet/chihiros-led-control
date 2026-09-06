@@ -203,6 +203,26 @@ def parse_notification(
     return None
 
 
+def _parse_legacy_dosing_reply(
+    data: bytes | bytearray,
+    mode: int,
+) -> ParsedNotification | None:
+    """Parse 0x5B dose-counter replies from dosing pumps.
+
+    Some captured DYDOSE firmware (fw ``07.25.18``) answers the
+    ``(0xA5, 4, [4])`` / ``([5])`` pulls with ``0x5B`` uplink frames — modes
+    ``0x1E`` (lifetime) and ``0x22`` (today) — instead of the ``0xB6``
+    ``0x3C``/``0x44`` notifications. Layout and 0.1 mL scaling are identical
+    to the ``0xB6`` frames (DOSING_CONTROL.md §7.3), so the same decoding
+    applies; the trailing checksum byte sits outside the channel region.
+    """
+    if mode == 0x1E and len(data) >= 8:
+        return DosingTotalsNotification(_parse_dosing_channel_values(data), bytes(data))
+    if mode == 0x22 and len(data) >= 8:
+        return DosingDailyNotification(_parse_dosing_channel_values(data), bytes(data))
+    return None
+
+
 def _parse_legacy_notification(
     data: bytes | bytearray,
     mode: int,
@@ -214,6 +234,8 @@ def _parse_legacy_notification(
         return _parse_runtime_notification(data, firmware_version)
     if mode == 0x0B:
         return _parse_fan_status_notification(data, firmware_version)
+    if mode in (0x1E, 0x22):
+        return _parse_legacy_dosing_reply(data, mode)
     if mode == 0xFE:
         return _parse_schedule_snapshot(data, firmware_version, color_channels)
     return None
