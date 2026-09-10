@@ -152,7 +152,8 @@ the following locally tracked sensors per pump channel:
 The lifetime `total ml` and `total cycles` sensors are `total_increasing`, so they
 can be fed directly into the Home Assistant `utility_meter` to derive daily,
 weekly, monthly, or yearly consumption sensors. The first setup asks
-whether the pump has two or four channels. Manual doses can also be triggered
+how many channels the pump has (2, 4, or 8; changeable later from the
+integration's Configure dialog). Manual doses can also be triggered
 from automations with `chihiros.dose_ml`:
 
 ```yaml
@@ -163,26 +164,58 @@ data:
   ml: 2.5
 ```
 
-Magnetic stirrers (`DYMIXR`) expose one stir switch, a speed number (0-100 %,
-device default 40), and a pre-run number (0-999 s) per channel. The stirrer
-sends no status notifications, so all stirrer states are optimistic and
-restored across Home Assistant restarts (matching the vendor app, which also
-only shows its persisted model state). Replace a channel's timer schedule
-with `chihiros.set_stir_schedule`; run times are given in minutes and encoded
-with the vendor app's 0.6 mL/min equivalence, and points must be at least 2
-minutes apart:
+Magnetic stirrers (`DYMIXR`) expose one stir switch and a speed number
+(0-100 %, device default 40) per channel; the pre-run number (0-999 s) is
+created **disabled by default** because it only takes effect while the
+stirrer runs as a slave of a linked dosing pump. The first setup asks how
+many stir channels to expose (2, 4, or all 8; changeable later from the
+integration's Configure dialog), so unused channels do not clutter the
+entity list. The stirrer sends no status notifications, so all
+stirrer states are optimistic and restored across Home Assistant restarts
+(matching the vendor app, which also only shows its persisted model state).
+
+> **Warning:** because the device never reports back, the stir switch state
+> can diverge from reality — if a schedule point fires or the vendor app
+> starts a stir, the Home Assistant switch still shows its last local state.
+> Do not build automations on the switch *state*; use it (or
+> `chihiros.stir_for`) to *drive* the channel instead.
+
+Run a channel for a bounded time with `chihiros.stir_for` (the stir switch
+runs until switched off; the device supports minute+second resolution, up to
+255 min 59 s):
+
+```yaml
+service: chihiros.stir_for
+data:
+  device_id: <device id>
+  channel: 1
+  duration: "00:05:00"   # or seconds: 300
+```
+
+Replace a channel's timer schedule with `chihiros.set_stir_schedule`; run
+times are given in minutes and encoded with the vendor app's 0.6 mL/min
+equivalence, and points must be at least 2 minutes apart. The repetition is
+picked with a `weekdays` selector (`everyday`, `monday`, …) instead of the
+protocol's raw bitmask:
 
 ```yaml
 service: chihiros.set_stir_schedule
 data:
-  address: "AA:BB:CC:DD:EE:FF"
+  device_id: <device id>
   channel: 1
+  weekdays:
+    - everyday
   points:
     - start: "08:00"
       minutes: 30
     - start: "20:00"
       minutes: 15
 ```
+
+All services accept a Home Assistant `device` target (`device_id`) in
+addition to the raw `entry_id`/`address` fields, so they can be picked from
+the UI device selector. The "first setting of the day" flag is derived from
+the integration's programming record and no longer needs to be passed.
 
 ### Master/slave mirroring (pump → stirrer)
 

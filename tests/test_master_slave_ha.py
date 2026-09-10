@@ -14,6 +14,7 @@ try:
     from homeassistant.const import CONF_ADDRESS
     from homeassistant.core import HomeAssistant
     from homeassistant.exceptions import HomeAssistantError
+    from homeassistant.helpers import device_registry as dr
     from pytest_homeassistant_custom_component.common import MockConfigEntry
 
     import custom_components.chihiros as chihiros_integration
@@ -167,6 +168,8 @@ class _TrackingStirrer(_TrackingPump):
 async def _setup_pair(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    pump_count: int | None = None,
 ) -> tuple[_TrackingPump, _TrackingStirrer]:
     """Set up one dosing pump and one stirrer config entry."""
     pump = _TrackingPump()
@@ -183,7 +186,10 @@ async def _setup_pair(
     monkeypatch.setattr(ChihirosDataUpdateCoordinator, "async_start_bluetooth", lambda _self: None)
 
     for address, title in ((PUMP_ADDRESS, "DYDOSE-test"), (STIRRER_ADDRESS, "DYMIXR-test")):
-        entry = MockConfigEntry(domain=DOMAIN, title=title, unique_id=address, data={CONF_ADDRESS: address})
+        data: dict[str, Any] = {CONF_ADDRESS: address}
+        if pump_count is not None and address == PUMP_ADDRESS:
+            data["pump_count"] = pump_count
+        entry = MockConfigEntry(domain=DOMAIN, title=title, unique_id=address, data=data)
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
     await asyncio.sleep(0)
@@ -592,3 +598,71 @@ async def test_full_mirror_sends_dosing_set_always(hass: HomeAssistant, monkeypa
     # dosingSet always present on the full replay, volume defaults to 0, first=true.
     assert call["ml"] == 0.0
     assert call["first_setting"] is True
+
+
+async def test_set_stirrer_master_accepts_device_id(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The master pump can be selected with the Home Assistant device selector."""
+    _pump, _stirrer = await _setup_pair(hass, monkeypatch)
+    await hass.async_block_till_done()
+    pump_device = dr.async_get(hass).async_get_device(connections={(dr.CONNECTION_BLUETOOTH, PUMP_ADDRESS)})
+    assert pump_device is not None
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_STIRRER_MASTER,
+        {ATTR_ADDRESS: STIRRER_ADDRESS, "master_device_id": pump_device.id, "mirror": False},
+        blocking=True,
+    )
+    entry = next(e for e in hass.config_entries.async_entries(DOMAIN) if e.unique_id == STIRRER_ADDRESS)
+    assert entry.data[ATTR_MASTER_ADDRESS] == PUMP_ADDRESS
+
+
+async def test_set_dosing_schedule_rejects_unconfigured_channel(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 2-pump entry rejects programming channel 3 before touching the device."""
+    pump, _stirrer = await _setup_pair(hass, monkeypatch, pump_count=2)
+    await hass.async_block_till_done()
+
+    with pytest.raises(HomeAssistantError, match="has 2 pump channels configured"):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_SET_DOSING_SCHEDULE,
+            {
+                ATTR_ADDRESS: PUMP_ADDRESS,
+                ATTR_CHANNEL: 3,
+                ATTR_MODE: "timer",
+                ATTR_POINTS: [{"start": "08:00", "ml": 1.0}],
+            },
+            blocking=True,
+        )
+    assert pump.program_calls == []
+
+
+async def test_schedule_rejects_weekdays_and_frequency(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``weekdays`` and the raw ``frequency`` bitmask are mutually exclusive."""
+    pump, _stirrer = await _setup_pair(hass, monkeypatch)
+    await hass.async_block_till_done()
+    base = {
+        ATTR_ADDRESS: PUMP_ADDRESS,
+        ATTR_CHANNEL: 1,
+        ATTR_MODE: "timer",
+        ATTR_POINTS: [{"start": "08:00", "ml": 1.0}],
+    }
+
+    with pytest.raises(Exception, match="exclusion"):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_SET_DOSING_SCHEDULE,
+            {**base, "weekdays": ["monday"], "frequency": 1},
+            blocking=True,
+        )
+
+    # Supplying only the raw bitmask still works for advanced/legacy callers.
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_DOSING_SCHEDULE,
+        {**base, "frequency": 4},
+        blocking=True,
+    )
+    assert pump.program_calls[-1]["frequency"] == 4

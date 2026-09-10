@@ -29,12 +29,16 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN
-from .dosing import is_dosing_capable
+from .dosing import derive_first_setting, is_dosing_capable
 from .models import ChihirosData
 from .service_utils import (
     ATTR_ADDRESS,
+    ATTR_DEVICE_ID,
     ATTR_ENTRY_ID,
+    ATTR_WEEKDAYS,
     DEVICE_SELECTOR_SCHEMA,
+    WEEKDAY_VALUES,
+    frequency_from_service_data,
     parse_start_minutes,
     resolve_service_device,
 )
@@ -61,6 +65,7 @@ SERVICE_SET_STIRRER_MASTER = "set_stirrer_master"
 SERVICE_MIRROR_STIRRER = "mirror_stirrer"
 
 ATTR_ENABLED = "enabled"
+ATTR_MASTER_DEVICE_ID = "master_device_id"
 
 ATTR_MODE = "mode"
 ATTR_POINTS = "points"
@@ -90,9 +95,12 @@ SET_DOSING_SCHEDULE_SCHEMA = vol.Schema(
         vol.Required(ATTR_CHANNEL): vol.All(vol.Coerce(int), vol.Range(min=1, max=8)),
         vol.Required(ATTR_MODE): vol.All(vol.Lower, vol.In(DOSE_MODES)),
         vol.Required(ATTR_POINTS): vol.All([dict], vol.Length(min=1), [DOSE_POINT_SCHEMA]),
-        vol.Optional(ATTR_FREQUENCY, default=127): vol.All(vol.Coerce(int), vol.Range(min=0, max=255)),
+        vol.Exclusive(ATTR_WEEKDAYS, "repeat"): vol.All(list, [vol.In(WEEKDAY_VALUES)]),
+        vol.Exclusive(ATTR_FREQUENCY, "repeat"): vol.All(vol.Coerce(int), vol.Range(min=0, max=255)),
         vol.Optional(ATTR_ACTIVE, default=True): vol.Boolean(),
-        vol.Optional(ATTR_FIRST_SETTING, default=True): vol.Boolean(),
+        # Derived from the programming record when omitted (first write of the
+        # day for the channel); exposed for advanced/backwards-compatible use.
+        vol.Optional(ATTR_FIRST_SETTING): vol.Boolean(),
         vol.Optional(ATTR_DAILY_ML): vol.All(vol.Coerce(float), vol.Range(min=0, max=DOSE_VOLUME_MAX_ML)),
     }
 )
@@ -121,6 +129,7 @@ RESET_DOSING_CHANNEL_SCHEMA = vol.Schema(
 )
 
 MASTER_SELECTOR_SCHEMA = {
+    vol.Exclusive(ATTR_MASTER_DEVICE_ID, "master"): vol.All(str, vol.Length(min=1)),
     vol.Exclusive(ATTR_MASTER_ENTRY_ID, "master"): vol.All(str, vol.Length(min=1)),
     vol.Exclusive(ATTR_MASTER_ADDRESS, "master"): vol.All(str, vol.Length(min=1)),
 }
@@ -231,7 +240,9 @@ def _linked_stirrers(hass: HomeAssistant, master_address: str) -> list[ChihirosD
 
 def _resolve_master(hass: HomeAssistant, call_data: dict[str, Any]) -> ChihirosData | None:
     """Resolve the master pump from the service data, or None for unlink."""
-    if call_data.get(ATTR_MASTER_ENTRY_ID):
+    if call_data.get(ATTR_MASTER_DEVICE_ID):
+        selector = {ATTR_DEVICE_ID: call_data[ATTR_MASTER_DEVICE_ID]}
+    elif call_data.get(ATTR_MASTER_ENTRY_ID):
         selector = {ATTR_ENTRY_ID: call_data[ATTR_MASTER_ENTRY_ID]}
     elif call_data.get(ATTR_MASTER_ADDRESS):
         selector = {ATTR_ADDRESS: call_data[ATTR_MASTER_ADDRESS]}
@@ -245,8 +256,16 @@ def _resolve_master(hass: HomeAssistant, call_data: dict[str, Any]) -> ChihirosD
 
 def _ensure_programmable(data: ChihirosData) -> None:
     """Raise unless the target is a dosing pump with a programming record."""
-    if data.dosing_programming is None:
+    if not is_dosing_capable(data.device) or data.dosing_programming is None:
         raise HomeAssistantError(f"{data.device.name} is not a dosing pump")
+
+
+def _validate_pump_channel(data: ChihirosData, channel: int) -> None:
+    """Reject channels the configured pump does not expose."""
+    if data.dosing_totals is None:
+        return
+    if channel >= data.dosing_totals.pump_count:
+        raise HomeAssistantError(f"{data.device.name} has {data.dosing_totals.pump_count} pump channels configured")
 
 
 async def _apply_channel_setup(
@@ -376,6 +395,7 @@ async def _async_reset_dosing_channel(hass: HomeAssistant, call: ServiceCall) ->
     data = resolve_service_device(hass, call.data)
     _ensure_programmable(data)
     channel = int(call.data[ATTR_CHANNEL]) - 1
+    _validate_pump_channel(data, channel)
     frame = await data.device.reset_channel(channel)
     await data.dosing_programming.async_clear_channel(channel)
     await async_broadcast_frame_to_linked_stirrers(hass, data.device.address, frame, "channel reset")
@@ -389,8 +409,14 @@ def async_register_pump_services(hass: HomeAssistant) -> None:
         data = resolve_service_device(hass, call.data)
         _ensure_programmable(data)
         channel = int(call.data[ATTR_CHANNEL]) - 1
+        _validate_pump_channel(data, channel)
         mode = call.data[ATTR_MODE]
         points = build_work_points(mode, call.data[ATTR_POINTS])
+        frequency = frequency_from_service_data(call.data)
+        # The device resets its daily counters on the first dosingSet of the
+        # day for a channel; derive the flag from the programming record when
+        # the caller does not pass it explicitly.
+        first_setting = derive_first_setting(data.dosing_programming, channel, call.data.get(ATTR_FIRST_SETTING))
         # One transaction: the pump accepts the whole sequence or none of it,
         # so the recorded setup can never diverge from the hardware.
         await data.device.program_channel(
@@ -398,18 +424,18 @@ def async_register_pump_services(hass: HomeAssistant) -> None:
             active=bool(call.data[ATTR_ACTIVE]),
             compensate=False,
             dose_per_day_ml=call.data.get(ATTR_DAILY_ML),
-            frequency=int(call.data[ATTR_FREQUENCY]),
-            is_first_setting=bool(call.data[ATTR_FIRST_SETTING]),
+            frequency=frequency,
+            is_first_setting=first_setting,
             mode=DosingMode[mode.upper()],
             points=points,
         )
         setup: dict[str, Any] = {
             "active": bool(call.data[ATTR_ACTIVE]),
             "compensate": False,
-            "frequency": int(call.data[ATTR_FREQUENCY]),
+            "frequency": frequency,
             "mode": mode,
             "points": serialize_points(points),
-            "first_setting": bool(call.data[ATTR_FIRST_SETTING]),
+            "first_setting": first_setting,
         }
         if call.data.get(ATTR_DAILY_ML) is not None:
             setup["dose_per_day_ml"] = float(call.data[ATTR_DAILY_ML])
@@ -421,9 +447,13 @@ def async_register_pump_services(hass: HomeAssistant) -> None:
         data = resolve_service_device(hass, call.data)
         _ensure_programmable(data)
         channel = int(call.data[ATTR_CHANNEL]) - 1
+        _validate_pump_channel(data, channel)
         setup = {"active": bool(call.data[ATTR_ENABLE]), "compensate": bool(call.data[ATTR_COMPENSATE])}
         await data.device.set_channel_active(channel, active=setup["active"], compensate=setup["compensate"])
-        await data.dosing_programming.async_record(channel, setup)
+        # State-only write: it does not send dosingSet, so it must not count
+        # as the channel's "first setting of the day" for later schedule
+        # writes — keep any existing programming stamp.
+        await data.dosing_programming.async_record(channel, setup, stamp_programmed=False)
         await _mirror_to_linked_stirrers(hass, data.device.address, channel, setup)
 
     hass.services.async_register(

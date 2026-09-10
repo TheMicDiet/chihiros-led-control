@@ -14,6 +14,7 @@ try:
     from homeassistant.const import CONF_ADDRESS
     from homeassistant.core import HomeAssistant
     from homeassistant.exceptions import HomeAssistantError
+    from homeassistant.helpers import device_registry as dr
     from homeassistant.helpers import entity_registry as er
     from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -23,6 +24,7 @@ try:
         ATTR_CHANNEL,
         ATTR_STIR_POINTS,
         SERVICE_SET_STIR_SCHEDULE,
+        SERVICE_STIR_FOR,
         _validate_stir_points,
     )
     from custom_components.chihiros.const import DOMAIN
@@ -88,7 +90,7 @@ class _TrackingStirrer:
         pass
 
     async def stir(self, channel: int, on: bool, *, seconds: int | None = None) -> None:
-        self.stir_calls.append((channel, on))
+        self.stir_calls.append((channel, on, seconds))
 
     async def set_pre_second(self, channel: int, seconds: int, speed: int = 40) -> None:
         self.pre_second_calls.append((channel, seconds, speed))
@@ -100,6 +102,8 @@ class _TrackingStirrer:
 async def _setup_stirrer(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    channel_count: int | None = None,
 ) -> tuple[ConfigEntry, _TrackingStirrer]:
     """Set up the integration against a mock stirrer client."""
     client = _TrackingStirrer()
@@ -113,11 +117,14 @@ async def _setup_stirrer(
 
     monkeypatch.setattr(ChihirosDataUpdateCoordinator, "async_start_bluetooth", lambda _self: None)
 
+    data: dict[str, Any] = {CONF_ADDRESS: TEST_ADDRESS}
+    if channel_count is not None:
+        data["stirrer_channel_count"] = channel_count
     entry = MockConfigEntry(
         domain=DOMAIN,
         title=client.name,
         unique_id=TEST_ADDRESS,
-        data={CONF_ADDRESS: TEST_ADDRESS},
+        data=data,
     )
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
@@ -143,6 +150,11 @@ async def test_stirrer_setup_creates_switches_and_numbers(hass: HomeAssistant, m
     prerun_ids = [_entity_id(hass, "number", f"stir_channel_{n}_pre_run") for n in range(1, STIRRER_CHANNEL_COUNT + 1)]
     assert all(switch_ids) and all(speed_ids) and all(prerun_ids)
 
+    # Pre-run numbers only matter for slave operation, so they start disabled.
+    registry = er.async_get(hass)
+    assert all(registry.async_get(entity_id).disabled_by is not None for entity_id in prerun_ids)
+    assert all(registry.async_get(entity_id).disabled_by is None for entity_id in switch_ids + speed_ids)
+
     # The stirrer must not expose light/dosing entities.
     assert _entity_id(hass, "switch", "auto_mode") is None
     assert _entity_id(hass, "button", "dosing_pump_1_dose") is None
@@ -160,22 +172,79 @@ async def test_stir_switch_drives_client_and_tracks_state(hass: HomeAssistant, m
     assert entity_id is not None
 
     await hass.services.async_call("switch", "turn_on", {"entity_id": entity_id}, blocking=True)
-    assert client.stir_calls == [(2, True)]
+    assert client.stir_calls == [(2, True, None)]
     assert hass.states.is_state(entity_id, "on")
 
     await hass.services.async_call("switch", "turn_off", {"entity_id": entity_id}, blocking=True)
-    assert client.stir_calls == [(2, True), (2, False)]
+    assert client.stir_calls == [(2, True, None), (2, False, None)]
     assert hass.states.is_state(entity_id, "off")
+
+
+async def test_stir_for_service(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stir_for service runs a channel for a bounded duration."""
+    _entry, client = await _setup_stirrer(hass, monkeypatch)
+    await hass.async_block_till_done()
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_STIR_FOR,
+        {ATTR_ADDRESS: TEST_ADDRESS, ATTR_CHANNEL: 2, "duration": 300},
+        blocking=True,
+    )
+    assert client.stir_calls == [(1, True, 300)]
+
+    # A HH:MM:SS string is accepted too.
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_STIR_FOR,
+        {ATTR_ADDRESS: TEST_ADDRESS, ATTR_CHANNEL: 2, "duration": "00:01:30"},
+        blocking=True,
+    )
+    assert client.stir_calls == [(1, True, 300), (1, True, 90)]
+
+    # Durations beyond the device's [minutes, seconds] wire cap are rejected.
+    with pytest.raises(HomeAssistantError, match="255 minutes 59 seconds"):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_STIR_FOR,
+            {ATTR_ADDRESS: TEST_ADDRESS, ATTR_CHANNEL: 2, "duration": 256 * 60},
+            blocking=True,
+        )
+    assert client.stir_calls == [(1, True, 300), (1, True, 90)]
+
+
+async def test_stirrer_channel_count_config(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stirrer entry configured with 2 channels exposes only 2 channels."""
+    entry, client = await _setup_stirrer(hass, monkeypatch, channel_count=2)
+    await hass.async_block_till_done()
+
+    assert _entity_id(hass, "switch", "stir_channel_1") is not None
+    assert _entity_id(hass, "switch", "stir_channel_3") is None
+
+    with pytest.raises(HomeAssistantError, match="has 2 stir channels configured"):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_STIR_FOR,
+            {ATTR_ADDRESS: TEST_ADDRESS, ATTR_CHANNEL: 3, "duration": 300},
+            blocking=True,
+        )
+    assert client.stir_calls == []
 
 
 async def test_stir_numbers_write_pre_second_frame(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
     """Speed and pre-run numbers share one (0xA5, 42) write with both values."""
-    _entry, client = await _setup_stirrer(hass, monkeypatch)
+    entry, client = await _setup_stirrer(hass, monkeypatch)
     await hass.async_block_till_done()
 
     speed_id = _entity_id(hass, "number", "stir_channel_1_speed")
     prerun_id = _entity_id(hass, "number", "stir_channel_1_pre_run")
     assert speed_id is not None and prerun_id is not None
+
+    # The pre-run number is disabled by default; enable and reload it.
+    er.async_get(hass).async_update_entity(prerun_id, disabled_by=None)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
     assert float(hass.states.get(speed_id).state) == 40
     assert float(hass.states.get(prerun_id).state) == 0
 
@@ -211,9 +280,50 @@ async def test_set_stir_schedule_service(hass: HomeAssistant, monkeypatch: pytes
     assert call["channel"] == 0
     assert call["frequency"] == 127
     assert call["active"] is True
+    assert call["is_first_setting"] is True
     points = call["points"]
     assert [(p.start_hour, p.start_minute) for p in points] == [(8, 0), (20, 0)]
     assert [p.volume_ml for p in points] == [pytest.approx(18.0), pytest.approx(9.0)]
+
+    # A weekday selection is encoded as the vendor's repetition bitmask.
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_STIR_SCHEDULE,
+        {
+            ATTR_ADDRESS: TEST_ADDRESS,
+            ATTR_CHANNEL: 1,
+            "weekdays": ["monday", "friday"],
+            ATTR_STIR_POINTS: [{"start": "08:00", "minutes": 30}],
+        },
+        blocking=True,
+    )
+    assert client.schedule_calls[1]["frequency"] == 68  # monday=64, friday=4
+
+    # The second write on the same day is no longer the channel's first
+    # setting (derived from the integration's programming record).
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_STIR_SCHEDULE,
+        {
+            ATTR_ADDRESS: TEST_ADDRESS,
+            ATTR_CHANNEL: 1,
+            ATTR_STIR_POINTS: [{"start": "08:00", "minutes": 30}],
+        },
+        blocking=True,
+    )
+    assert client.schedule_calls[2]["is_first_setting"] is False
+    # A different channel keeps the derived first-setting flag.
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_STIR_SCHEDULE,
+        {
+            ATTR_ADDRESS: TEST_ADDRESS,
+            ATTR_CHANNEL: 2,
+            ATTR_STIR_POINTS: [{"start": "08:00", "minutes": 30}],
+        },
+        blocking=True,
+    )
+    assert client.schedule_calls[3]["is_first_setting"] is True
 
 
 async def test_set_stir_schedule_service_validates_points(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -292,6 +402,36 @@ async def test_set_stir_schedule_service_rejects_non_stirrer(
             },
             blocking=True,
         )
+
+
+async def test_stir_services_accept_device_id_target(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Services accept the Home Assistant device selector value (``device_id``)."""
+    _entry, client = await _setup_stirrer(hass, monkeypatch)
+    await hass.async_block_till_done()
+    device = dr.async_get(hass).async_get_device(connections={(dr.CONNECTION_BLUETOOTH, TEST_ADDRESS)})
+    assert device is not None
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_STIR_FOR,
+        {"device_id": device.id, ATTR_CHANNEL: 1, "duration": 30},
+        blocking=True,
+    )
+    assert client.stir_calls == [(0, True, 30)]
+
+
+async def test_options_flow_changes_stirrer_channel_count(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The options flow changes the exposed stir channel count and reloads."""
+    entry, _client = await _setup_stirrer(hass, monkeypatch, channel_count=2)
+    await hass.async_block_till_done()
+    assert _entity_id(hass, "switch", "stir_channel_3") is None
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    await hass.config_entries.options.async_configure(result["flow_id"], user_input={"stirrer_channel_count": 4})
+    await hass.async_block_till_done()
+
+    assert entry.options["stirrer_channel_count"] == 4
+    assert _entity_id(hass, "switch", "stir_channel_3") is not None
 
 
 async def test_validate_stir_points_unit() -> None:

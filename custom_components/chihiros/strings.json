@@ -23,6 +23,12 @@
         "data": {
           "pump_count": "Pump channels"
         }
+      },
+      "stirrer_config": {
+        "description": "Choose how many stir channels this magnetic stirrer should expose",
+        "data": {
+          "stirrer_channel_count": "Stir channels"
+        }
       }
     },
     "error": {
@@ -35,6 +41,22 @@
       "no_devices_found": "[%key:common::config_flow::abort::no_devices_found%]",
       "already_in_progress": "[%key:common::config_flow::abort::already_in_progress%]",
       "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Chihiros options",
+        "description": "Choose how many channels this device should expose",
+        "data": {
+          "pump_count": "Pump channels",
+          "stirrer_channel_count": "Stir channels"
+        }
+      }
+    },
+    "abort": {
+      "not_loaded": "The device is not loaded yet",
+      "no_options": "This device has no configurable options"
     }
   }
 }

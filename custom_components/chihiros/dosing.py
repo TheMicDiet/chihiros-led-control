@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_time
@@ -21,6 +22,12 @@ PROGRAMMING_STORAGE_KEY = f"{DOMAIN}_dosing_programming"
 CONF_PUMP_COUNT = "pump_count"
 PUMP_COUNT = 4
 PUMP_COUNT_OPTIONS = (2, 4, 8)
+# The stirrer speaks the dosing-pump protocol with up to 8 channels
+# (DOSING_CONTROL.md §2/§6.1); the config flow lets owners of smaller units
+# hide the channels they do not use.
+CONF_STIRRER_CHANNEL_COUNT = "stirrer_channel_count"
+STIRRER_CHANNEL_MAX = 8
+STIRRER_CHANNEL_COUNT_OPTIONS = (2, 4, 8)
 SIGNAL_DOSING_TOTALS_UPDATED = f"{DOMAIN}_dosing_totals_updated"
 
 
@@ -196,10 +203,28 @@ class DosingProgrammingTracker:
         """Return a copy of the recorded device-level settings."""
         return dict(self._device)
 
-    async def async_record(self, channel: int, setup: dict[str, Any]) -> None:
-        """Merge one channel's programming write into the record and persist it."""
-        self._channels[channel] = {**self._channels.get(channel, {}), **setup}
+    async def async_record(self, channel: int, setup: dict[str, Any], *, stamp_programmed: bool = True) -> None:
+        """Merge one channel's programming write into the record and persist it.
+
+        ``stamp_programmed`` records the date of the write; schedule writes
+        (which send the device's ``dosingSet`` frame) set it, so the service
+        can derive the "first setting of the day" flag. State-only writes
+        (``set_channel_active``) keep any earlier stamp.
+        """
+        record = {**self._channels.get(channel, {}), **setup}
+        if stamp_programmed:
+            record["last_programmed"] = self._today()
+        self._channels[channel] = record
         await self._async_save()
+
+    def channel_programmed_today(self, channel: int) -> bool:
+        """Return whether the channel's schedule was written through HA today."""
+        record = self._channels.get(channel)
+        return bool(record) and record.get("last_programmed") == self._today()
+
+    def _today(self) -> str:
+        """Return the local date string used for programming stamps."""
+        return dt_util.now().date().isoformat()
 
     async def async_record_device(self, settings: dict[str, Any]) -> None:
         """Merge device-level settings into the record and persist them."""
@@ -221,6 +246,21 @@ class DosingProgrammingTracker:
         )
 
 
+def derive_first_setting(tracker: DosingProgrammingTracker | None, channel: int, explicit: bool | None) -> bool:
+    """Return the device's ``first_setting`` flag for a channel write.
+
+    The device resets its daily counters on the first ``dosingSet`` of the day
+    for a channel, so the flag is True unless this channel was already
+    programmed through Home Assistant today. An explicit service value wins;
+    without a programming record the flag defaults to True.
+    """
+    if explicit is not None:
+        return explicit
+    if tracker is None:
+        return True
+    return not tracker.channel_programmed_today(channel)
+
+
 def normalize_pump_count(value: object) -> int:
     """Return a supported dosing pump count, defaulting to four pumps."""
     try:
@@ -230,6 +270,28 @@ def normalize_pump_count(value: object) -> int:
     if pump_count in PUMP_COUNT_OPTIONS:
         return pump_count
     return PUMP_COUNT
+
+
+def normalize_stirrer_channel_count(value: object) -> int:
+    """Return a supported stirrer channel count, defaulting to all channels."""
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return STIRRER_CHANNEL_MAX
+    if count in STIRRER_CHANNEL_COUNT_OPTIONS:
+        return count
+    return STIRRER_CHANNEL_MAX
+
+
+def entry_pump_count(entry: ConfigEntry) -> int:
+    """Return a config entry's pump count, preferring options over data."""
+    return normalize_pump_count(entry.options.get(CONF_PUMP_COUNT, entry.data.get(CONF_PUMP_COUNT)))
+
+
+def entry_stirrer_channel_count(entry: ConfigEntry) -> int:
+    """Return a config entry's stirrer channel count, preferring options over data."""
+    value = entry.options.get(CONF_STIRRER_CHANNEL_COUNT, entry.data.get(CONF_STIRRER_CHANNEL_COUNT))
+    return normalize_stirrer_channel_count(value)
 
 
 def _coerce_total(value: object) -> float:

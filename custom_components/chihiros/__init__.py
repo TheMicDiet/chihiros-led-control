@@ -9,11 +9,11 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
 from .dosing import (
-    CONF_PUMP_COUNT,
     DosingDailyTotals,
     DosingProgrammingTracker,
+    entry_pump_count,
+    entry_stirrer_channel_count,
     is_dosing_capable,
-    normalize_pump_count,
 )
 from .dosing_services import (
     ATTR_ML,
@@ -30,6 +30,7 @@ from .master_slave_services import (
     ATTR_ENABLE,
     ATTR_ENABLED,
     ATTR_MASTER_ADDRESS,
+    ATTR_MASTER_DEVICE_ID,
     ATTR_MASTER_ENTRY_ID,
     ATTR_MIRROR,
     ATTR_MODE,
@@ -102,19 +103,25 @@ from .schedule_services import (
 )
 from .service_utils import (
     ATTR_ADDRESS,
+    ATTR_DEVICE_ID,
     ATTR_ENTRY_ID,
+)
+from .service_utils import (
+    frequency_from_service_data as _frequency_from_service_data,
 )
 from .service_utils import (
     resolve_service_device as _resolve_service_device,
 )
-from .stirrer import STIRRER_CHANNEL_COUNT, is_stirrer_capable
+from .stirrer import is_stirrer_capable
 from .stirrer_services import (
     ATTR_ACTIVE,
     ATTR_CHANNEL,
+    ATTR_DURATION,
     ATTR_FIRST_SETTING,
     ATTR_FREQUENCY,
     ATTR_STIR_POINTS,
     SERVICE_SET_STIR_SCHEDULE,
+    SERVICE_STIR_FOR,
     async_register_stirrer_service,
     async_remove_stirrer_service,
 )
@@ -129,6 +136,8 @@ __all__ = [
     "ATTR_CURVE",
     "ATTR_DAILY_ML",
     "ATTR_DELAY",
+    "ATTR_DEVICE_ID",
+    "ATTR_DURATION",
     "ATTR_ENABLE",
     "ATTR_ENABLED",
     "ATTR_END",
@@ -137,6 +146,7 @@ __all__ = [
     "ATTR_FREQUENCY",
     "ATTR_LEVELS",
     "ATTR_MASTER_ADDRESS",
+    "ATTR_MASTER_DEVICE_ID",
     "ATTR_MASTER_ENTRY_ID",
     "ATTR_ML",
     "ATTR_MODE",
@@ -161,6 +171,7 @@ __all__ = [
     "SERVICE_SET_SCHEDULE",
     "SERVICE_SET_STIRRER_MASTER",
     "SERVICE_SET_STIR_SCHEDULE",
+    "SERVICE_STIR_FOR",
     "_async_add_schedule_period",
     "_async_broadcast_frame_to_linked_stirrers",
     "_async_refresh_status",
@@ -168,6 +179,7 @@ __all__ = [
     "_brightness_from_service_data",
     "_build_work_points",
     "_ensure_light_device",
+    "_frequency_from_service_data",
     "_parse_schedule_time",
     "_parse_weekdays",
     "_resolve_service_device",
@@ -204,9 +216,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     dosing_programming: DosingProgrammingTracker | None = None
     stirrer_states: list[StirrerChannelState] = []
     if is_stirrer_capable(runtime.client):
-        stirrer_states = [StirrerChannelState() for _ in range(STIRRER_CHANNEL_COUNT)]
+        stirrer_states = [StirrerChannelState() for _ in range(entry_stirrer_channel_count(entry))]
+        # A programming record is kept for stirrers too, so the stir schedule
+        # service can derive the "first setting of the day" flag per channel.
+        dosing_programming = DosingProgrammingTracker(hass, runtime.address)
+        await dosing_programming.async_load()
     elif is_dosing_capable(runtime.client):
-        dosing_totals = DosingDailyTotals(hass, runtime.address, normalize_pump_count(entry.data.get(CONF_PUMP_COUNT)))
+        dosing_totals = DosingDailyTotals(hass, runtime.address, entry_pump_count(entry))
         await dosing_totals.async_load()
         dosing_volumes = [1.0] * dosing_totals.pump_count
         dosing_programming = DosingProgrammingTracker(hass, runtime.address)

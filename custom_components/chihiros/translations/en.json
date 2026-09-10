@@ -29,11 +29,33 @@
                 },
                 "description": "Choose how many pump channels this dosing pump has"
             },
+            "stirrer_config": {
+                "data": {
+                    "stirrer_channel_count": "Stir channels"
+                },
+                "description": "Choose how many stir channels this magnetic stirrer should expose"
+            },
             "user": {
                 "data": {
                     "device": "Device"
                 },
                 "description": "Choose Chihiros device to connect to"
+            }
+        }
+    },
+    "options": {
+        "abort": {
+            "no_options": "This device has no configurable options",
+            "not_loaded": "The device is not loaded yet"
+        },
+        "step": {
+            "init": {
+                "data": {
+                    "pump_count": "Pump channels",
+                    "stirrer_channel_count": "Stir channels"
+                },
+                "description": "Choose how many channels this device should expose",
+                "title": "Chihiros options"
             }
         }
     }

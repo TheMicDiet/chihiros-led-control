@@ -2,6 +2,13 @@ add_schedule:
   name: Add schedule period
   description: Add one auto mode schedule period to a Chihiros light.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       description: Chihiros config entry ID. Required only when more than one Chihiros device is configured.
@@ -80,6 +87,13 @@ remove_schedule:
   name: Remove schedule period
   description: Remove one auto mode schedule period from a Chihiros light.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       selector:
@@ -128,6 +142,13 @@ reset_schedule:
   name: Reset schedule
   description: Remove all auto mode schedule periods from a Chihiros light.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       selector:
@@ -141,6 +162,13 @@ dose_ml:
   name: Manual dose
   description: Trigger a one-shot manual dose on a Chihiros dosing pump and add it to today's local total.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       description: Chihiros config entry ID. Required only when more than one Chihiros device is configured.
@@ -158,7 +186,7 @@ dose_ml:
       selector:
         number:
           min: 1
-          max: 4
+          max: 8
           step: 1
           mode: box
     ml:
@@ -176,6 +204,13 @@ set_schedule:
   name: Set schedule
   description: Replace auto mode schedule periods on a Chihiros light. Only one period per weekday is supported.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       selector:
@@ -215,6 +250,13 @@ set_auto_curve:
     but only active while the device is in auto mode (use the Auto Mode
     switch). Use YAML mode.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       description: Chihiros config entry ID. Required only when more than one Chihiros device is configured.
@@ -247,6 +289,13 @@ set_stir_schedule:
     minutes with the vendor app's 0.6 mL/min dose-rate equivalence. Points
     must be at least 2 minutes apart (vendor app rule). Use YAML mode.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       description: Chihiros config entry ID. Required only when more than one Chihiros device is configured.
@@ -282,29 +331,74 @@ set_stir_schedule:
           minutes: 15
       selector:
         object:
-    frequency:
-      name: Frequency
-      description: Weekday repetition bitmask (127 = every day, bit 0 = Monday ... bit 6 = Sunday).
-      default: 127
-      example: 127
+    weekdays:
+      name: Weekdays
+      description: Days when the schedule applies. Leave empty for every day.
+      default:
+        - everyday
       selector:
-        number:
-          min: 0
-          max: 255
-          step: 1
-          mode: box
+        select:
+          multiple: true
+          options:
+            - everyday
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
     active:
       name: Active
       description: Whether the channel is active after programming.
       default: true
       selector:
         boolean:
-    first_setting:
-      name: First setting today
-      description: Mark this as the channel's first programming of the day (lets the device reset its counters).
-      default: true
+
+stir_for:
+  name: Stir for duration
+  description: >
+    Manually stir one magnetic stirrer channel for a bounded duration
+    (unlike the stir switch, which runs until switched off). The device
+    supports minute+second resolution, up to 255 min 59 s.
+  fields:
+    device_id:
+      name: Stirrer
+      description: The magnetic stirrer to control. Required only when more than one Chihiros device is configured.
       selector:
-        boolean:
+        device:
+          filter:
+            - integration: chihiros
+    entry_id:
+      name: Config entry ID
+      description: The stirrer's config entry ID.
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      description: The stirrer's Bluetooth address.
+      example: AA:BB:CC:DD:EE:FF
+      selector:
+        text:
+    channel:
+      name: Channel
+      description: Stirrer channel number.
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 8
+          step: 1
+          mode: box
+    duration:
+      name: Duration
+      description: How long to stir (up to 255 minutes 59 seconds).
+      required: true
+      example: "00:05:00"
+      selector:
+        duration:
+          enable_day: false
 
 set_dosing_schedule:
   name: Set dosing schedule
@@ -314,6 +408,13 @@ set_dosing_schedule:
     (chihiros.set_stirrer_master), the write is mirrored to the stirrer
     automatically. Use YAML mode.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       description: Chihiros config entry ID. Required only when more than one Chihiros device is configured.
@@ -361,16 +462,23 @@ set_dosing_schedule:
           ml: 1.0
       selector:
         object:
-    frequency:
-      name: Frequency
-      description: Weekday repetition bitmask (127 = every day).
-      default: 127
+    weekdays:
+      name: Weekdays
+      description: Days when the schedule applies. Leave empty for every day.
+      default:
+        - everyday
       selector:
-        number:
-          min: 0
-          max: 255
-          step: 1
-          mode: box
+        select:
+          multiple: true
+          options:
+            - everyday
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
     active:
       name: Active
       description: Whether the channel is active.
@@ -394,6 +502,13 @@ set_channel_active:
     Enable or disable one dosing pump channel (and its interrupt
     compensation). Mirrored to a linked stirrer.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       selector:
@@ -436,6 +551,13 @@ set_stirrer_master:
     every later pump programming write is mirrored automatically. Call
     without master fields to unlink.
   fields:
+    device_id:
+      name: Stirrer
+      description: The magnetic stirrer to control. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       description: The stirrer's config entry ID.
@@ -447,6 +569,13 @@ set_stirrer_master:
       example: AA:BB:CC:DD:EE:FF
       selector:
         text:
+    master_device_id:
+      name: Master dosing pump
+      description: The master dosing pump. Omit all master fields (master_device_id / master_address / master_entry_id) to unlink.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     master_address:
       name: Master address
       description: Bluetooth address of the master dosing pump. Omit (together with master_entry_id) to unlink.
@@ -472,6 +601,13 @@ mirror_stirrer:
     stirrer (the vendor app's "start as slave" sequence, including the dose
     delay frame).
   fields:
+    device_id:
+      name: Stirrer
+      description: The magnetic stirrer to control. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       description: The stirrer's config entry ID.
@@ -485,8 +621,7 @@ mirror_stirrer:
         text:
     delay:
       name: Dose delay
-      description: Value sent for the pump's dose-delay flag in the closing (0xA5, 31) frame.
-      default: false
+      description: Value sent for the pump's dose-delay flag in the closing (0xA5, 31) frame. Leave unset to replay the pump's recorded flag.
       selector:
         boolean:
 
@@ -499,6 +634,13 @@ set_dose_delay:
     delayed dose. The flag is recorded and replayed by
     chihiros.mirror_stirrer.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       selector:
@@ -522,6 +664,13 @@ reset_dosing_channel:
     resetDosingChannel frame). Any Home Assistant record of the channel's
     schedule is dropped, and the reset is broadcast to linked stirrers.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       selector:

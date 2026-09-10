@@ -41,7 +41,7 @@ class ChihirosDosingButton(ButtonEntity):
         self._chihiros_data = chihiros_data
         self._pump_idx = pump_idx
         pump_number = pump_idx + 1
-        self._attr_name = chihiros_entity_name(device, f"Dose pump {pump_number}")
+        self._attr_name = chihiros_entity_name(device, f"Pump {pump_number} dose")
         self._attr_unique_id = chihiros_unique_id(device.address, f"dosing_pump_{pump_number}_dose")
         self._attr_device_info = chihiros_device_info(device, device.address)
 

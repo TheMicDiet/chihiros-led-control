@@ -14,7 +14,7 @@ from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .dosing import CONF_PUMP_COUNT, normalize_pump_count
+from .dosing import entry_pump_count
 from .fake import create_fake_device, fake_devices_enabled, is_fake_address
 from .vendor.chihiros_led_control import create_device, needs_device_type
 from .vendor.chihiros_led_control.exceptions import UnsupportedDeviceError
@@ -177,7 +177,7 @@ class ChihirosRuntime:
 def _resolve_fake_runtime(address: str, entry: ConfigEntry) -> ChihirosRuntime:
     """Build a fake development client for a fake device address."""
     return ChihirosRuntime(
-        client=create_fake_device(address, normalize_pump_count(entry.data.get(CONF_PUMP_COUNT))),
+        client=create_fake_device(address, entry_pump_count(entry)),
         address=address,
         always_available=True,
     )

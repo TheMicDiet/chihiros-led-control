@@ -15,6 +15,7 @@ from typing import cast
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.const import UnitOfTime
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.restore_state import RestoreEntity
 
@@ -25,8 +26,11 @@ from .vendor.chihiros_led_control.models import MAG_STIRRER
 
 _LOGGER = logging.getLogger(__name__)
 
-# The stirrer model exposes 8 channels (DOSING_CONTROL.md §2/§6.1, field_f3 default 8).
-STIRRER_CHANNEL_COUNT = 8
+# The stirrer model exposes up to 8 channels (DOSING_CONTROL.md §2/§6.1,
+# field_f3 default 8). The config flow lets owners configure a smaller count.
+STIRRER_CHANNEL_MAX = 8
+# Backwards-compatible alias: the default/full channel count.
+STIRRER_CHANNEL_COUNT = STIRRER_CHANNEL_MAX
 
 
 def is_stirrer_capable(device: object) -> bool:
@@ -201,10 +205,16 @@ class ChihirosStirSpeedNumber(ChihirosStirNumberBase):
 
 
 class ChihirosStirPreRunNumber(ChihirosStirNumberBase):
-    """Number entity for one channel's pre-stir time (0-999 s, app bound)."""
+    """Number entity for one channel's pre-stir time (0-999 s, app bound).
+
+    The pre-stir time only takes effect while the stirrer runs as a slave of
+    a linked dosing pump (stir before each dose), so the entity is disabled
+    by default to keep the per-channel entity list focused on manual use.
+    """
 
     _attr_native_max_value = 999
-    _attr_native_unit_of_measurement = "s"
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+    _attr_entity_registry_enabled_default = False
     _unique_id_suffix = "pre_run"
     _label = "pre-run"
 

@@ -10,13 +10,25 @@ from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,
 )
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlowWithReload
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
+from homeassistant.core import callback
 
 from .const import DOMAIN
 from .discovery import ChihirosDiscovery, discovery_title
-from .dosing import CONF_PUMP_COUNT, PUMP_COUNT, PUMP_COUNT_OPTIONS, is_dosing_capable, normalize_pump_count
+from .dosing import (
+    CONF_PUMP_COUNT,
+    CONF_STIRRER_CHANNEL_COUNT,
+    PUMP_COUNT,
+    PUMP_COUNT_OPTIONS,
+    STIRRER_CHANNEL_COUNT_OPTIONS,
+    STIRRER_CHANNEL_MAX,
+    is_dosing_capable,
+    normalize_pump_count,
+    normalize_stirrer_channel_count,
+)
 from .fake import iter_enabled_fake_devices
+from .stirrer import is_stirrer_capable
 from .vendor.chihiros_led_control import (
     ChihirosDevice,
     create_device,
@@ -31,6 +43,12 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for chihiros."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> ChihirosOptionsFlow:
+        """Return the options flow that changes the exposed channel count."""
+        return ChihirosOptionsFlow()
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -52,6 +70,10 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         _LOGGER.debug("async_step_bluetooth - discovered device %s", discovery_info.name)
         if needs_device_type(discovery_info.name):
             return await self.async_step_fallback_config()
+        if is_dosing_capable(device):
+            return await self.async_step_dosing_config()
+        if is_stirrer_capable(device):
+            return await self.async_step_stirrer_config()
 
         return await self.async_step_bluetooth_confirm()
 
@@ -67,6 +89,8 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
             self._entry_address = discovery_info.address
             if is_dosing_capable(device):
                 return await self.async_step_dosing_config()
+            if is_stirrer_capable(device):
+                return await self.async_step_stirrer_config()
             return self.async_create_entry(title=title, data={CONF_ADDRESS: discovery_info.address})
 
         self._set_confirm_only()
@@ -92,6 +116,29 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
             {vol.Required(CONF_PUMP_COUNT, default=PUMP_COUNT): vol.All(vol.Coerce(int), vol.In(PUMP_COUNT_OPTIONS))}
         )
         return self.async_show_form(step_id="dosing_config", data_schema=data_schema, errors={})
+
+    async def async_step_stirrer_config(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Ask user how many stir channels the magnetic stirrer should expose."""
+        assert self._entry_title is not None
+        assert self._entry_address is not None
+
+        if user_input is not None:
+            return self.async_create_entry(
+                title=self._entry_title,
+                data={
+                    CONF_ADDRESS: self._entry_address,
+                    CONF_STIRRER_CHANNEL_COUNT: normalize_stirrer_channel_count(user_input[CONF_STIRRER_CHANNEL_COUNT]),
+                },
+            )
+
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_STIRRER_CHANNEL_COUNT, default=STIRRER_CHANNEL_MAX): vol.All(
+                    vol.Coerce(int), vol.In(STIRRER_CHANNEL_COUNT_OPTIONS)
+                )
+            }
+        )
+        return self.async_show_form(step_id="stirrer_config", data_schema=data_schema, errors={})
 
     async def async_step_fallback_config(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Ask user for device details when fallback device is detected."""
@@ -128,6 +175,8 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         self._entry_address = discovery.address
         if discovery.fake_info and is_dosing_capable(discovery.fake_info.model):
             return await self.async_step_dosing_config()
+        if discovery.fake_info and is_stirrer_capable(discovery.fake_info.model):
+            return await self.async_step_stirrer_config()
         return self.async_create_entry(title=discovery.name, data=discovery.entry_data())
 
     async def _async_handle_bluetooth_submission(self, discovery: ChihirosDiscovery) -> ConfigFlowResult:
@@ -148,6 +197,8 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         self._entry_address = discovery_info.address
         if is_dosing_capable(device):
             return await self.async_step_dosing_config()
+        if is_stirrer_capable(device):
+            return await self.async_step_stirrer_config()
         return self.async_create_entry(title=title, data={CONF_ADDRESS: discovery_info.address})
 
     async def _async_handle_user_submission(self, user_input: dict[str, Any]) -> ConfigFlowResult:
@@ -204,3 +255,25 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
             }
         )
         return self.async_show_form(step_id="user", data_schema=data_schema, errors=errors)
+
+
+class ChihirosOptionsFlow(OptionsFlowWithReload):
+    """Change the channel count exposed by a configured Chihiros device."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Show the channel-count field for the configured device type."""
+        data = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
+        if data is None:
+            return self.async_abort(reason="not_loaded")
+        if is_dosing_capable(data.device):
+            key, default, options = CONF_PUMP_COUNT, PUMP_COUNT, PUMP_COUNT_OPTIONS
+        elif is_stirrer_capable(data.device):
+            key = CONF_STIRRER_CHANNEL_COUNT
+            default, options = STIRRER_CHANNEL_MAX, STIRRER_CHANNEL_COUNT_OPTIONS
+        else:
+            return self.async_abort(reason="no_options")
+        if user_input is not None:
+            return self.async_create_entry(title="", data={key: user_input[key]})
+        current = self.config_entry.options.get(key, self.config_entry.data.get(key, default))
+        data_schema = vol.Schema({vol.Required(key, default=current): vol.All(vol.Coerce(int), vol.In(options))})
+        return self.async_show_form(step_id="init", data_schema=data_schema)
