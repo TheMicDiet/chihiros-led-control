@@ -265,6 +265,39 @@ async def test_set_stirrer_master_mirrors_programming(hass: HomeAssistant, monke
     assert entries[0].data[ATTR_MASTER_ADDRESS] == PUMP_ADDRESS
 
 
+async def test_set_stirrer_master_replays_recorded_dose_delay(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Linking with mirroring replays the pump's recorded dose-delay flag.
+
+    Regression: the service schema used to default ``delay`` to False, so
+    linking a stirrer after enabling the pump's dose delay silently turned the
+    flag off on the stirrer instead of replaying the recorded value.
+    """
+    from custom_components.chihiros import SERVICE_SET_DOSE_DELAY
+
+    pump, stirrer = await _setup_pair(hass, monkeypatch)
+    await hass.async_block_till_done()
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_SET_DOSE_DELAY, {ATTR_ADDRESS: PUMP_ADDRESS, "enabled": True}, blocking=True
+    )
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_DOSING_SCHEDULE,
+        {ATTR_ADDRESS: PUMP_ADDRESS, ATTR_CHANNEL: 1, ATTR_MODE: "timer", ATTR_POINTS: [{"start": "08:00", "ml": 2.0}]},
+        blocking=True,
+    )
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_STIRRER_MASTER,
+        {ATTR_ADDRESS: STIRRER_ADDRESS, ATTR_MASTER_ADDRESS: PUMP_ADDRESS, "mirror": True},
+        blocking=True,
+    )
+    assert pump.delay_calls == [True]
+    assert stirrer.delay_calls == [True]
+
+
 async def test_pump_write_live_mirrors_to_linked_stirrer(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
     """After linking, every pump programming write is replayed to the stirrer."""
     pump, stirrer = await _setup_pair(hass, monkeypatch)

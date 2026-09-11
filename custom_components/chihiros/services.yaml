@@ -593,6 +593,11 @@ set_stirrer_master:
       default: true
       selector:
         boolean:
+    delay:
+      name: Dose delay
+      description: Value sent for the pump's dose-delay flag while mirroring. Leave unset to replay the pump's recorded flag.
+      selector:
+        boolean:
 
 mirror_stirrer:
   name: Mirror stirrer

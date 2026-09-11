@@ -139,7 +139,9 @@ SET_STIRRER_MASTER_SCHEMA = vol.Schema(
         **DEVICE_SELECTOR_SCHEMA,
         **MASTER_SELECTOR_SCHEMA,
         vol.Optional(ATTR_MIRROR, default=True): vol.Boolean(),
-        vol.Optional(ATTR_DELAY, default=False): vol.Boolean(),
+        # None = replay the pump's recorded dose-delay flag (like mirror_stirrer);
+        # an explicit value overrides it.
+        vol.Optional(ATTR_DELAY): vol.Boolean(),
     }
 )
 
