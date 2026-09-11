@@ -175,6 +175,8 @@ class FakeChihirosDevice:
         self._fan_auto = False
         self._fan_start_temp = 38
         self._fan_stop_temp = 33
+        self._temp_protect = False
+        self._bluetooth_led = False
         self.last_runtime_notification: RuntimeNotification | None = None
         self.last_fan_status_notification: FanStatusNotification | None = None
         self.last_schedule_snapshot_notification: ScheduleSnapshotNotification | None = None
@@ -317,6 +319,20 @@ class FakeChihirosDevice:
         self._fan_start_temp = start_temp
         self._fan_stop_temp = stop_temp
 
+    async def set_temp_protect(self, enabled: bool) -> None:
+        """Track the fake VIVID3 temperature-protection state optimistically."""
+        await asyncio.sleep(0)
+        if not self.model.is_vivid3:
+            raise ValueError(f"Model does not support temperature protection: {self.model.name}")
+        self._temp_protect = enabled
+
+    async def set_bluetooth_led(self, enabled: bool) -> None:
+        """Track the fake VIVID3 indicator-LED state optimistically."""
+        await asyncio.sleep(0)
+        if not self.model.is_vivid3:
+            raise ValueError(f"Model does not support the indicator LED switch: {self.model.name}")
+        self._bluetooth_led = enabled
+
     @property
     def fan_auto(self) -> bool:
         """Return whether the fake fan is in auto mode."""
@@ -331,6 +347,16 @@ class FakeChihirosDevice:
     def fan_stop_temp(self) -> int:
         """Return the fake fan stop temperature."""
         return self._fan_stop_temp
+
+    @property
+    def temp_protect(self) -> bool:
+        """Return the fake VIVID3 temperature-protection state."""
+        return self._temp_protect
+
+    @property
+    def bluetooth_led(self) -> bool:
+        """Return the fake VIVID3 indicator-LED state."""
+        return self._bluetooth_led
 
     async def add_setting(
         self,
