@@ -28,7 +28,7 @@ from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 
-from .const import DOMAIN
+from .const import CONF_MASTER_ADDRESS, DOMAIN
 from .dosing import derive_first_setting, is_dosing_capable
 from .models import ChihirosData
 from .service_utils import (
@@ -71,7 +71,9 @@ ATTR_MODE = "mode"
 ATTR_POINTS = "points"
 ATTR_ENABLE = "enable"
 ATTR_COMPENSATE = "compensate"
-ATTR_MASTER_ADDRESS = "master_address"
+# Kept as an ``ATTR_`` name for the service schema/API; the value is shared with
+# the options flow, which stores the same link on the stirrer config entry.
+ATTR_MASTER_ADDRESS = CONF_MASTER_ADDRESS
 ATTR_MASTER_ENTRY_ID = "master_entry_id"
 ATTR_MIRROR = "mirror"
 ATTR_DELAY = "delay"

@@ -298,6 +298,84 @@ async def test_set_stirrer_master_replays_recorded_dose_delay(
     assert stirrer.delay_calls == [True]
 
 
+async def test_options_flow_links_and_unlinks_master_pump(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stirrer Configure dialog links/unlinks the master and mirrors on link."""
+    pump, stirrer = await _setup_pair(hass, monkeypatch)
+    await hass.async_block_till_done()
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_DOSING_SCHEDULE,
+        {ATTR_ADDRESS: PUMP_ADDRESS, ATTR_CHANNEL: 1, ATTR_MODE: "timer", ATTR_POINTS: [{"start": "08:00", "ml": 2.0}]},
+        blocking=True,
+    )
+    stirrer_entry = next(e for e in hass.config_entries.async_entries(DOMAIN) if e.unique_id == STIRRER_ADDRESS)
+
+    result = await hass.config_entries.options.async_init(stirrer_entry.entry_id)
+    await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={"stirrer_channel_count": 8, ATTR_MASTER_ADDRESS: PUMP_ADDRESS},
+    )
+    await hass.async_block_till_done()
+
+    assert stirrer_entry.data[ATTR_MASTER_ADDRESS] == PUMP_ADDRESS
+    # Selecting the master replayed the pump's recorded channel 1 immediately.
+    assert stirrer.program_calls and stirrer.program_calls[0]["channel"] == 0
+
+    # Later pump writes are still mirrored live.
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_DOSING_SCHEDULE,
+        {ATTR_ADDRESS: PUMP_ADDRESS, ATTR_CHANNEL: 2, ATTR_MODE: "timer", ATTR_POINTS: [{"start": "09:00", "ml": 1.0}]},
+        blocking=True,
+    )
+    assert stirrer.program_calls[-1]["channel"] == 1
+
+    # Unlink through the same dialog.
+    result = await hass.config_entries.options.async_init(stirrer_entry.entry_id)
+    await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={"stirrer_channel_count": 8, ATTR_MASTER_ADDRESS: "none"},
+    )
+    await hass.async_block_till_done()
+    assert ATTR_MASTER_ADDRESS not in stirrer_entry.data
+
+    mirrored = len(stirrer.program_calls)
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_DOSING_SCHEDULE,
+        {ATTR_ADDRESS: PUMP_ADDRESS, ATTR_CHANNEL: 3, ATTR_MODE: "timer", ATTR_POINTS: [{"start": "10:00", "ml": 1.0}]},
+        blocking=True,
+    )
+    assert len(stirrer.program_calls) == mirrored
+
+
+def _schema_default(schema: object, name: str) -> object:
+    """Return the pre-filled default for one field of a flow schema."""
+    for marker in schema.schema:  # type: ignore[attr-defined]
+        if str(marker) != name:
+            continue
+        default = getattr(marker, "default", None)
+        return default() if callable(default) else default
+    raise AssertionError(f"field {name!r} not in schema")
+
+
+async def test_pump_options_flow_reopen_shows_saved_count(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reopening the pump dialog pre-fills the saved channel count (string select)."""
+    pump, _stirrer = await _setup_pair(hass, monkeypatch, pump_count=4)
+    await hass.async_block_till_done()
+    entry = next(e for e in hass.config_entries.async_entries(DOMAIN) if e.unique_id == PUMP_ADDRESS)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    await hass.config_entries.options.async_configure(result["flow_id"], user_input={"pump_count": 2})
+    await hass.async_block_till_done()
+    assert entry.options["pump_count"] == 2
+    assert pump.program_calls == []
+
+    reopened = await hass.config_entries.options.async_init(entry.entry_id)
+    assert _schema_default(reopened["data_schema"], "pump_count") == "2"
+
+
 async def test_pump_write_live_mirrors_to_linked_stirrer(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
     """After linking, every pump programming write is replayed to the stirrer."""
     pump, stirrer = await _setup_pair(hass, monkeypatch)

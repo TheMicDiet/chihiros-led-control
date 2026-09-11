@@ -51,6 +51,7 @@
         "step": {
             "init": {
                 "data": {
+                    "master_address": "Master pump",
                     "pump_count": "Pump channels",
                     "stirrer_channel_count": "Stir channels"
                 },

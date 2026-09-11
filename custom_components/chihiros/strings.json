@@ -50,7 +50,8 @@
         "description": "Choose how many channels this device should expose",
         "data": {
           "pump_count": "Pump channels",
-          "stirrer_channel_count": "Stir channels"
+          "stirrer_channel_count": "Stir channels",
+          "master_address": "Master pump"
         }
       }
     },

@@ -14,7 +14,7 @@ from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResu
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.core import callback
 
-from .const import DOMAIN
+from .const import CONF_MASTER_ADDRESS, DOMAIN
 from .discovery import ChihirosDiscovery, discovery_title
 from .dosing import (
     CONF_PUMP_COUNT,
@@ -28,6 +28,8 @@ from .dosing import (
     normalize_stirrer_channel_count,
 )
 from .fake import iter_enabled_fake_devices
+from .master_slave_services import async_mirror_pump_to_stirrer
+from .models import ChihirosData
 from .stirrer import is_stirrer_capable
 from .vendor.chihiros_led_control import (
     ChihirosDevice,
@@ -37,6 +39,9 @@ from .vendor.chihiros_led_control import (
 from .vendor.chihiros_led_control.factory import is_known_unsupported_device
 
 _LOGGER = logging.getLogger(__name__)
+
+# Sentinel select value for "no master pump linked" (addresses never look like this).
+UNLINKED_MASTER = "none"
 
 
 class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -258,22 +263,125 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class ChihirosOptionsFlow(OptionsFlowWithReload):
-    """Change the channel count exposed by a configured Chihiros device."""
+    """Change channel counts and, for a stirrer, the linked master pump.
+
+    The master link is stored on the stirrer's config entry data (the same
+    ``master_address`` the ``chihiros.set_stirrer_master`` service writes), so
+    both surfaces share one source of truth. Selecting a master here replays
+    the pump's recorded programming immediately, best-effort.
+    """
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Show the channel-count field for the configured device type."""
+        """Show the options for the configured device type."""
         data = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
         if data is None:
             return self.async_abort(reason="not_loaded")
         if is_dosing_capable(data.device):
-            key, default, options = CONF_PUMP_COUNT, PUMP_COUNT, PUMP_COUNT_OPTIONS
-        elif is_stirrer_capable(data.device):
-            key = CONF_STIRRER_CHANNEL_COUNT
-            default, options = STIRRER_CHANNEL_MAX, STIRRER_CHANNEL_COUNT_OPTIONS
-        else:
-            return self.async_abort(reason="no_options")
+            return self._channel_count_step(CONF_PUMP_COUNT, PUMP_COUNT, PUMP_COUNT_OPTIONS, user_input)
+        if is_stirrer_capable(data.device):
+            return await self._async_stirrer_step(data, user_input)
+        return self.async_abort(reason="no_options")
+
+    def _channel_count_step(
+        self,
+        key: str,
+        default: int,
+        options: tuple[int, ...],
+        user_input: dict[str, Any] | None,
+    ) -> ConfigFlowResult:
+        """Handle the dosing-pump channel-count form.
+
+        The select carries string values (coerced back to int on save): the
+        frontend reliably preselects the configured value only for string
+        options, so keep this consistent with the stirrer/master selects.
+        """
         if user_input is not None:
-            return self.async_create_entry(title="", data={key: user_input[key]})
+            return self.async_create_entry(title="", data={key: int(user_input[key])})
         current = self.config_entry.options.get(key, self.config_entry.data.get(key, default))
-        data_schema = vol.Schema({vol.Required(key, default=current): vol.All(vol.Coerce(int), vol.In(options))})
+        data_schema = vol.Schema(
+            {
+                vol.Required(key, default=str(current)): vol.All(
+                    vol.Coerce(str), vol.In({str(option): str(option) for option in options})
+                )
+            }
+        )
         return self.async_show_form(step_id="init", data_schema=data_schema)
+
+    async def _async_stirrer_step(self, data: ChihirosData, user_input: dict[str, Any] | None) -> ConfigFlowResult:
+        """Handle the stirrer channel-count + master-pump form."""
+        if user_input is not None:
+            return await self._async_apply_stirrer_options(user_input, data)
+        return self._async_stirrer_form()
+
+    async def _async_apply_stirrer_options(self, user_input: dict[str, Any], data: ChihirosData) -> ConfigFlowResult:
+        """Persist the selected master link and mirror the pump programming."""
+        selected = user_input.get(CONF_MASTER_ADDRESS)
+        master = None if selected in (None, "", UNLINKED_MASTER) else selected
+        self._update_master_link(master)
+        if master is not None:
+            await self._async_mirror_new_master(master, data)
+        return self.async_create_entry(
+            title="", data={CONF_STIRRER_CHANNEL_COUNT: int(user_input[CONF_STIRRER_CHANNEL_COUNT])}
+        )
+
+    def _async_stirrer_form(self) -> ConfigFlowResult:
+        """Render the stirrer options form (channel count + master pump)."""
+        entry = self.config_entry
+        current_count = entry.options.get(
+            CONF_STIRRER_CHANNEL_COUNT, entry.data.get(CONF_STIRRER_CHANNEL_COUNT, STIRRER_CHANNEL_MAX)
+        )
+        current_master = str(entry.data.get(CONF_MASTER_ADDRESS, "")) or UNLINKED_MASTER
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_STIRRER_CHANNEL_COUNT, default=str(current_count)): vol.All(
+                    vol.Coerce(str), vol.In({str(option): str(option) for option in STIRRER_CHANNEL_COUNT_OPTIONS})
+                ),
+                vol.Optional(CONF_MASTER_ADDRESS, default=current_master): vol.In(
+                    self._master_select_options(current_master)
+                ),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=data_schema)
+
+    def _master_select_options(self, current_master: str) -> dict[str, str]:
+        """Return the selectable master pumps as ``{address: label}`` plus unlink."""
+        options = {UNLINKED_MASTER: "None (unlinked)"}
+        for entry_id, candidate in self.hass.data.get(DOMAIN, {}).items():
+            if entry_id == self.config_entry.entry_id or not is_dosing_capable(candidate.device):
+                continue
+            options[candidate.device.address] = f"{candidate.title} ({candidate.device.address})"
+        if current_master != UNLINKED_MASTER and current_master not in options:
+            options[current_master] = f"{current_master} (not loaded)"
+        return options
+
+    def _update_master_link(self, master: str | None) -> None:
+        """Write or clear the persisted master address on the stirrer entry."""
+        entry = self.config_entry
+        if master is None:
+            new_data = {key: value for key, value in entry.data.items() if key != CONF_MASTER_ADDRESS}
+        else:
+            new_data = {**entry.data, CONF_MASTER_ADDRESS: master}
+        self.hass.config_entries.async_update_entry(entry, data=new_data)
+
+    async def _async_mirror_new_master(self, master_address: str, stirrer_data: ChihirosData) -> None:
+        """Replay the pump's recorded programming onto the stirrer (best effort)."""
+        master_data = self._find_master(master_address)
+        if master_data is None:
+            return
+        try:
+            await async_mirror_pump_to_stirrer(master_data, stirrer_data)
+        except Exception as ex:  # noqa: BLE001 — linking must succeed even if replay does not
+            _LOGGER.warning(
+                "Linked %s to %s, but replaying the pump programming failed: %s",
+                stirrer_data.device.name,
+                master_data.device.name,
+                ex,
+            )
+
+    def _find_master(self, master_address: str) -> ChihirosData | None:
+        """Return the loaded device data for a master address, if any."""
+        target = master_address.upper()
+        for candidate in self.hass.data.get(DOMAIN, {}).values():
+            if candidate.device.address.upper() == target:
+                return candidate
+        return None
