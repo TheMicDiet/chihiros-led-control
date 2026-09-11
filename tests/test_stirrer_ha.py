@@ -104,6 +104,7 @@ async def _setup_stirrer(
     monkeypatch: pytest.MonkeyPatch,
     *,
     channel_count: int | None = None,
+    master_address: str | None = None,
 ) -> tuple[ConfigEntry, _TrackingStirrer]:
     """Set up the integration against a mock stirrer client."""
     client = _TrackingStirrer()
@@ -120,6 +121,8 @@ async def _setup_stirrer(
     data: dict[str, Any] = {CONF_ADDRESS: TEST_ADDRESS}
     if channel_count is not None:
         data["stirrer_channel_count"] = channel_count
+    if master_address is not None:
+        data["master_address"] = master_address
     entry = MockConfigEntry(
         domain=DOMAIN,
         title=client.name,
@@ -432,6 +435,17 @@ async def test_options_flow_changes_stirrer_channel_count(hass: HomeAssistant, m
 
     assert entry.options["stirrer_channel_count"] == 4
     assert _entity_id(hass, "switch", "stir_channel_3") is not None
+
+
+async def test_linked_stirrer_enables_pre_run_entities(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Linking a master pump enables the pre-run numbers (slave mode only)."""
+    _entry, _client = await _setup_stirrer(hass, monkeypatch, master_address="FA:CE:C0:00:00:04")
+    await hass.async_block_till_done()
+
+    registry = er.async_get(hass)
+    pre_run_ids = [_entity_id(hass, "number", f"stir_channel_{n}_pre_run") for n in range(1, STIRRER_CHANNEL_COUNT + 1)]
+    assert all(entity_id is not None for entity_id in pre_run_ids)
+    assert all(registry.async_get(entity_id).disabled_by is None for entity_id in pre_run_ids)
 
 
 async def test_validate_stir_points_unit() -> None:
