@@ -29,6 +29,7 @@ try:
     from homeassistant.config_entries import ConfigEntry, ConfigEntryState
     from homeassistant.const import ATTR_ENTITY_ID, CONF_ADDRESS, SERVICE_TURN_OFF, SERVICE_TURN_ON, STATE_OFF, STATE_ON
     from homeassistant.core import HomeAssistant
+    from homeassistant.data_entry_flow import FlowResultType
     from homeassistant.exceptions import HomeAssistantError
     from homeassistant.helpers import device_registry as dr
     from homeassistant.helpers import entity_registry as er
@@ -231,11 +232,28 @@ class TrackingDosingClient(TrackingChihirosClient):
         """Initialize the tracking dosing pump client."""
         super().__init__()
         self.model = DeviceModel("Dosing Pump", ("DYDOSE",), {})
+        self.calibrate_calls: list[dict[str, Any]] = []
+        self.stop_calls: list[int] = []
 
     @property
     def name(self) -> str:
         """Return the fake dosing pump name."""
         return "Test Dosing Pump"
+
+    async def calibrate_channel(
+        self,
+        channel: int,
+        *,
+        seconds: int | None = None,
+        volume_ml: float | None = None,
+    ) -> bytes:
+        """Record a calibration test dose or measured volume."""
+        self.calibrate_calls.append({"channel": channel, "seconds": seconds, "volume_ml": volume_ml})
+        return b""
+
+    async def stop_channel_run(self, channel: int) -> None:
+        """Record a calibration test-dose interrupt."""
+        self.stop_calls.append(channel)
 
 
 async def _setup_entry(
@@ -663,3 +681,117 @@ async def test_dosing_number_restore_valid_value(
 
     # Restored value is rounded to one decimal place.
     assert hass.states.get(pump_3_number).state == "3.2"
+
+
+async def _start_calibration_flow(hass: HomeAssistant, entity_registry: er.EntityRegistry) -> str:
+    """Press the calibration button and return the wizard's flow id."""
+    calibrate_button = _entity_id(entity_registry, BUTTON_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_calibrate")
+    await hass.services.async_call(BUTTON_DOMAIN, SERVICE_PRESS, {ATTR_ENTITY_ID: calibrate_button}, blocking=True)
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert len(flows) == 1
+    assert flows[0]["step_id"] == "calibrate_pump"
+    return flows[0]["flow_id"]
+
+
+async def test_calibration_wizard_records_measured_volume_and_sensor(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """The full wizard replays the app: 5 s run, measured volume, 4 ml test dose, accuracy."""
+    broadcast_calls: list[tuple[str, bytes, str]] = []
+
+    async def _capture_broadcast(_hass: HomeAssistant, address: str, frame: bytes | bytearray, action: str) -> None:
+        """Record wizard broadcast attempts."""
+        broadcast_calls.append((address, bytes(frame), action))
+
+    monkeypatch.setattr(
+        "custom_components.chihiros.master_slave_services.async_broadcast_frame_to_linked_stirrers",
+        _capture_broadcast,
+    )
+
+    dosing_client = TrackingDosingClient()
+    await _setup_entry(hass, monkeypatch, dosing_client)
+    flow_id = await _start_calibration_flow(hass, entity_registry)
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {"pump": "2"})
+    assert result["step_id"] == "calibrate_run"
+
+    # Step 1: fixed 5 s timed calibration run (no fields), then broadcast.
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
+    assert result["step_id"] == "calibrate_measure"
+    assert dosing_client.calibrate_calls == [{"channel": 1, "seconds": 5, "volume_ml": None}]
+
+    # Step 2: enter the measured volume.
+    result = await hass.config_entries.flow.async_configure(flow_id, {"volume_ml": 4.05})
+    assert result["step_id"] == "calibrate_test"
+    assert dosing_client.calibrate_calls[-1] == {"channel": 1, "seconds": None, "volume_ml": 4.05}
+
+    # Step 3: the fixed 4 ml test dose goes through the manual-dose path.
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
+    assert result["step_id"] == "calibrate_accuracy"
+    assert dosing_client.dose_ml_calls == [(1, 4.0)]
+
+    # Step 4: "Yes! Continue" finishes; the daily total sensor got the 4 ml dose.
+    result = await hass.config_entries.flow.async_configure(flow_id, {"accurate": True})
+    await _flush_ha_state_updates()
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "calibration_complete"
+
+    # The wizard broadcasts the calibration frames and the 4 ml test dose like
+    # the app does when a stirrer slave is linked (device-null DataSendEvent).
+    assert broadcast_calls == [
+        (TEST_ADDRESS, b"", "calibration test dose"),
+        (TEST_ADDRESS, b"", "calibration"),
+        (TEST_ADDRESS, b"", "manual dose"),
+    ]
+
+    # The wizard persists the calibration time per channel.
+    last_calibration_sensor = _entity_id(
+        entity_registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_last_calibration"
+    )
+    assert hass.states.get(last_calibration_sensor).state not in ("unknown", "unavailable")
+
+
+async def test_calibration_wizard_recalibrate_on_inaccurate_test_dose(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """Choosing No! Re-calibrate restarts the wizard from the timed calibration run."""
+    dosing_client = TrackingDosingClient()
+    await _setup_entry(hass, monkeypatch, dosing_client)
+    flow_id = await _start_calibration_flow(hass, entity_registry)
+
+    await hass.config_entries.flow.async_configure(flow_id, {"pump": "1"})
+    await hass.config_entries.flow.async_configure(flow_id, {})
+    await hass.config_entries.flow.async_configure(flow_id, {"volume_ml": 2.5})
+    await hass.config_entries.flow.async_configure(flow_id, {})
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {"accurate": False})
+    assert result["step_id"] == "calibrate_run"
+
+    # Restarting runs the 5 s calibration dose a second time.
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
+    assert result["step_id"] == "calibrate_measure"
+    assert dosing_client.calibrate_calls == [
+        {"channel": 0, "seconds": 5, "volume_ml": None},
+        {"channel": 0, "seconds": None, "volume_ml": 2.5},
+        {"channel": 0, "seconds": 5, "volume_ml": None},
+    ]
+
+
+async def test_calibration_wizard_rejects_second_flow_for_same_device(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """A device with a wizard already in progress refuses to start another one."""
+    dosing_client = TrackingDosingClient()
+    await _setup_entry(hass, monkeypatch, dosing_client)
+    await _start_calibration_flow(hass, entity_registry)
+
+    calibrate_button = _entity_id(entity_registry, BUTTON_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_calibrate")
+    with pytest.raises(HomeAssistantError, match="already in progress"):
+        await hass.services.async_call(BUTTON_DOMAIN, SERVICE_PRESS, {ATTR_ENTITY_ID: calibrate_button}, blocking=True)

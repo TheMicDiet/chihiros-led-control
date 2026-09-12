@@ -145,10 +145,13 @@ def test_calibrate_command_encodes_time_and_volume() -> None:
     assert _payload(measured) == [0, 255, 2, 50]
     both = commands.create_dosing_calibrate_command(MSG_ID, 0, seconds=10, volume_ml=8.0)
     assert _payload(both) == [0, 10, 8, 0]
-    # A sub-0.1 mL remainder near 1.0 mL must stay a 2-digit fraction (0-99),
-    # not round up to 100 (e.g. 2.999 mL).
-    assert _payload(commands.create_dosing_calibrate_command(MSG_ID, 0, volume_ml=2.999)) == [0, 255, 2, 99]
-    assert _payload(commands.create_dosing_calibrate_command(MSG_ID, 0, volume_ml=0.999)) == [0, 255, 0, 99]
+    # The fraction byte is rounded half-up like the app (LibcRound @ 0xa69398)
+    # and may be 100, which the device reads as the next whole mL (2.999 mL).
+    assert _payload(commands.create_dosing_calibrate_command(MSG_ID, 0, volume_ml=2.999)) == [0, 255, 2, 100]
+    assert _payload(commands.create_dosing_calibrate_command(MSG_ID, 0, volume_ml=0.999)) == [0, 255, 0, 100]
+    # Boundary checks: 2.994 mL stays at 99; 2.985 mL rounds to 99 (not 98, no banker's rounding).
+    assert _payload(commands.create_dosing_calibrate_command(MSG_ID, 0, volume_ml=2.994)) == [0, 255, 2, 99]
+    assert _payload(commands.create_dosing_calibrate_command(MSG_ID, 0, volume_ml=2.985)) == [0, 255, 2, 99]
     with pytest.raises(ValueError, match="seconds"):
         commands.create_dosing_calibrate_command(MSG_ID, 0, seconds=256)
     # 255 is the wire sentinel for "omitted", so it cannot be an explicit run time.

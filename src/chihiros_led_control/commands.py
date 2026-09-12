@@ -239,7 +239,9 @@ def create_dosing_calibrate_command(
     Payload ``[channel, time?, vol_int, vol_frac]``: ``seconds`` is the test
     dose run time (0-254; 255 marks the field as omitted) and the volume
     splits as ``[int mL, 2-digit fraction]`` (255/255 when omitted) — e.g.
-    2.5 mL encodes as ``(2, 50)``.
+    2.5 mL encodes as ``(2, 50)``. The fraction byte is rounded half-up like
+    the app (``LibcRound`` @ 0xa69398) and can be ``100``, which the device
+    reads as the next whole mL (2.999 mL encodes as ``(2, 100)``).
     """
     _validate_dosing_channel(channel)
     if seconds is None:
@@ -255,8 +257,9 @@ def create_dosing_calibrate_command(
         whole_ml, remainder_ul = divmod(microliters, 1000)
         if not 0 <= whole_ml <= 255:
             raise ValueError("Calibration volume must be between 0 and 255.99 mL")
-        # Truncate to the 2-digit fraction field (0-99); rounding could yield 100.
-        volume = [whole_ml, remainder_ul // 10]
+        # Round the 2-digit fraction half-up like the app (LibcRound @
+        # 0xa69398); the result may be 100 = the next whole mL.
+        volume = [whole_ml, (remainder_ul + 5) // 10]
     return create_command_encoding(165, 22, msg_id, [channel, time_byte, *volume], avoid_reserved_byte=False)
 
 

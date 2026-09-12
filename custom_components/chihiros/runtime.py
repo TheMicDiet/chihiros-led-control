@@ -36,6 +36,15 @@ class DosingChihirosClient(Protocol):
     async def dose_ml(self, pump_idx: int, volume_ml: float) -> bytes:
         """Dose a volume in mL on a dosing pump channel and return the frame."""
 
+    async def calibrate_channel(
+        self,
+        channel: int,
+        *,
+        seconds: int | None = None,
+        volume_ml: float | None = None,
+    ) -> bytes:
+        """Run one channel's calibration test dose or record its measured volume."""
+
 
 class StirrerChihirosClient(Protocol):
     """Home Assistant-facing magnetic stirrer client surface."""

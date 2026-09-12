@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from .const import CONF_MASTER_ADDRESS, DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
 from .dosing import (
+    DosingCalibrationTracker,
     DosingDailyTotals,
     DosingProgrammingTracker,
     entry_pump_count,
@@ -214,6 +215,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     dosing_totals = None
     dosing_volumes: list[float] = []
     dosing_programming: DosingProgrammingTracker | None = None
+    dosing_calibration: DosingCalibrationTracker | None = None
     stirrer_states: list[StirrerChannelState] = []
     if is_stirrer_capable(runtime.client):
         stirrer_states = [StirrerChannelState() for _ in range(entry_stirrer_channel_count(entry))]
@@ -227,10 +229,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         dosing_volumes = [1.0] * dosing_totals.pump_count
         dosing_programming = DosingProgrammingTracker(hass, runtime.address)
         await dosing_programming.async_load()
+        dosing_calibration = DosingCalibrationTracker(hass, runtime.address)
+        await dosing_calibration.async_load()
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = ChihirosData(
-        entry.title, runtime.client, coordinator, dosing_totals, dosing_volumes, stirrer_states, dosing_programming
+        entry.title,
+        runtime.client,
+        coordinator,
+        dosing_totals,
+        dosing_volumes,
+        stirrer_states,
+        dosing_programming,
+        dosing_calibration,
     )
     _async_update_services(hass)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

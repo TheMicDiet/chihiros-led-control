@@ -5,6 +5,7 @@ from __future__ import annotations
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import async_trigger_dose_ml
@@ -28,6 +29,7 @@ async def async_setup_entry(
         ChihirosDosingButton(chihiros_data.device, chihiros_data, pump_idx)
         for pump_idx in range(chihiros_data.dosing_totals.pump_count)
     )
+    async_add_entities([ChihirosCalibrationButton(chihiros_data)])
 
 
 class ChihirosDosingButton(ButtonEntity):
@@ -50,3 +52,23 @@ class ChihirosDosingButton(ButtonEntity):
         await async_trigger_dose_ml(
             self.hass, self._chihiros_data, self._pump_idx, self._chihiros_data.dosing_volumes[self._pump_idx]
         )
+
+
+class ChihirosCalibrationButton(ButtonEntity):
+    """Button entity that opens the dosing pump calibration wizard."""
+
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, chihiros_data: ChihirosData) -> None:
+        """Initialize the calibration wizard button."""
+        self._chihiros_data = chihiros_data
+        self._attr_name = chihiros_entity_name(chihiros_data.device, "Calibrate pump")
+        self._attr_unique_id = chihiros_unique_id(chihiros_data.device.address, "dosing_pump_calibrate")
+        self._attr_device_info = chihiros_device_info(chihiros_data.device, chihiros_data.device.address)
+
+    async def async_press(self) -> None:
+        """Start the per-channel calibration wizard."""
+        from .calibration_flow import async_start_calibration_flow
+
+        await async_start_calibration_flow(self.hass, self._chihiros_data)

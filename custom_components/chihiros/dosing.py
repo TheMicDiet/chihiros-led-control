@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -19,6 +19,9 @@ from .vendor.chihiros_led_control.models import DOSING_PUMP
 STORAGE_KEY = f"{DOMAIN}_dosing_daily_totals"
 STORAGE_VERSION = 1
 PROGRAMMING_STORAGE_KEY = f"{DOMAIN}_dosing_programming"
+CALIBRATION_STORAGE_KEY = f"{DOMAIN}_dosing_calibration"
+SIGNAL_DOSING_TOTALS_UPDATED = f"{DOMAIN}_dosing_totals_updated"
+SIGNAL_DOSING_CALIBRATION_UPDATED = f"{DOMAIN}_dosing_calibration_updated"
 CONF_PUMP_COUNT = "pump_count"
 PUMP_COUNT = 4
 PUMP_COUNT_OPTIONS = (2, 4, 8)
@@ -28,7 +31,6 @@ PUMP_COUNT_OPTIONS = (2, 4, 8)
 CONF_STIRRER_CHANNEL_COUNT = "stirrer_channel_count"
 STIRRER_CHANNEL_MAX = 8
 STIRRER_CHANNEL_COUNT_OPTIONS = (2, 4, 8)
-SIGNAL_DOSING_TOTALS_UPDATED = f"{DOMAIN}_dosing_totals_updated"
 
 
 @dataclass
@@ -148,6 +150,69 @@ class DosingDailyTotals:
     def _validate_pump_idx(self, pump_idx: int) -> None:
         if pump_idx < 0 or pump_idx >= self.pump_count:
             raise ValueError(f"Pump index must be between 0 and {self.pump_count - 1}")
+
+
+@dataclass
+class DosingCalibrationTracker:
+    """Persisted record of one pump channel's last calibration.
+
+    The wizard writes a record after a channel's measured volume has been
+    submitted; the ``last_calibration`` sensors read from here. Records keep
+    the test run duration and the measured volume for reference.
+    """
+
+    hass: HomeAssistant
+    address: str
+    _store: Store[dict[str, Any]] = field(init=False)
+    _channels: dict[int, dict[str, Any]] = field(init=False, default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Create the per-address store."""
+        self._store = Store(
+            self.hass,
+            STORAGE_VERSION,
+            f"{CALIBRATION_STORAGE_KEY}_{self.address.lower().replace(':', '_')}",
+        )
+
+    async def async_load(self) -> None:
+        """Load recorded calibrations from Home Assistant storage."""
+        stored = await self._store.async_load()
+        if isinstance(stored, dict):
+            self._channels = {int(channel): record for channel, record in stored.get("channels", {}).items()}
+
+    @property
+    def address_signal(self) -> str:
+        """Return the dispatcher signal for this device's calibration records."""
+        return f"{SIGNAL_DOSING_CALIBRATION_UPDATED}_{self.address.lower()}"
+
+    def record(self, channel: int) -> dict[str, Any] | None:
+        """Return one channel's calibration record, or None."""
+        stored = self._channels.get(channel)
+        return dict(stored) if stored else None
+
+    def calibrated_at(self, channel: int) -> datetime | None:
+        """Return one channel's last calibration timestamp, if any."""
+        stored = self._channels.get(channel)
+        if not stored or not stored.get("calibrated"):
+            return None
+        try:
+            return datetime.fromisoformat(str(stored["calibrated"]))
+        except ValueError:
+            return None
+
+    async def async_record(self, channel: int, *, seconds: int | None, volume_ml: float | None) -> None:
+        """Store one channel's calibration result and persist it."""
+        self._channels[channel] = {
+            "calibrated": dt_util.now().isoformat(),
+            "seconds": seconds,
+            "volume_ml": volume_ml,
+        }
+        await self._async_save()
+        async_dispatcher_send(self.hass, self.address_signal)
+
+    async def _async_save(self) -> None:
+        """Persist the per-channel calibration records."""
+        await self._store.async_save({"channels": {str(channel): record for channel, record in self._channels.items()}})
 
 
 def is_dosing_capable(device: object) -> bool:

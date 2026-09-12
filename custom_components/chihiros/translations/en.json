@@ -4,7 +4,9 @@
             "already_configured": "Device is already configured",
             "already_in_progress": "Configuration flow is already in progress",
             "no_devices_found": "No devices found on the network",
-            "not_supported": "Device not supported"
+            "not_supported": "Device not supported",
+            "not_dosing_pump": "This device is not a dosing pump",
+            "calibration_complete": "Calibration of pump {pump} finished: the 4 ml test dose was confirmed accurate"
         },
         "error": {
             "cannot_connect": "Failed to connect",
@@ -34,6 +36,30 @@
                     "stirrer_channel_count": "Stir channels"
                 },
                 "description": "Choose how many stir channels this magnetic stirrer should expose"
+            },
+            "calibrate_pump": {
+                "data": {
+                    "pump": "Pump"
+                },
+                "description": "Choose which pump channel to calibrate"
+            },
+            "calibrate_run": {
+                "description": "Put the measuring cylinder at outlet of tube. Press \"Start calibration dose\": this will dose between 2 and 4 ml and will take up to 5 seconds."
+            },
+            "calibrate_measure": {
+                "data": {
+                    "volume_ml": "Measured volume (mL)"
+                },
+                "description": "Enter exact volume of ml here. Place the measuring cylinder on a horizontal surface, check the level of the water surface, estimate the level of the bottom of the concave water surface to the nearest 0.05ml"
+            },
+            "calibrate_test": {
+                "description": "Make sure the tube measuring cylinder is empty and completely dry, then submit to dose a known 4 ml volume."
+            },
+            "calibrate_accuracy": {
+                "data": {
+                    "accurate": "Yes, continue"
+                },
+                "description": "Was this accurate? (between 3.95-4.05ml). Choosing no restarts the calibration."
             },
             "user": {
                 "data": {

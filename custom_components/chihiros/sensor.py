@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.bluetooth.passive_update_coordinator import (
@@ -33,7 +34,7 @@ from .coordinator import (
     ATTR_SCHEDULE_POINTS,
     ChihirosDataUpdateCoordinator,
 )
-from .dosing import DosingDailyTotals
+from .dosing import DosingCalibrationTracker, DosingDailyTotals
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData
 from .runtime import ChihirosClient
@@ -96,6 +97,16 @@ async def async_setup_entry(
             entities.append(
                 ChihirosDosingLifetimeCyclesSensor(chihiros_data.coordinator, chihiros_data.device, totals, pump_idx)
             )
+            if chihiros_data.dosing_calibration:
+                entities.append(
+                    ChihirosDosingLastCalibrationSensor(
+                        chihiros_data.coordinator,
+                        chihiros_data.device,
+                        totals,
+                        chihiros_data.dosing_calibration,
+                        pump_idx,
+                    )
+                )
         async_add_entities(entities)
         hass.async_create_task(_async_request_initial_status(chihiros_data.coordinator))
         return
@@ -229,11 +240,13 @@ class ChihirosDosingSensorBase(
         self._attr_device_info = chihiros_device_info(device, coordinator.address)
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to coordinator and local dosing total updates."""
+        """Subscribe to the local dosing state updates for this sensor."""
         await super().async_added_to_hass()
-        self.async_on_remove(
-            async_dispatcher_connect(self.hass, self._totals.address_signal, self.async_write_ha_state)
-        )
+        self.async_on_remove(async_dispatcher_connect(self.hass, self._update_signal(), self.async_write_ha_state))
+
+    def _update_signal(self) -> str:
+        """Return the dispatcher signal that refreshes this sensor."""
+        return self._totals.address_signal
 
     @property
     def available(self) -> bool:
@@ -351,6 +364,42 @@ class ChihirosDosingLifetimeCyclesSensor(ChihirosDosingSensorBase):
     def native_value(self) -> int:
         """Return the lifetime tracked dose count."""
         return self._totals.lifetime_cycles(self._pump_idx)
+
+
+class ChihirosDosingLastCalibrationSensor(ChihirosDosingSensorBase):
+    """Sensor for the time one pump was last calibrated through the wizard."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        coordinator: ChihirosDataUpdateCoordinator,
+        device: ChihirosClient,
+        totals: DosingDailyTotals,
+        calibration: DosingCalibrationTracker,
+        pump_idx: int,
+    ) -> None:
+        """Initialize the last-calibration timestamp sensor."""
+        pump_number = pump_idx + 1
+        super().__init__(
+            coordinator,
+            device,
+            totals,
+            pump_idx,
+            f"dosing_pump_{pump_number}_last_calibration",
+            f"Pump {pump_number} last calibration",
+        )
+        self._calibration = calibration
+
+    def _update_signal(self) -> str:
+        """Refresh on calibration record updates."""
+        return self._calibration.address_signal
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the channel's last calibration timestamp, if recorded."""
+        return self._calibration.calibrated_at(self._pump_idx)
 
 
 def _dosing_ul_value(values: object, pump_idx: int) -> float | None:

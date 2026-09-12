@@ -917,17 +917,21 @@ class ChihirosDosingPump(ChihirosDevice):
         *,
         seconds: int | None = None,
         volume_ml: float | None = None,
-    ) -> None:
+    ) -> bytes:
         """Run a channel calibration (app's ``dosingCalibrate``).
 
         Either ``seconds`` (run the pump for a timed test dose) or
         ``volume_ml`` (record the measured volume of a previous test run) must
-        be given; the app's wizard sends both variants.
+        be given; the app's wizard sends both variants. Returns the exact
+        frame sent — while a stirrer slave is linked the app broadcasts it
+        verbatim (DOSING_CONTROL.md §5; the device-null routing is verified
+        in ``DosingPumpInfo.calibration`` @ 0xa6922c).
         """
         if seconds is None and volume_ml is None:
             raise ValueError("Calibration needs either seconds or volume_ml")
         cmd = commands.create_dosing_calibrate_command(self.get_next_msg_id(), channel, seconds, volume_ml)
         await self._send_command(cmd, 3)
+        return bytes(cmd)
 
     async def set_dose_delay(self, enabled: bool) -> None:
         """Toggle the device-level dose delay flag (app's ``setDosingDelay``)."""

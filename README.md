@@ -22,7 +22,7 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 - Chihiros Commander 1
 - Chihiros Commander 4
 - Chihiros Commander X
-- Chihiros dosing pump (`DYDOSE*`, `DYNDOS`) with first Home Assistant support for manual dosing, daily dose totals, and lifetime pump cycle/ml counters
+- Chihiros dosing pump (`DYDOSE*`, `DYNDOS`) with first Home Assistant support for manual dosing, per-channel calibration, daily dose totals, and lifetime pump cycle/ml counters
 - Chihiros magnetic stirrer (`DYMIXR*`) with per-channel stir switches, speed and pre-run numbers, timer schedule programming, and master/slave mirroring of a linked dosing pump
 - [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
 - Chihiros New C
@@ -163,6 +163,32 @@ data:
   pump: 1
   ml: 2.5
 ```
+
+#### Calibrating a dosing pump
+
+Each dosing pump exposes a **Calibrate pump** button (shown under
+"Configuration" on the device page). Pressing it starts a wizard that replays
+the vendor app's calibration exactly (`DosingCalibrateWidget`, verified
+against the 2.8.59 decompile; note its call-site constants are smi-tagged, so
+raw `8000` = 4000 µL and raw `10` = 5 s):
+
+1. **Calibration dose** — a fixed 5-second timed run (`dosingCalibrate`
+   `[ch, 5, 255, 255]`); the pump dispenses 2–4 ml in up to 5 seconds.
+2. **Enter the measured volume** — what the pump actually dispensed, read to
+   the nearest 0.05 ml (`dosingCalibrate` `[ch, 255, int, frac]`).
+3. **Dose 4ml test** — a fixed 4 ml manual dose (the app's `tempDosing(4000)`
+   "Dose 4ml" button; counted in the daily totals like any manual dose).
+4. **"Was this accurate? (between 3.95-4.05ml)"** — *Yes* finishes the
+   wizard, *No* restarts it from step 1 (the app's "No!Re-calibrate" path).
+
+While a stirrer slave is linked, every frame is broadcast to the stirrer
+verbatim, matching the app's device-null `DataSendEvent` routing (verified in
+`DosingPumpInfo.calibration` @ 0xa6922c). A per-channel `last calibration`
+sensor shows when each channel was last calibrated (the app tracks the same
+flag locally; the device never reports it). The app's optional channel-rename
+step is local-only and has no HA equivalent.
+Magnetic stirrers are not calibratable and do not get the wizard button
+(matching the app, which has no stirrer calibration UI).
 
 Magnetic stirrers (`DYMIXR`) expose one stir switch and a speed number
 (0-100 %, device default 40) per channel; the pre-run number (0-999 s) is

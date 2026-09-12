@@ -189,6 +189,8 @@ class FakeChihirosDevice:
         self.stir_schedules: list[tuple[int, tuple[tuple[int, int, float], ...], int, bool]] = []
         # Pump programming writes (set_channel_active/apply_dosing_settings/set_schedule/set_dose_delay).
         self.dosing_programming_calls: list[dict[str, object]] = []
+        # Calibration wizard writes (calibrate_channel/stop_channel_run).
+        self.calibration_calls: list[dict[str, object]] = []
         # Verbatim broadcast frames received via send_frame (master/slave replay).
         self.broadcast_frames: list[bytes] = []
 
@@ -410,6 +412,18 @@ class FakeChihirosDevice:
         """Record a fake channel reset."""
         await asyncio.sleep(0)
         self.dosing_programming_calls.append({"kind": "reset", "channel": channel})
+        return b""
+
+    async def calibrate_channel(
+        self,
+        channel: int,
+        *,
+        seconds: int | None = None,
+        volume_ml: float | None = None,
+    ) -> bytes:
+        """Record a fake calibration test dose or measured volume."""
+        await asyncio.sleep(0)
+        self.calibration_calls.append({"channel": channel, "seconds": seconds, "volume_ml": volume_ml})
         return b""
 
     async def send_frame(self, frame: bytes | bytearray) -> None:

@@ -591,7 +591,7 @@ total itself.
 | ---: | ---: | --- | --- |
 | `165` | `27` | `[ch, frequency, 1, first?0:1, vol_hi, vol_lo]` | Program a channel's daily dose (`dosingSet`); byte 4 is polarity-inverted: `0` when this is the channel's first programming of the day; `vol = [255, 255]` for a null volume |
 | `165` | `32` | `[ch, compensate?1:0, active?1:0]` | Enable/disable a channel and interrupt compensation (`setDosingInterruptCompensationAndActive`) |
-| `165` | `22` | `[ch, time?255, vol_int, vol_frac]` | Calibration: `time` = test-dose seconds (255 = omitted); volume splits as `[int mL, 2-digit fraction]` (2.5 mL = `(2, 50)`); `255/255` when omitted |
+| `165` | `22` | `[ch, time?255, vol_int, vol_frac]` | Calibration: `time` = test-dose seconds (255 = omitted); volume splits as `[int mL, 2-digit fraction]` (2.5 mL = `(2, 50)`), fraction rounded half-up (`LibcRound` @ 0xa69398) so it can be `100` = next whole mL (2.999 mL = `(2, 100)`); `255/255` when omitted |
 | `165` | `5` | `[ch+25, 255, 255]` | Reset a channel's programming (`resetDosingChannel`) |
 | `165` | `5` | `[ch+21, 255, 255]` | Zero a channel's lifetime counter (`resetTotalDosing`) |
 | `165` | `31` | `[enabled?1:0]` | Device-level dose delay flag (`setDosingDelay`) |

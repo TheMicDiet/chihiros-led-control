@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 
 from .coordinator import ChihirosDataUpdateCoordinator
-from .dosing import DosingDailyTotals, DosingProgrammingTracker
+from .dosing import DosingCalibrationTracker, DosingDailyTotals, DosingProgrammingTracker
 from .runtime import ChihirosClient
 
 
@@ -41,3 +41,4 @@ class ChihirosData:
     dosing_volumes: list[float] = field(default_factory=list)
     stirrer_states: list[StirrerChannelState] = field(default_factory=list)
     dosing_programming: DosingProgrammingTracker | None = None
+    dosing_calibration: DosingCalibrationTracker | None = None

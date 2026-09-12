@@ -29,6 +29,30 @@
         "data": {
           "stirrer_channel_count": "Stir channels"
         }
+      },
+      "calibrate_pump": {
+        "description": "Choose which pump channel to calibrate",
+        "data": {
+          "pump": "Pump"
+        }
+      },
+      "calibrate_run": {
+        "description": "Put the measuring cylinder at the outlet of the tube, then submit to start the calibration dose. This will dose between 2 and 4 ml and will take up to 5 seconds."
+      },
+      "calibrate_measure": {
+        "description": "Enter exact volume of ml here. Place the measuring cylinder on a horizontal surface, check the level of the water surface, estimate the level of the bottom of the concave water surface to the nearest 0.05ml",
+        "data": {
+          "volume_ml": "Measured volume (mL)"
+        }
+      },
+      "calibrate_test": {
+        "description": "Make sure the tube measuring cylinder is empty and completely dry, then submit to dose a known 4 ml volume."
+      },
+      "calibrate_accuracy": {
+        "description": "Was this accurate? (between 3.95-4.05ml). Choosing no restarts the calibration.",
+        "data": {
+          "accurate": "Yes, continue"
+        }
       }
     },
     "error": {
@@ -40,7 +64,9 @@
       "not_supported": "Device not supported",
       "no_devices_found": "[%key:common::config_flow::abort::no_devices_found%]",
       "already_in_progress": "[%key:common::config_flow::abort::already_in_progress%]",
-      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
+      "not_dosing_pump": "This device is not a dosing pump",
+      "calibration_complete": "Calibration of pump {pump} finished: the 4 ml test dose was confirmed accurate"
     }
   },
   "options": {
