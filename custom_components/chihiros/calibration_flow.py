@@ -61,11 +61,11 @@ def _find_entry_id(hass: HomeAssistant, chihiros_data: ChihirosData) -> str | No
 
 def calibration_in_progress(hass: HomeAssistant, entry_id: str) -> bool:
     """Return whether a calibration wizard is already running for a config entry."""
-    for progress in hass.config_entries.flow.async_progress_by_handler(DOMAIN):
-        context = progress.get("context", {})
-        if context.get("source") == SOURCE_CALIBRATE_PUMP and context.get("entry_id") == entry_id:
-            return True
-    return False
+    return bool(
+        hass.config_entries.flow.async_progress_by_handler(
+            DOMAIN, match_context={"source": SOURCE_CALIBRATE_PUMP, "entry_id": entry_id}
+        )
+    )
 
 
 async def async_start_calibration_flow(hass: HomeAssistant, chihiros_data: ChihirosData) -> None:
@@ -122,22 +122,40 @@ def _dosing_device(chihiros_data: ChihirosData) -> DosingChihirosClient:
     return cast("DosingChihirosClient", chihiros_data.device)
 
 
-async def _async_send_calibration_run(hass: HomeAssistant, chihiros_data: ChihirosData, pump_idx: int) -> None:
-    """Start the fixed 5 s timed calibration run (app's ``calibration(time: 5)``)."""
+async def _async_broadcast_calibration_frame(
+    hass: HomeAssistant, chihiros_data: ChihirosData, frame: bytes, action: str
+) -> None:
+    """Broadcast one calibration frame to linked stirrers, best effort only.
+
+    The pump write already happened (and the timed run cannot be safely
+    replayed), so a failed mirror must not fail the wizard step and invite a
+    retry that would dose again.
+    """
     from .master_slave_services import async_broadcast_frame_to_linked_stirrers
 
+    try:
+        await async_broadcast_frame_to_linked_stirrers(hass, chihiros_data.device.address, frame, action)
+    except HomeAssistantError as ex:
+        _LOGGER.warning(
+            "Calibration %s on %s succeeded, but broadcasting to linked stirrers failed: %s",
+            action,
+            chihiros_data.device.name,
+            ex,
+        )
+
+
+async def _async_send_calibration_run(hass: HomeAssistant, chihiros_data: ChihirosData, pump_idx: int) -> None:
+    """Start the fixed 5 s timed calibration run (app's ``calibration(time: 5)``)."""
     frame = await _dosing_device(chihiros_data).calibrate_channel(pump_idx, seconds=CALIBRATION_RUN_SECONDS)
-    await async_broadcast_frame_to_linked_stirrers(hass, chihiros_data.device.address, frame, "calibration test dose")
+    await _async_broadcast_calibration_frame(hass, chihiros_data, frame, "calibration test dose")
 
 
 async def _async_submit_measured_volume(
     hass: HomeAssistant, chihiros_data: ChihirosData, pump_idx: int, volume_ml: float
 ) -> None:
     """Record the measured volume on the device and in the local tracker (app step 2)."""
-    from .master_slave_services import async_broadcast_frame_to_linked_stirrers
-
     frame = await _dosing_device(chihiros_data).calibrate_channel(pump_idx, volume_ml=volume_ml)
-    await async_broadcast_frame_to_linked_stirrers(hass, chihiros_data.device.address, frame, "calibration")
+    await _async_broadcast_calibration_frame(hass, chihiros_data, frame, "calibration")
     if chihiros_data.dosing_calibration:
         await chihiros_data.dosing_calibration.async_record(
             pump_idx, seconds=CALIBRATION_RUN_SECONDS, volume_ml=volume_ml
@@ -153,7 +171,7 @@ async def _async_run_test_dose(hass: HomeAssistant, chihiros_data: ChihirosData,
     """
     from . import async_trigger_dose_ml
 
-    await async_trigger_dose_ml(hass, chihiros_data, pump_idx, TEST_DOSE_ML)
+    await async_trigger_dose_ml(hass, chihiros_data, pump_idx, TEST_DOSE_ML, best_effort_broadcast=True)
 
 
 class DosingCalibrationFlowMixin:
@@ -246,10 +264,7 @@ class DosingCalibrationFlowMixin:
         if user_input.get(ATTR_ACCURATE):
             return self.async_abort(
                 reason="calibration_complete",
-                description_placeholders={
-                    "pump": str(self._calibration_pump + 1),
-                    "volume_ml": str(TEST_DOSE_ML),
-                },
+                description_placeholders={"pump": str(self._calibration_pump + 1)},
             )
         # "No! Re-calibrate" restarts the wizard from the timed run.
         return await self.async_step_calibrate_run()

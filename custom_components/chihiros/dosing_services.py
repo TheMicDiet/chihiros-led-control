@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import cast
 
 import voluptuous as vol
@@ -12,6 +13,8 @@ from .const import DOMAIN
 from .models import ChihirosData
 from .runtime import DosingChihirosClient
 from .service_utils import DEVICE_SELECTOR_SCHEMA, resolve_service_device
+
+_LOGGER = logging.getLogger(__name__)
 
 SERVICE_DOSE_ML = "dose_ml"
 ATTR_ML = "ml"
@@ -50,13 +53,23 @@ def async_remove_dosing_service(hass: HomeAssistant) -> None:
 
 
 async def async_trigger_dose_ml(
-    hass: HomeAssistant, chihiros_data: ChihirosData, pump_idx: int, volume_ml: float
+    hass: HomeAssistant,
+    chihiros_data: ChihirosData,
+    pump_idx: int,
+    volume_ml: float,
+    *,
+    best_effort_broadcast: bool = False,
 ) -> None:
     """Trigger a manual dose, update local totals, and broadcast to slaves.
 
     The vendor app broadcasts the manual-dose frame verbatim to every
     connected device when a stirrer slave is linked (DOSING_CONTROL.md §5,
     verified at 0xa62d78) — the stirrer treats it as an immediate stir.
+
+    The dose is non-idempotent and has already been dispensed once the frame
+    is sent, so ``best_effort_broadcast=True`` lets a wizard advance (and keep
+    the recorded total) when only the mirror to linked stirrers failed,
+    instead of re-offering the action and risking a second dose.
     """
     if not chihiros_data.dosing_totals:
         raise HomeAssistantError(f"{chihiros_data.device.name} is not a dosing pump")
@@ -65,4 +78,16 @@ async def async_trigger_dose_ml(
     await chihiros_data.dosing_totals.async_add_dose(pump_idx, volume_ml)
     from .master_slave_services import async_broadcast_frame_to_linked_stirrers
 
-    await async_broadcast_frame_to_linked_stirrers(hass, chihiros_data.device.address, manual_dose_frame, "manual dose")
+    try:
+        await async_broadcast_frame_to_linked_stirrers(
+            hass, chihiros_data.device.address, manual_dose_frame, "manual dose"
+        )
+    except HomeAssistantError as ex:
+        if not best_effort_broadcast:
+            raise
+        _LOGGER.warning(
+            "Dose of %.1f mL on %s succeeded, but broadcasting to linked stirrers failed: %s",
+            volume_ml,
+            chihiros_data.device.name,
+            ex,
+        )

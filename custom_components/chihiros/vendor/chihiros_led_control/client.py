@@ -930,7 +930,12 @@ class ChihirosDosingPump(ChihirosDevice):
         if seconds is None and volume_ml is None:
             raise ValueError("Calibration needs either seconds or volume_ml")
         cmd = commands.create_dosing_calibrate_command(self.get_next_msg_id(), channel, seconds, volume_ml)
-        await self._send_command(cmd, 3)
+        # A disconnect after the timed-run frame is ambiguous: the pump may
+        # already be running the dose. Never replay it (same rule as
+        # ``dose_ml``). Recording a measured volume is idempotent, so it keeps
+        # the normal retry budget.
+        retry = 1 if seconds is not None else 3
+        await self._send_command(cmd, retry)
         return bytes(cmd)
 
     async def set_dose_delay(self, enabled: bool) -> None:

@@ -233,7 +233,6 @@ class TrackingDosingClient(TrackingChihirosClient):
         super().__init__()
         self.model = DeviceModel("Dosing Pump", ("DYDOSE",), {})
         self.calibrate_calls: list[dict[str, Any]] = []
-        self.stop_calls: list[int] = []
 
     @property
     def name(self) -> str:
@@ -250,10 +249,6 @@ class TrackingDosingClient(TrackingChihirosClient):
         """Record a calibration test dose or measured volume."""
         self.calibrate_calls.append({"channel": channel, "seconds": seconds, "volume_ml": volume_ml})
         return b""
-
-    async def stop_channel_run(self, channel: int) -> None:
-        """Record a calibration test-dose interrupt."""
-        self.stop_calls.append(channel)
 
 
 async def _setup_entry(
@@ -795,3 +790,39 @@ async def test_calibration_wizard_rejects_second_flow_for_same_device(
     calibrate_button = _entity_id(entity_registry, BUTTON_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_calibrate")
     with pytest.raises(HomeAssistantError, match="already in progress"):
         await hass.services.async_call(BUTTON_DOMAIN, SERVICE_PRESS, {ATTR_ENTITY_ID: calibrate_button}, blocking=True)
+
+
+async def test_calibration_wizard_survives_broadcast_failure(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """A failed stirrer mirror must not re-offer a dose the pump already ran."""
+
+    async def _failing_broadcast(_hass: HomeAssistant, _address: str, _frame: bytes | bytearray, _action: str) -> None:
+        """Simulate a linked stirrer that cannot be reached."""
+        raise HomeAssistantError("stirrer offline")
+
+    monkeypatch.setattr(
+        "custom_components.chihiros.master_slave_services.async_broadcast_frame_to_linked_stirrers",
+        _failing_broadcast,
+    )
+
+    dosing_client = TrackingDosingClient()
+    await _setup_entry(hass, monkeypatch, dosing_client)
+    flow_id = await _start_calibration_flow(hass, entity_registry)
+
+    await hass.config_entries.flow.async_configure(flow_id, {"pump": "1"})
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
+    assert result["step_id"] == "calibrate_measure"
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {"volume_ml": 2.5})
+    assert result["step_id"] == "calibrate_test"
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
+    assert result["step_id"] == "calibrate_accuracy"
+    assert dosing_client.dose_ml_calls == [(0, 4.0)]
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {"accurate": True})
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "calibration_complete"

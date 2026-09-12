@@ -156,9 +156,12 @@ class DosingDailyTotals:
 class DosingCalibrationTracker:
     """Persisted record of one pump channel's last calibration.
 
-    The wizard writes a record after a channel's measured volume has been
-    submitted; the ``last_calibration`` sensors read from here. Records keep
-    the test run duration and the measured volume for reference.
+    The wizard writes a record when a channel's measured volume is submitted.
+    That is the point at which the device itself stores the calibration, so the
+    record mirrors the hardware even if the user then rejects the follow-up
+    accuracy check and runs the wizard again (the new record overwrites it).
+    The ``last_calibration`` sensors read from here; records keep the test run
+    duration and the measured volume for reference.
     """
 
     hass: HomeAssistant

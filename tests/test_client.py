@@ -134,6 +134,27 @@ def test_dosing_pump_manual_dose_sends_auth_and_dose_batch() -> None:
     assert retry_attempts == [1]
 
 
+def test_dosing_pump_calibration_retry_policy() -> None:
+    """A timed calibration run is never replayed; recording a volume is idempotent."""
+    retry_attempts: list[int | None] = []
+
+    async def run() -> None:
+        device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
+
+        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+            del command
+            retry_attempts.append(retry)
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+
+        await device.calibrate_channel(0, seconds=5)
+        await device.calibrate_channel(0, volume_ml=4.05)
+
+    asyncio.run(run())
+
+    assert retry_attempts == [1, 3]
+
+
 def _recording_stub(name: str, events: list[str]) -> Callable[..., Awaitable[None]]:
     """Create an async stub appending ``name`` to ``events`` when called."""
 

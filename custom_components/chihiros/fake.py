@@ -189,7 +189,7 @@ class FakeChihirosDevice:
         self.stir_schedules: list[tuple[int, tuple[tuple[int, int, float], ...], int, bool]] = []
         # Pump programming writes (set_channel_active/apply_dosing_settings/set_schedule/set_dose_delay).
         self.dosing_programming_calls: list[dict[str, object]] = []
-        # Calibration wizard writes (calibrate_channel/stop_channel_run).
+        # Calibration wizard writes (calibrate_channel).
         self.calibration_calls: list[dict[str, object]] = []
         # Verbatim broadcast frames received via send_frame (master/slave replay).
         self.broadcast_frames: list[bytes] = []

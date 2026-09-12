@@ -44,7 +44,7 @@
                 "description": "Choose which pump channel to calibrate"
             },
             "calibrate_run": {
-                "description": "Put the measuring cylinder at outlet of tube. Press \"Start calibration dose\": this will dose between 2 and 4 ml and will take up to 5 seconds."
+                "description": "Put the measuring cylinder at the outlet of the tube, then submit to start the calibration dose. This will dose between 2 and 4 ml and will take up to 5 seconds."
             },
             "calibrate_measure": {
                 "data": {
