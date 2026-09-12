@@ -5,7 +5,6 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
 
 from .const import CONF_MASTER_ADDRESS, DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
@@ -24,7 +23,6 @@ from .dosing_services import (
     async_remove_dosing_service,
     async_trigger_dose_ml,
 )
-from .entity import chihiros_unique_id
 from .master_slave_services import (
     ATTR_COMPENSATE,
     ATTR_DAILY_ML,
@@ -114,7 +112,7 @@ from .service_utils import (
 from .service_utils import (
     resolve_service_device as _resolve_service_device,
 )
-from .stirrer import is_stirrer_capable
+from .stirrer import is_stirrer_capable, set_stirrer_pre_run_entities_enabled
 from .stirrer_services import (
     ATTR_ACTIVE,
     ATTR_CHANNEL,
@@ -237,7 +235,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _async_update_services(hass)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     if stirrer_states and entry.data.get(CONF_MASTER_ADDRESS):
-        _enable_stirrer_pre_run_entities(hass, runtime.address, len(stirrer_states))
+        set_stirrer_pre_run_entities_enabled(hass, runtime.address, len(stirrer_states), enabled=True)
     return True
 
 
@@ -288,22 +286,3 @@ def _has_dosing_devices(hass: HomeAssistant) -> bool:
 def _has_stirrer_devices(hass: HomeAssistant) -> bool:
     """Return whether any configured device is a magnetic stirrer."""
     return any(is_stirrer_capable(data.device) for data in hass.data.get(DOMAIN, {}).values())
-
-
-def _enable_stirrer_pre_run_entities(hass: HomeAssistant, address: str, channel_count: int) -> None:
-    """Enable the pre-run numbers of a stirrer linked to a master pump.
-
-    Pre-stir time only matters in slave mode, so the entities start disabled
-    (``entity_registry_enabled_default = False``). The entity registry keeps an
-    already-registered entity's disabled state, so the link is reconciled
-    explicitly on every setup instead of relying on the default.
-    """
-    registry = er.async_get(hass)
-    for channel in range(1, channel_count + 1):
-        unique_id = chihiros_unique_id(address, f"stir_channel_{channel}_pre_run")
-        entity_id = registry.async_get_entity_id("number", DOMAIN, unique_id)
-        if entity_id is None:
-            continue
-        entity_entry = registry.async_get(entity_id)
-        if entity_entry is not None and entity_entry.disabled_by is not None:
-            registry.async_update_entity(entity_id, disabled_by=None)

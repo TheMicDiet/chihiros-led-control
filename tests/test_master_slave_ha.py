@@ -170,6 +170,7 @@ async def _setup_pair(
     monkeypatch: pytest.MonkeyPatch,
     *,
     pump_count: int | None = None,
+    stirrer_channel_count: int | None = None,
 ) -> tuple[_TrackingPump, _TrackingStirrer]:
     """Set up one dosing pump and one stirrer config entry."""
     pump = _TrackingPump()
@@ -189,6 +190,8 @@ async def _setup_pair(
         data: dict[str, Any] = {CONF_ADDRESS: address}
         if pump_count is not None and address == PUMP_ADDRESS:
             data["pump_count"] = pump_count
+        if stirrer_channel_count is not None and address == STIRRER_ADDRESS:
+            data["stirrer_channel_count"] = stirrer_channel_count
         entry = MockConfigEntry(domain=DOMAIN, title=title, unique_id=address, data=data)
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
@@ -777,3 +780,39 @@ async def test_schedule_rejects_weekdays_and_frequency(hass: HomeAssistant, monk
         blocking=True,
     )
     assert pump.program_calls[-1]["frequency"] == 4
+
+
+async def test_mirror_respects_configured_stirrer_channel_count(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Channels outside a stirrer's configured count are not mirrored."""
+    pump, stirrer = await _setup_pair(hass, monkeypatch, stirrer_channel_count=2)
+    await hass.async_block_till_done()
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_STIRRER_MASTER,
+        {ATTR_ADDRESS: STIRRER_ADDRESS, ATTR_MASTER_ADDRESS: PUMP_ADDRESS, "mirror": False},
+        blocking=True,
+    )
+    for channel in (1, 2, 3):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_SET_DOSING_SCHEDULE,
+            {
+                ATTR_ADDRESS: PUMP_ADDRESS,
+                ATTR_CHANNEL: channel,
+                ATTR_MODE: "timer",
+                ATTR_POINTS: [{"start": "08:00", "ml": 1.0}],
+            },
+            blocking=True,
+        )
+    # Live mirroring already skipped the out-of-range channel 3.
+    assert {call["channel"] for call in stirrer.program_calls} == {0, 1}
+    assert pump.program_calls[-1]["channel"] == 2  # the pump itself was still programmed
+
+    # A full replay skips it too.
+    stirrer.program_calls.clear()
+    await hass.services.async_call(DOMAIN, SERVICE_MIRROR_STIRRER, {ATTR_ADDRESS: STIRRER_ADDRESS}, blocking=True)
+    assert {call["channel"] for call in stirrer.program_calls} == {0, 1}
+    assert stirrer.delay_calls == [False]

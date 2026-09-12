@@ -16,9 +16,12 @@ from typing import cast
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import UnitOfTime
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.restore_state import RestoreEntity
 
+from .const import DOMAIN
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData, StirrerChannelState
 from .runtime import StirrerChihirosClient
@@ -43,6 +46,30 @@ def stirrer_client(device: object) -> StirrerChihirosClient:
     if not is_stirrer_capable(device):
         raise HomeAssistantError(f"{getattr(device, 'name', device)} is not a magnetic stirrer")
     return cast(StirrerChihirosClient, device)
+
+
+def set_stirrer_pre_run_entities_enabled(
+    hass: HomeAssistant, address: str, channel_count: int, *, enabled: bool
+) -> None:
+    """Enable or disable a stirrer's pre-run numbers.
+
+    Pre-stir time only matters in slave mode, so the entities start disabled
+    (``entity_registry_enabled_default = False``). Linking a master enables
+    them and explicitly unlinking restores the disabled default. Plain reloads
+    intentionally leave the registry untouched so a user who enabled the
+    numbers manually is not overridden on every restart.
+    """
+    registry = er.async_get(hass)
+    desired_disabled_by = None if enabled else er.RegistryEntryDisabler.INTEGRATION
+    for channel in range(1, channel_count + 1):
+        unique_id = chihiros_unique_id(address, f"stir_channel_{channel}_pre_run")
+        entity_id = registry.async_get_entity_id("number", DOMAIN, unique_id)
+        if entity_id is None:
+            continue
+        entity_entry = registry.async_get(entity_id)
+        if entity_entry is None or entity_entry.disabled_by == desired_disabled_by:
+            continue
+        registry.async_update_entity(entity_id, disabled_by=desired_disabled_by)
 
 
 def _channel_states(chihiros_data: ChihirosData) -> list[StirrerChannelState]:

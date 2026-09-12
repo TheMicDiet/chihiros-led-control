@@ -42,7 +42,7 @@ from .service_utils import (
     parse_start_minutes,
     resolve_service_device,
 )
-from .stirrer import is_stirrer_capable, stirrer_client
+from .stirrer import is_stirrer_capable, set_stirrer_pre_run_entities_enabled, stirrer_client
 from .stirrer_services import (
     ATTR_ACTIVE,
     ATTR_CHANNEL,
@@ -310,6 +310,22 @@ async def _apply_channel_setup(
         raise HomeAssistantError(f"Corrupt programming record for channel {channel}: {ex}") from ex
 
 
+async def _replay_recorded_channels(stirrer_data: ChihirosData, channels: dict[int, dict[str, Any]]) -> list[int]:
+    """Replay recorded pump channels onto a stirrer, returning skipped 1-based channels.
+
+    Channels beyond the stirrer's configured count are skipped so hidden
+    channels are not programmed through Home Assistant.
+    """
+    configured_channels = len(stirrer_data.stirrer_states)
+    skipped: list[int] = []
+    for channel in sorted(channels):
+        if configured_channels and channel >= configured_channels:
+            skipped.append(channel + 1)
+            continue
+        await _apply_channel_setup(stirrer_data.device, channel, channels[channel], start_as_slave=True)
+    return skipped
+
+
 async def async_mirror_pump_to_stirrer(
     master_data: ChihirosData,
     stirrer_data: ChihirosData,
@@ -331,9 +347,15 @@ async def async_mirror_pump_to_stirrer(
     if delay is None:
         delay = bool(tracker.device_settings.get("dose_delay", False))
     stirrer = stirrer_client(stirrer_data.device)
-    for channel in sorted(tracker.channels):
-        await _apply_channel_setup(stirrer_data.device, channel, tracker.channels[channel], start_as_slave=True)
+    skipped = await _replay_recorded_channels(stirrer_data, tracker.channels)
     await stirrer.set_dose_delay(delay)
+    if skipped:
+        _LOGGER.warning(
+            "Skipped pump channels %s when mirroring to %s: only %s stir channels are configured",
+            ", ".join(str(channel) for channel in skipped),
+            stirrer_data.device.name,
+            len(stirrer_data.stirrer_states),
+        )
 
 
 async def _mirror_to_linked_stirrers(
@@ -347,6 +369,15 @@ async def _mirror_to_linked_stirrers(
     """
     failures: list[str] = []
     for slave in _linked_stirrers(hass, master_address):
+        configured_channels = len(slave.stirrer_states)
+        if configured_channels and channel >= configured_channels:
+            _LOGGER.debug(
+                "Skipping live mirror of channel %s to %s: only %s stir channels are configured",
+                channel + 1,
+                slave.device.name,
+                configured_channels,
+            )
+            continue
         try:
             await _apply_channel_setup(slave.device, channel, setup)
         except Exception as ex:  # noqa: BLE001 — collect every failure for the combined error
@@ -525,6 +556,9 @@ async def _async_set_stirrer_master(hass: HomeAssistant, call: ServiceCall) -> N
     else:
         stored = {**entry.data, ATTR_MASTER_ADDRESS: master.device.address}
     hass.config_entries.async_update_entry(entry, data=stored)
+    set_stirrer_pre_run_entities_enabled(
+        hass, data.device.address, len(data.stirrer_states), enabled=master is not None
+    )
     if master is not None and call.data[ATTR_MIRROR]:
         await async_mirror_pump_to_stirrer(master, data, delay=call.data.get(ATTR_DELAY))
 

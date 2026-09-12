@@ -145,8 +145,15 @@ def test_calibrate_command_encodes_time_and_volume() -> None:
     assert _payload(measured) == [0, 255, 2, 50]
     both = commands.create_dosing_calibrate_command(MSG_ID, 0, seconds=10, volume_ml=8.0)
     assert _payload(both) == [0, 10, 8, 0]
+    # A sub-0.1 mL remainder near 1.0 mL must stay a 2-digit fraction (0-99),
+    # not round up to 100 (e.g. 2.999 mL).
+    assert _payload(commands.create_dosing_calibrate_command(MSG_ID, 0, volume_ml=2.999)) == [0, 255, 2, 99]
+    assert _payload(commands.create_dosing_calibrate_command(MSG_ID, 0, volume_ml=0.999)) == [0, 255, 0, 99]
     with pytest.raises(ValueError, match="seconds"):
         commands.create_dosing_calibrate_command(MSG_ID, 0, seconds=256)
+    # 255 is the wire sentinel for "omitted", so it cannot be an explicit run time.
+    with pytest.raises(ValueError, match="0 and 254"):
+        commands.create_dosing_calibrate_command(MSG_ID, 0, seconds=255)
     with pytest.raises(ValueError, match="volume"):
         commands.create_dosing_calibrate_command(MSG_ID, 0, volume_ml=256.0)
 

@@ -169,9 +169,10 @@ class TrackingChihirosClient:
         """Record enabling manual mode."""
         self.manual_mode_calls += 1
 
-    async def dose_ml(self, pump_idx: int, volume_ml: float) -> None:
+    async def dose_ml(self, pump_idx: int, volume_ml: float) -> bytes:
         """Record a manual dose."""
         self.dose_ml_calls.append((pump_idx, volume_ml))
+        return b""
 
     async def add_setting(
         self,

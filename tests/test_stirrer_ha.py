@@ -448,6 +448,24 @@ async def test_linked_stirrer_enables_pre_run_entities(hass: HomeAssistant, monk
     assert all(registry.async_get(entity_id).disabled_by is None for entity_id in pre_run_ids)
 
 
+async def test_unlinking_master_disables_pre_run_entities(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicitly unlinking the master restores the pre-run numbers' disabled default."""
+    entry, _client = await _setup_stirrer(hass, monkeypatch, master_address="FA:CE:C0:00:00:04")
+    await hass.async_block_till_done()
+    pre_run_id = _entity_id(hass, "number", "stir_channel_1_pre_run")
+    assert pre_run_id is not None
+    assert er.async_get(hass).async_get(pre_run_id).disabled_by is None
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={"stirrer_channel_count": STIRRER_CHANNEL_COUNT, "master_address": "none"},
+    )
+    await hass.async_block_till_done()
+
+    assert er.async_get(hass).async_get(pre_run_id).disabled_by is not None
+
+
 async def test_validate_stir_points_unit() -> None:
     """Point validation converts times and enforces the gap rule in isolation."""
     points = _validate_stir_points(
@@ -483,3 +501,30 @@ class SimpleNamespaceDevice:
         """Initialize the stand-in with a model name."""
         self.model_name = model_name
         self.name = model_name
+
+
+@pytest.mark.parametrize("name", ["DYDOSE-abc", "DYMIXR-abc"])
+async def test_bluetooth_discovery_reaches_channel_config_step(hass: HomeAssistant, name: str) -> None:
+    """Auto-discovered pumps/stirrers reach their config form without asserting."""
+    import time
+    from types import SimpleNamespace
+
+    from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
+
+    discovery = BluetoothServiceInfoBleak(
+        name=name,
+        address=f"AA:BB:CC:DD:EE:{0x01 if name.startswith('DYDOSE') else 0x02:02X}",
+        rssi=-60,
+        manufacturer_data={},
+        service_data={},
+        service_uuids=[],
+        source="local",
+        device=SimpleNamespace(name=name, address="AA:BB:CC:DD:EE:FF"),
+        advertisement=None,
+        connectable=True,
+        time=time.time(),
+        tx_power=None,
+    )
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "bluetooth"}, data=discovery)
+    assert result["type"] == "form"
+    assert result["step_id"] in ("dosing_config", "stirrer_config")

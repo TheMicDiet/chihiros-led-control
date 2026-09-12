@@ -30,7 +30,7 @@ from .dosing import (
 from .fake import iter_enabled_fake_devices
 from .master_slave_services import async_mirror_pump_to_stirrer
 from .models import ChihirosData
-from .stirrer import is_stirrer_capable
+from .stirrer import is_stirrer_capable, set_stirrer_pre_run_entities_enabled
 from .vendor.chihiros_led_control import (
     ChihirosDevice,
     create_device,
@@ -72,6 +72,11 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         device = create_device(discovery_info.device)
         self._discovery_info = discovery_info
         self._discovered_device = device
+        # The dosing/stirrer steps below create the entry from these fields, so
+        # they must be populated on the discovery shortcut (not just after the
+        # confirm step).
+        self._entry_title = device.name or discovery_info.name
+        self._entry_address = discovery_info.address
         _LOGGER.debug("async_step_bluetooth - discovered device %s", discovery_info.name)
         if needs_device_type(discovery_info.name):
             return await self.async_step_fallback_config()
@@ -314,12 +319,21 @@ class ChihirosOptionsFlow(OptionsFlowWithReload):
         return self._async_stirrer_form()
 
     async def _async_apply_stirrer_options(self, user_input: dict[str, Any], data: ChihirosData) -> ConfigFlowResult:
-        """Persist the selected master link and mirror the pump programming."""
-        selected = user_input.get(CONF_MASTER_ADDRESS)
-        master = None if selected in (None, "", UNLINKED_MASTER) else selected
-        self._update_master_link(master)
-        if master is not None:
-            await self._async_mirror_new_master(master, data)
+        """Persist the selected master link and mirror the pump programming.
+
+        An omitted ``master_address`` field leaves the persisted link untouched
+        instead of unlinking it (the select normally submits its default, but a
+        partial/automation-driven submission must not drop the link).
+        """
+        if CONF_MASTER_ADDRESS in user_input:
+            selected = user_input[CONF_MASTER_ADDRESS]
+            master = None if selected in (None, "", UNLINKED_MASTER) else selected
+            self._update_master_link(master)
+            set_stirrer_pre_run_entities_enabled(
+                self.hass, data.device.address, len(data.stirrer_states), enabled=master is not None
+            )
+            if master is not None:
+                await self._async_mirror_new_master(master, data)
         return self.async_create_entry(
             title="", data={CONF_STIRRER_CHANNEL_COUNT: int(user_input[CONF_STIRRER_CHANNEL_COUNT])}
         )

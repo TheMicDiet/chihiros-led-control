@@ -342,6 +342,23 @@ uv run chihirosctl reset-settings <device-address>
 # trigger a manual dose on a dosing pump: pump 1, 2.5 mL
 uv run chihirosctl dose-ml <device-address> 1 2.5
 
+# program a dosing pump channel (timer mode: HH:MM:ML points) and its daily volume
+uv run chihirosctl doser-schedule <device-address> 1 08:00:5.5 20:00:5.5
+uv run chihirosctl doser-daily-dose <device-address> 1 60
+uv run chihirosctl doser-active <device-address> 1 --disable
+uv run chihirosctl doser-calibrate <device-address> 1 --seconds 10
+uv run chihirosctl doser-reset-channel <device-address> 1
+
+# read the pump's counters back
+uv run chihirosctl doser-totals <device-address>
+uv run chihirosctl doser-today <device-address>
+
+# magnetic stirrer: start/stop, speed/pre-run, and timer schedule
+uv run chihirosctl stir-on <device-address> 1 --seconds 300
+uv run chihirosctl stir-off <device-address> 1
+uv run chihirosctl stir-speed <device-address> 1 60 --pre-seconds 30
+uv run chihirosctl stir-schedule <device-address> 1 08:00:10 20:30:5
+
 ```
 
 ## Protocol

@@ -237,17 +237,17 @@ def create_dosing_calibrate_command(
     """Create the app's ``dosingCalibrate`` frame ``(0xA5, 22)``.
 
     Payload ``[channel, time?, vol_int, vol_frac]``: ``seconds`` is the test
-    dose run time (255 when omitted) and the volume splits as
-    ``[int mL, 2-digit fraction]`` (255/255 when omitted) — e.g. 2.5 mL
-    encodes as ``(2, 50)``.
+    dose run time (0-254; 255 marks the field as omitted) and the volume
+    splits as ``[int mL, 2-digit fraction]`` (255/255 when omitted) — e.g.
+    2.5 mL encodes as ``(2, 50)``.
     """
     _validate_dosing_channel(channel)
     if seconds is None:
         time_byte = 255
-    elif 0 <= seconds <= 255:  # 255 == "omitted" on the wire
+    elif 0 <= seconds <= 254:  # 255 is reserved for "omitted" on the wire
         time_byte = seconds
     else:
-        raise ValueError("Calibration seconds must be between 0 and 255")
+        raise ValueError("Calibration seconds must be between 0 and 254 (255 means omitted)")
     if volume_ml is None:
         volume = [255, 255]
     else:
@@ -255,7 +255,8 @@ def create_dosing_calibrate_command(
         whole_ml, remainder_ul = divmod(microliters, 1000)
         if not 0 <= whole_ml <= 255:
             raise ValueError("Calibration volume must be between 0 and 255.99 mL")
-        volume = [whole_ml, round(remainder_ul / 10)]
+        # Truncate to the 2-digit fraction field (0-99); rounding could yield 100.
+        volume = [whole_ml, remainder_ul // 10]
     return create_command_encoding(165, 22, msg_id, [channel, time_byte, *volume], avoid_reserved_byte=False)
 
 

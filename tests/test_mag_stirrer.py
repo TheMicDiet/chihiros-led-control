@@ -264,6 +264,54 @@ def test_doser_cli_commands_drive_pump(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls[4] == ("set_dose_delay", (False,), {})
 
 
+def test_doser_query_cli_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+    """doser-totals/doser-today query the device and print the reported volumes."""
+    from chihiros_led_control.protocol import DosingDailyNotification, DosingTotalsNotification
+
+    queried: list[str] = []
+
+    async def get_device(address: str) -> ChihirosDevice:
+        assert address == TEST_ADDRESS
+        device = ChihirosDosingPump(FakeBLEDevice(name="DYDOSE-test"), DOSING_PUMP)  # type: ignore[arg-type]
+
+        async def query_totals() -> None:
+            queried.append("totals")
+            device.last_dosing_totals_notification = DosingTotalsNotification((105500, 0), b"")
+
+        async def query_today() -> None:
+            queried.append("today")
+            device.last_dosing_daily_notification = DosingDailyNotification((2500, 0), b"")
+
+        device.query_dosed_totals = query_totals  # type: ignore[method-assign]
+        device.query_dosed_today = query_today  # type: ignore[method-assign]
+        return device
+
+    monkeypatch.setattr(cli, "get_device_from_address", get_device)
+
+    totals = RUNNER.invoke(cli.app, ["doser-totals", TEST_ADDRESS])
+    today = RUNNER.invoke(cli.app, ["doser-today", TEST_ADDRESS])
+
+    assert totals.exit_code == 0 and today.exit_code == 0
+    assert queried == ["totals", "today"]
+    assert "105.5" in totals.output and "2.5" in today.output
+
+
+def test_doser_cli_rejects_out_of_range_points(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point volumes/minutes outside the wire ranges fail cleanly, without a traceback."""
+
+    async def get_device(address: str) -> ChihirosDevice:
+        assert address == TEST_ADDRESS
+        return ChihirosDosingPump(FakeBLEDevice(name="DYDOSE-test"), DOSING_PUMP)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(cli, "get_device_from_address", get_device)
+
+    bad_ml = RUNNER.invoke(cli.app, ["doser-schedule", TEST_ADDRESS, "1", "08:00:99999"])
+    bad_stir = RUNNER.invoke(cli.app, ["stir-schedule", TEST_ADDRESS, "1", "08:00:0"])
+
+    assert bad_ml.exit_code != 0 and "Dose volume" in bad_ml.output
+    assert bad_stir.exit_code != 0 and "Stir run time" in bad_stir.output
+
+
 def test_doser_cli_rejects_bad_input(monkeypatch: pytest.MonkeyPatch) -> None:
     """Doser CLI commands validate mode names, point syntax, and device type."""
 

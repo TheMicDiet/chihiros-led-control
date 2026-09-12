@@ -13,7 +13,7 @@ from rich.table import Table
 from typing_extensions import Annotated
 
 from .client import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
-from .commands import DosingMode, DosingWorkPoint, stirrer_dosage_for_minutes
+from .commands import DOSE_VOLUME_MAX_ML, DosingMode, DosingWorkPoint, stirrer_dosage_for_minutes
 from .factory import detect_model, get_device_from_address
 from .weekday_encoding import WeekdaySelect
 
@@ -60,9 +60,12 @@ def _parse_dose_point(value: str) -> DosingWorkPoint:
     try:
         time_text, volume_text = value.rsplit(":", 1)
         hour, minute = _parse_clock(time_text)
-        return DosingWorkPoint(hour, minute, volume_ml=float(volume_text))
+        volume = float(volume_text)
     except (ValueError, typer.BadParameter) as ex:
         raise typer.BadParameter(f"Invalid dose point {value!r}, expected HH:MM:ML") from ex
+    if not 0 <= volume <= DOSE_VOLUME_MAX_ML:
+        raise typer.BadParameter(f"Dose volume must be between 0 and {DOSE_VOLUME_MAX_ML} mL, got {volume}")
+    return DosingWorkPoint(hour, minute, volume_ml=volume)
 
 
 def _parse_free_point(value: str) -> DosingWorkPoint:
@@ -90,13 +93,16 @@ def _parse_free_point(value: str) -> DosingWorkPoint:
 
 
 def _parse_stir_point(value: str) -> DosingWorkPoint:
-    """Parse a stir point as ``HH:MM:MINUTES`` (run time in minutes)."""
-    dose_point = _parse_dose_point(value)
-    return DosingWorkPoint(
-        dose_point.start_hour,
-        dose_point.start_minute,
-        volume_ml=stirrer_dosage_for_minutes(dose_point.volume_ml),
-    )
+    """Parse a stir point as ``HH:MM:MINUTES`` (run time in minutes, 1-999)."""
+    try:
+        time_text, minutes_text = value.rsplit(":", 1)
+        hour, minute = _parse_clock(time_text)
+        minutes = float(minutes_text)
+    except (ValueError, typer.BadParameter) as ex:
+        raise typer.BadParameter(f"Invalid stir point {value!r}, expected HH:MM:MINUTES") from ex
+    if not 1 <= minutes <= 999:
+        raise typer.BadParameter(f"Stir run time must be between 1 and 999 minutes, got {minutes:g}")
+    return DosingWorkPoint(hour, minute, volume_ml=stirrer_dosage_for_minutes(minutes))
 
 
 def _parse_mode(mode: str) -> DosingMode:
@@ -271,7 +277,7 @@ def doser_reset_totals(device_address: str, channel: Annotated[int, typer.Argume
 def doser_calibrate(
     device_address: str,
     channel: Annotated[int, typer.Argument(min=1, max=8)],
-    seconds: Annotated[int | None, typer.Option(min=0, max=255)] = None,
+    seconds: Annotated[int | None, typer.Option(min=0, max=254, help="Timed test dose in seconds (0-254).")] = None,
     volume: Annotated[float | None, typer.Option(min=0, max=255.99)] = None,
 ) -> None:
     """Calibrate a dosing pump channel via a timed run or a measured volume."""
@@ -287,6 +293,42 @@ def doser_delay(
 ) -> None:
     """Toggle the dosing pump's device-level dose delay flag."""
     _run_dosing_func(device_address, lambda dev: dev.set_dose_delay(enable))
+
+
+@app.command()
+def doser_totals(device_address: str) -> None:
+    """Query and print a dosing pump's lifetime dosed volumes."""
+
+    async def command(dev: ChihirosDosingPump) -> None:
+        await dev.query_dosed_totals()
+        notification = dev.last_dosing_totals_notification
+        if notification is None:
+            raise typer.BadParameter(f"{dev.name} did not report lifetime totals")
+        table = Table("Channel", "Total (mL)")
+        for channel, micro_liters in enumerate(notification.total_dosed_ul, start=1):
+            table.add_row(str(channel), f"{micro_liters / 1000:.1f}")
+        print(f"Lifetime dosed volumes for {dev.name}:")
+        print(table)
+
+    _run_dosing_func(device_address, command)
+
+
+@app.command()
+def doser_today(device_address: str) -> None:
+    """Query and print a dosing pump's volumes dosed today."""
+
+    async def command(dev: ChihirosDosingPump) -> None:
+        await dev.query_dosed_today()
+        notification = dev.last_dosing_daily_notification
+        if notification is None:
+            raise typer.BadParameter(f"{dev.name} did not report today's volumes")
+        table = Table("Channel", "Today (mL)")
+        for channel, micro_liters in enumerate(notification.dose_use_in_day_ul, start=1):
+            table.add_row(str(channel), f"{micro_liters / 1000:.1f}")
+        print(f"Volumes dosed today for {dev.name}:")
+        print(table)
+
+    _run_dosing_func(device_address, command)
 
 
 @app.command()
