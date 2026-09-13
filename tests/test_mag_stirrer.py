@@ -193,11 +193,11 @@ def test_stir_cli_commands_drive_stirrer(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
 
-    assert RUNNER.invoke(cli.app, ["stir-on", TEST_ADDRESS, "3"]).exit_code == 0
-    assert RUNNER.invoke(cli.app, ["stir-on", TEST_ADDRESS, "3", "--seconds", "600"]).exit_code == 0
-    assert RUNNER.invoke(cli.app, ["stir-off", TEST_ADDRESS, "3"]).exit_code == 0
-    assert RUNNER.invoke(cli.app, ["stir-speed", TEST_ADDRESS, "1", "60", "--pre-seconds", "30"]).exit_code == 0
-    result = RUNNER.invoke(cli.app, ["stir-schedule", TEST_ADDRESS, "2", "08:00:10", "20:30:5"])
+    assert RUNNER.invoke(cli.app, ["stirrer", "on", TEST_ADDRESS, "3"]).exit_code == 0
+    assert RUNNER.invoke(cli.app, ["stirrer", "on", TEST_ADDRESS, "3", "--seconds", "600"]).exit_code == 0
+    assert RUNNER.invoke(cli.app, ["stirrer", "off", TEST_ADDRESS, "3"]).exit_code == 0
+    assert RUNNER.invoke(cli.app, ["stirrer", "speed", TEST_ADDRESS, "1", "60", "--pre-seconds", "30"]).exit_code == 0
+    result = RUNNER.invoke(cli.app, ["stirrer", "schedule", TEST_ADDRESS, "2", "08:00:10", "20:30:5"])
     assert result.exit_code == 0
 
     assert calls[0] == ("stir", (2, True), {"seconds": None})
@@ -219,7 +219,7 @@ def test_stir_cli_commands_reject_dosing_pump(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
 
-    result = RUNNER.invoke(cli.app, ["stir-on", TEST_ADDRESS, "1"])
+    result = RUNNER.invoke(cli.app, ["stirrer", "on", TEST_ADDRESS, "1"])
 
     assert result.exit_code != 0
     assert "not a magnetic stirrer" in result.output
@@ -240,18 +240,20 @@ def test_doser_cli_commands_drive_pump(monkeypatch: pytest.MonkeyPatch) -> None:
         device = ChihirosDosingPump(FakeBLEDevice(name="DYDOSE-test"), DOSING_PUMP)  # type: ignore[arg-type]
         device.set_schedule = _record("set_schedule")  # type: ignore[method-assign]
         device.reset_channel = _record("reset_channel")  # type: ignore[method-assign]
+        device.reset_total_dosed = _record("reset_total_dosed")  # type: ignore[method-assign]
         device.calibrate_channel = _record("calibrate_channel")  # type: ignore[method-assign]
         device.set_dose_delay = _record("set_dose_delay")  # type: ignore[method-assign]
         return device
 
     monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
 
-    timer = RUNNER.invoke(cli.app, ["doser-schedule", TEST_ADDRESS, "1", "08:00:5.5", "20:00:5.5"])
-    free = RUNNER.invoke(cli.app, ["doser-schedule", TEST_ADDRESS, "2", "08:00-10:00:3", "--mode", "free"])
+    timer = RUNNER.invoke(cli.app, ["dosing", "schedule", TEST_ADDRESS, "1", "08:00:5.5", "20:00:5.5"])
+    free = RUNNER.invoke(cli.app, ["dosing", "schedule", TEST_ADDRESS, "2", "08:00-10:00:3", "--mode", "free"])
     assert timer.exit_code == 0 and free.exit_code == 0
-    assert RUNNER.invoke(cli.app, ["doser-reset-channel", TEST_ADDRESS, "4"]).exit_code == 0
-    assert RUNNER.invoke(cli.app, ["doser-calibrate", TEST_ADDRESS, "1", "--seconds", "10"]).exit_code == 0
-    assert RUNNER.invoke(cli.app, ["doser-delay", TEST_ADDRESS, "--disable"]).exit_code == 0
+    assert RUNNER.invoke(cli.app, ["dosing", "reset", TEST_ADDRESS, "4"]).exit_code == 0
+    assert RUNNER.invoke(cli.app, ["dosing", "reset", TEST_ADDRESS, "2", "--totals"]).exit_code == 0
+    assert RUNNER.invoke(cli.app, ["dosing", "calibrate", TEST_ADDRESS, "1", "--seconds", "10"]).exit_code == 0
+    assert RUNNER.invoke(cli.app, ["dosing", "delay", TEST_ADDRESS, "--disable"]).exit_code == 0
 
     _channel, mode, points = calls[0][1]
     assert mode is DosingMode.TIMER  # type: ignore[comparison-overlap]
@@ -260,8 +262,98 @@ def test_doser_cli_commands_drive_pump(monkeypatch: pytest.MonkeyPatch) -> None:
     assert mode is DosingMode.FREE  # type: ignore[comparison-overlap]
     assert points[0].duration_minutes == 120 and points[0].number == 3  # type: ignore[attr-defined]
     assert calls[2] == ("reset_channel", (3,), {})
-    assert calls[3] == ("calibrate_channel", (0,), {"seconds": 10, "volume_ml": None})
-    assert calls[4] == ("set_dose_delay", (False,), {})
+    assert calls[3] == ("reset_total_dosed", (1,), {})
+    assert calls[4] == ("calibrate_channel", (0,), {"seconds": 10, "volume_ml": None})
+    assert calls[5] == ("set_dose_delay", (False,), {})
+
+
+def test_dosing_program_cli_batches_in_one_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The program command forwards active/daily/schedule options to program_channel."""
+    calls: list[tuple[int, dict[str, object]]] = []
+
+    async def get_device(address: str) -> ChihirosDevice:
+        assert address == TEST_ADDRESS
+        device = ChihirosDosingPump(FakeBLEDevice(name="DYDOSE-test"), DOSING_PUMP)  # type: ignore[arg-type]
+
+        async def program_channel(channel: int, **kwargs: object) -> None:
+            calls.append((channel, kwargs))
+
+        device.program_channel = program_channel  # type: ignore[method-assign]
+        return device
+
+    monkeypatch.setattr(cli, "get_device_from_address", get_device)
+
+    result = RUNNER.invoke(
+        cli.app,
+        [
+            "dosing",
+            "program",
+            TEST_ADDRESS,
+            "2",
+            "08:00:5.5",
+            "--daily-ml",
+            "60",
+            "--weekdays",
+            "monday",
+            "--weekdays",
+            "friday",
+            "--disable",
+            "--compensate",
+        ],
+    )
+
+    assert result.exit_code == 0
+    channel, kwargs = calls[0]
+    assert channel == 1
+    assert kwargs["active"] is False
+    assert kwargs["compensate"] is True
+    assert kwargs["dose_per_day_ml"] == 60.0
+    assert kwargs["frequency"] == 68  # monday (64) + friday (4)
+    assert kwargs["is_first_setting"] is True
+    assert kwargs["mode"] is DosingMode.TIMER
+    points = kwargs["points"]
+    assert [(point.start_hour, point.volume_ml) for point in points] == [(8, 5.5)]  # type: ignore[attr-defined]
+
+
+def test_dosing_cli_rejects_stirrer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pump commands refuse a stirrer, which speaks the dosing protocol but is not a pump."""
+
+    async def get_device(address: str) -> ChihirosDevice:
+        assert address == TEST_ADDRESS
+        return ChihirosMagStirrer(FakeBLEDevice(), MAG_STIRRER)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(cli, "get_device_from_address", get_device)
+
+    result = RUNNER.invoke(cli.app, ["dosing", "delay", TEST_ADDRESS])
+
+    assert result.exit_code != 0
+    assert "not a dosing pump" in result.output
+
+
+def test_stirrer_schedule_cli_encodes_weekdays(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stirrer schedule converts the selected weekdays to the repetition bitmask."""
+    calls: list[dict[str, object]] = []
+
+    async def get_device(address: str) -> ChihirosDevice:
+        assert address == TEST_ADDRESS
+        device = ChihirosMagStirrer(FakeBLEDevice(), MAG_STIRRER)  # type: ignore[arg-type]
+
+        async def set_stir_schedule(channel: int, points: object, **kwargs: object) -> None:
+            calls.append(kwargs)
+
+        device.set_stir_schedule = set_stir_schedule  # type: ignore[method-assign]
+        return device
+
+    monkeypatch.setattr(cli, "get_device_from_address", get_device)
+
+    result = RUNNER.invoke(
+        cli.app,
+        ["stirrer", "schedule", TEST_ADDRESS, "1", "08:00:10", "--weekdays", "monday", "--weekdays", "friday"],
+    )
+
+    assert result.exit_code == 0
+    assert calls[0]["frequency"] == 68  # monday (64) + friday (4)
+    assert calls[0]["active"] is True
 
 
 def test_doser_query_cli_commands(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -288,8 +380,8 @@ def test_doser_query_cli_commands(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(cli, "get_device_from_address", get_device)
 
-    totals = RUNNER.invoke(cli.app, ["doser-totals", TEST_ADDRESS])
-    today = RUNNER.invoke(cli.app, ["doser-today", TEST_ADDRESS])
+    totals = RUNNER.invoke(cli.app, ["dosing", "totals", TEST_ADDRESS])
+    today = RUNNER.invoke(cli.app, ["dosing", "today", TEST_ADDRESS])
 
     assert totals.exit_code == 0 and today.exit_code == 0
     assert queried == ["totals", "today"]
@@ -305,8 +397,8 @@ def test_doser_cli_rejects_out_of_range_points(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(cli, "get_device_from_address", get_device)
 
-    bad_ml = RUNNER.invoke(cli.app, ["doser-schedule", TEST_ADDRESS, "1", "08:00:99999"])
-    bad_stir = RUNNER.invoke(cli.app, ["stir-schedule", TEST_ADDRESS, "1", "08:00:0"])
+    bad_ml = RUNNER.invoke(cli.app, ["dosing", "schedule", TEST_ADDRESS, "1", "08:00:99999"])
+    bad_stir = RUNNER.invoke(cli.app, ["stirrer", "schedule", TEST_ADDRESS, "1", "08:00:0"])
 
     assert bad_ml.exit_code != 0 and "Dose volume" in bad_ml.output
     assert bad_stir.exit_code != 0 and "Stir run time" in bad_stir.output
@@ -321,16 +413,16 @@ def test_doser_cli_rejects_bad_input(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(cli, "get_device_from_address", get_pump)
 
-    bad_mode = RUNNER.invoke(cli.app, ["doser-schedule", TEST_ADDRESS, "1", "08:00:5", "--mode", "daily"])
-    bad_point = RUNNER.invoke(cli.app, ["doser-schedule", TEST_ADDRESS, "1", "8am"])
-    bad_calibrate = RUNNER.invoke(cli.app, ["doser-calibrate", TEST_ADDRESS, "1"])
+    bad_mode = RUNNER.invoke(cli.app, ["dosing", "schedule", TEST_ADDRESS, "1", "08:00:5", "--mode", "daily"])
+    bad_point = RUNNER.invoke(cli.app, ["dosing", "schedule", TEST_ADDRESS, "1", "8am"])
+    bad_calibrate = RUNNER.invoke(cli.app, ["dosing", "calibrate", TEST_ADDRESS, "1"])
 
     async def get_light(address: str) -> ChihirosDevice:
         assert address == TEST_ADDRESS
         return ChihirosDevice(FakeBLEDevice(name="DYA-test"), detect_model("DYA-test"))  # type: ignore[arg-type]
 
     monkeypatch.setattr(cli, "get_device_from_address", get_light)
-    wrong_device = RUNNER.invoke(cli.app, ["doser-delay", TEST_ADDRESS])
+    wrong_device = RUNNER.invoke(cli.app, ["dosing", "delay", TEST_ADDRESS])
 
     assert bad_mode.exit_code != 0 and "single/auto/free/timer" in bad_mode.output
     assert bad_point.exit_code != 0 and "HH:MM:ML" in bad_point.output

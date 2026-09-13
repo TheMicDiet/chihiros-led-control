@@ -214,8 +214,8 @@ def test_enable_auto_mode_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> 
     assert device.calls == [("enable_auto_mode", (), {})]
 
 
-def test_dose_ml_cli_triggers_dosing_pump(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The dose-ml command resolves a pump and converts user pump numbers to zero-based indexes."""
+def test_dose_cli_triggers_dosing_pump(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dose command resolves a pump and converts user channel numbers to zero-based indexes."""
     calls: list[tuple[int, float]] = []
 
     async def get_device_from_address(address: str) -> ChihirosDevice:
@@ -230,14 +230,14 @@ def test_dose_ml_cli_triggers_dosing_pump(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
 
-    result = RUNNER.invoke(cli.app, ["dose-ml", TEST_ADDRESS, "2", "2.5"])
+    result = RUNNER.invoke(cli.app, ["dosing", "dose", TEST_ADDRESS, "2", "2.5"])
 
     assert result.exit_code == 0
     assert calls == [(1, 2.5)]
 
 
-def test_dose_ml_cli_rejects_non_dosing_device(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The dose-ml command fails clearly for light devices."""
+def test_dose_cli_rejects_non_dosing_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dose command fails clearly for light devices."""
 
     async def get_device_from_address(address: str) -> ChihirosDevice:
         assert address == TEST_ADDRESS
@@ -245,7 +245,7 @@ def test_dose_ml_cli_rejects_non_dosing_device(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
 
-    result = RUNNER.invoke(cli.app, ["dose-ml", TEST_ADDRESS, "1", "1.0"])
+    result = RUNNER.invoke(cli.app, ["dosing", "dose", TEST_ADDRESS, "1", "1.0"])
 
     assert result.exit_code != 0
     assert "not a dosing pump" in result.output

@@ -15,12 +15,17 @@ from typing_extensions import Annotated
 from .client import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
 from .commands import DOSE_VOLUME_MAX_ML, DosingMode, DosingWorkPoint, stirrer_dosage_for_minutes
 from .factory import detect_model, get_device_from_address
-from .weekday_encoding import WeekdaySelect
+from .weekday_encoding import WeekdaySelect, encode_selected_weekdays
 
 app = typer.Typer()
+dosing_app = typer.Typer(help="Control a Chihiros dosing pump (DYDOSE).")
+stirrer_app = typer.Typer(help="Control a Chihiros magnetic stirrer (DYMIXR).")
+app.add_typer(dosing_app, name="dosing", rich_help_panel="Dosing & stirring")
+app.add_typer(stirrer_app, name="stirrer", rich_help_panel="Dosing & stirring")
 
 DeviceCommand = Callable[[ChihirosDevice], Awaitable[None]]
 DosingDeviceCommand = Callable[[ChihirosDosingPump], Awaitable[None]]
+StirrerDeviceCommand = Callable[[ChihirosMagStirrer], Awaitable[None]]
 
 
 def _run_device_func(device_address: str, command: DeviceCommand) -> None:
@@ -32,12 +37,24 @@ def _run_device_func(device_address: str, command: DeviceCommand) -> None:
 
 
 def _run_dosing_func(device_address: str, command: DosingDeviceCommand) -> None:
-    """Run a dosing-device command, rejecting non-dosing devices."""
+    """Run a pump-only command, rejecting non-dosing devices and stirrers."""
 
     async def _async_func() -> None:
         dev = await get_device_from_address(device_address)
-        if not isinstance(dev, ChihirosDosingPump):
-            raise typer.BadParameter(f"{dev.name} is not a dosing pump or stirrer")
+        if not isinstance(dev, ChihirosDosingPump) or isinstance(dev, ChihirosMagStirrer):
+            raise typer.BadParameter(f"{dev.name} is not a dosing pump")
+        await command(dev)
+
+    asyncio.run(_async_func())
+
+
+def _run_stirrer_func(device_address: str, command: StirrerDeviceCommand) -> None:
+    """Run a stirrer-only command, rejecting every other device."""
+
+    async def _async_func() -> None:
+        dev = await get_device_from_address(device_address)
+        if not isinstance(dev, ChihirosMagStirrer):
+            raise typer.BadParameter(f"{dev.name} is not a magnetic stirrer")
         await command(dev)
 
     asyncio.run(_async_func())
@@ -111,6 +128,12 @@ def _parse_mode(mode: str) -> DosingMode:
         return DosingMode[mode.upper()]
     except KeyError as ex:
         raise typer.BadParameter(f"Invalid mode {mode!r}, expected single/auto/free/timer") from ex
+
+
+def _parse_work_points(points: list[str], dosing_mode: DosingMode) -> list[DosingWorkPoint]:
+    """Parse schedule points using the parser that matches ``dosing_mode``."""
+    parse_point = _parse_free_point if dosing_mode is DosingMode.FREE else _parse_dose_point
+    return [parse_point(point) for point in points]
 
 
 @app.command()
@@ -199,105 +222,125 @@ def reset_settings(device_address: str) -> None:
 
 
 @app.command()
-def dose_ml(
+def enable_auto_mode(device_address: str) -> None:
+    """Enable auto mode in a light."""
+    _run_device_func(device_address, lambda dev: dev.enable_auto_mode())
+
+
+@dosing_app.command("dose")
+def dosing_dose(
     device_address: str,
-    pump: Annotated[int, typer.Argument(min=1, max=8)],
-    ml: Annotated[float, typer.Argument(min=0.2, max=999.9)],
+    channel: Annotated[int, typer.Argument(min=1, max=8)],
+    ml: Annotated[float, typer.Argument(min=0.2, max=DOSE_VOLUME_MAX_ML)],
 ) -> None:
-    """Trigger an immediate manual dose on a dosing pump."""
-
-    async def command(dev: ChihirosDevice) -> None:
-        if not isinstance(dev, ChihirosDosingPump):
-            raise typer.BadParameter(f"{dev.name} is not a dosing pump")
-        await dev.dose_ml(pump - 1, ml)
-
-    _run_device_func(device_address, command)
+    """Trigger an immediate manual dose on one pump channel."""
+    _run_dosing_func(device_address, lambda dev: dev.dose_ml(channel - 1, ml))
 
 
-@app.command()
-def doser_schedule(
+@dosing_app.command("schedule")
+def dosing_schedule(
     device_address: str,
     channel: Annotated[int, typer.Argument(min=1, max=8)],
     points: Annotated[list[str], typer.Argument()],
     mode: Annotated[str, typer.Option(case_sensitive=False)] = "timer",
 ) -> None:
-    """Replace one dosing pump channel's schedule.
+    """Replace one pump channel's schedule.
 
     Points are ``HH:MM:ML`` (dose volume) for single/auto/timer mode and
     ``HH:MM-HH:MM:COUNT`` (window and dose count) for free mode.
     """
     dosing_mode = _parse_mode(mode)
-    parse_point = _parse_free_point if dosing_mode is DosingMode.FREE else _parse_dose_point
-    work_points = [parse_point(point) for point in points]
+    work_points = _parse_work_points(points, dosing_mode)
     _run_dosing_func(device_address, lambda dev: dev.set_schedule(channel - 1, dosing_mode, work_points))
 
 
-@app.command()
-def doser_active(
+@dosing_app.command("program")
+def dosing_program(
+    device_address: str,
+    channel: Annotated[int, typer.Argument(min=1, max=8)],
+    points: Annotated[list[str] | None, typer.Argument()] = None,
+    mode: Annotated[str, typer.Option(case_sensitive=False)] = "timer",
+    daily_ml: Annotated[float | None, typer.Option(min=0, max=DOSE_VOLUME_MAX_ML)] = None,
+    weekdays: Annotated[list[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday],
+    enable: Annotated[bool, typer.Option("--enable/--disable")] = True,
+    compensate: Annotated[bool, typer.Option("--compensate/--no-compensate")] = False,
+    first_setting: Annotated[bool, typer.Option("--first-setting/--not-first-setting")] = True,
+) -> None:
+    """Program a pump channel in a single connection.
+
+    Sends the active/compensation frame, an optional ``--daily-ml`` volume,
+    and an optional schedule as one paced transaction (the app's ``startWork``).
+    Omit the points to program only the channel state and daily volume.
+    """
+    dosing_mode = _parse_mode(mode) if points else None
+    work_points = _parse_work_points(points, dosing_mode) if dosing_mode is not None else []
+    _run_dosing_func(
+        device_address,
+        lambda dev: dev.program_channel(
+            channel - 1,
+            active=enable,
+            compensate=compensate,
+            dose_per_day_ml=daily_ml,
+            frequency=encode_selected_weekdays(weekdays),
+            is_first_setting=first_setting,
+            mode=dosing_mode,
+            points=work_points,
+        ),
+    )
+
+
+@dosing_app.command("active")
+def dosing_active(
     device_address: str,
     channel: Annotated[int, typer.Argument(min=1, max=8)],
     enable: Annotated[bool, typer.Option("--enable/--disable")] = True,
     compensate: Annotated[bool, typer.Option("--compensate/--no-compensate")] = False,
 ) -> None:
-    """Enable or disable a dosing pump channel (and interrupt compensation)."""
+    """Enable or disable a pump channel (and interrupt compensation)."""
     _run_dosing_func(
         device_address,
         lambda dev: dev.set_channel_active(channel - 1, active=enable, compensate=compensate),
     )
 
 
-@app.command()
-def doser_daily_dose(
-    device_address: str,
-    channel: Annotated[int, typer.Argument(min=1, max=8)],
-    ml: Annotated[float, typer.Argument(min=0, max=6553.5)],
-    frequency: Annotated[int, typer.Option(min=0, max=255)] = 127,
-    first_setting: Annotated[bool, typer.Option("--first-setting/--not-first-setting")] = True,
-) -> None:
-    """Program a channel's daily dose volume and weekday repetition bitmask."""
-    _run_dosing_func(
-        device_address,
-        lambda dev: dev.apply_dosing_settings(channel - 1, ml, frequency, is_first_setting=first_setting),
-    )
-
-
-@app.command()
-def doser_reset_channel(device_address: str, channel: Annotated[int, typer.Argument(min=1, max=8)]) -> None:
-    """Reset a dosing pump channel's programming."""
-    _run_dosing_func(device_address, lambda dev: dev.reset_channel(channel - 1))
-
-
-@app.command()
-def doser_reset_totals(device_address: str, channel: Annotated[int, typer.Argument(min=1, max=8)]) -> None:
-    """Zero a dosing pump channel's lifetime dosed counter."""
-    _run_dosing_func(device_address, lambda dev: dev.reset_total_dosed(channel - 1))
-
-
-@app.command()
-def doser_calibrate(
+@dosing_app.command("calibrate")
+def dosing_calibrate(
     device_address: str,
     channel: Annotated[int, typer.Argument(min=1, max=8)],
     seconds: Annotated[int | None, typer.Option(min=0, max=254, help="Timed test dose in seconds (0-254).")] = None,
     volume: Annotated[float | None, typer.Option(min=0, max=255.99)] = None,
 ) -> None:
-    """Calibrate a dosing pump channel via a timed run or a measured volume."""
+    """Calibrate a pump channel via a timed run or a measured volume."""
     if seconds is None and volume is None:
         raise typer.BadParameter("Provide either --seconds or --volume")
     _run_dosing_func(device_address, lambda dev: dev.calibrate_channel(channel - 1, seconds=seconds, volume_ml=volume))
 
 
-@app.command()
-def doser_delay(
+@dosing_app.command("reset")
+def dosing_reset(
+    device_address: str,
+    channel: Annotated[int, typer.Argument(min=1, max=8)],
+    totals: Annotated[bool, typer.Option("--totals", help="Zero the lifetime dosed counter instead.")] = False,
+) -> None:
+    """Reset a pump channel's programming, or its lifetime total with --totals."""
+    if totals:
+        _run_dosing_func(device_address, lambda dev: dev.reset_total_dosed(channel - 1))
+    else:
+        _run_dosing_func(device_address, lambda dev: dev.reset_channel(channel - 1))
+
+
+@dosing_app.command("delay")
+def dosing_delay(
     device_address: str,
     enable: Annotated[bool, typer.Option("--enable/--disable")] = True,
 ) -> None:
-    """Toggle the dosing pump's device-level dose delay flag."""
+    """Toggle the pump's device-level dose delay flag."""
     _run_dosing_func(device_address, lambda dev: dev.set_dose_delay(enable))
 
 
-@app.command()
-def doser_totals(device_address: str) -> None:
-    """Query and print a dosing pump's lifetime dosed volumes."""
+@dosing_app.command("totals")
+def dosing_totals(device_address: str) -> None:
+    """Query and print a pump's lifetime dosed volumes."""
 
     async def command(dev: ChihirosDosingPump) -> None:
         await dev.query_dosed_totals()
@@ -313,9 +356,9 @@ def doser_totals(device_address: str) -> None:
     _run_dosing_func(device_address, command)
 
 
-@app.command()
-def doser_today(device_address: str) -> None:
-    """Query and print a dosing pump's volumes dosed today."""
+@dosing_app.command("today")
+def dosing_today(device_address: str) -> None:
+    """Query and print a pump's volumes dosed today."""
 
     async def command(dev: ChihirosDosingPump) -> None:
         await dev.query_dosed_today()
@@ -331,79 +374,56 @@ def doser_today(device_address: str) -> None:
     _run_dosing_func(device_address, command)
 
 
-@app.command()
-def stir_on(
+@stirrer_app.command("on")
+def stirrer_on(
     device_address: str,
     channel: Annotated[int, typer.Argument(min=1, max=8)],
     seconds: Annotated[int | None, typer.Option(min=0, max=15359)] = None,
 ) -> None:
     """Manually start one stirrer channel (optionally for a limited time)."""
-
-    async def command(dev: ChihirosDosingPump) -> None:
-        if not isinstance(dev, ChihirosMagStirrer):
-            raise typer.BadParameter(f"{dev.name} is not a magnetic stirrer")
-        await dev.stir(channel - 1, True, seconds=seconds)
-
-    _run_dosing_func(device_address, command)
+    _run_stirrer_func(device_address, lambda dev: dev.stir(channel - 1, True, seconds=seconds))
 
 
-@app.command()
-def stir_off(device_address: str, channel: Annotated[int, typer.Argument(min=1, max=8)]) -> None:
+@stirrer_app.command("off")
+def stirrer_off(
+    device_address: str,
+    channel: Annotated[int, typer.Argument(min=1, max=8)],
+) -> None:
     """Manually stop one stirrer channel."""
-
-    async def command(dev: ChihirosDosingPump) -> None:
-        if not isinstance(dev, ChihirosMagStirrer):
-            raise typer.BadParameter(f"{dev.name} is not a magnetic stirrer")
-        await dev.stir(channel - 1, False)
-
-    _run_dosing_func(device_address, command)
+    _run_stirrer_func(device_address, lambda dev: dev.stir(channel - 1, False))
 
 
-@app.command()
-def stir_speed(
+@stirrer_app.command("speed")
+def stirrer_speed(
     device_address: str,
     channel: Annotated[int, typer.Argument(min=1, max=8)],
     speed: Annotated[int, typer.Argument(min=0, max=100)],
     pre_seconds: Annotated[int, typer.Option(min=0, max=999)] = 0,
 ) -> None:
     """Set a stirrer channel's speed and pre-stir time (run-advance seconds)."""
-
-    async def command(dev: ChihirosDosingPump) -> None:
-        if not isinstance(dev, ChihirosMagStirrer):
-            raise typer.BadParameter(f"{dev.name} is not a magnetic stirrer")
-        await dev.set_pre_second(channel - 1, pre_seconds, speed)
-
-    _run_dosing_func(device_address, command)
+    _run_stirrer_func(device_address, lambda dev: dev.set_pre_second(channel - 1, pre_seconds, speed))
 
 
-@app.command()
-def stir_schedule(
+@stirrer_app.command("schedule")
+def stirrer_schedule(
     device_address: str,
     channel: Annotated[int, typer.Argument(min=1, max=8)],
     points: Annotated[list[str], typer.Argument()],
-    frequency: Annotated[int, typer.Option(min=0, max=255)] = 127,
+    weekdays: Annotated[list[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday],
     disable: Annotated[bool, typer.Option("--disable")] = False,
 ) -> None:
     """Replace one stirrer channel's timer schedule.
 
     Points are ``HH:MM:MINUTES`` where MINUTES is the stir run time; the
     device encodes run minutes with the pump's 0.6 mL/min equivalence.
-    Frequency is the weekday repetition bitmask (127 = every day).
+    Weekdays select the repetition bitmask.
     """
     work_points = [_parse_stir_point(point) for point in points]
-
-    async def command(dev: ChihirosDosingPump) -> None:
-        if not isinstance(dev, ChihirosMagStirrer):
-            raise typer.BadParameter(f"{dev.name} is not a magnetic stirrer")
-        await dev.set_stir_schedule(channel - 1, work_points, frequency=frequency, active=not disable)
-
-    _run_dosing_func(device_address, command)
-
-
-@app.command()
-def enable_auto_mode(device_address: str) -> None:
-    """Enable auto mode in a light."""
-    _run_device_func(device_address, lambda dev: dev.enable_auto_mode())
+    frequency = encode_selected_weekdays(weekdays)
+    _run_stirrer_func(
+        device_address,
+        lambda dev: dev.set_stir_schedule(channel - 1, work_points, frequency=frequency, active=not disable),
+    )
 
 
 if __name__ == "__main__":
