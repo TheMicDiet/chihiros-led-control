@@ -51,7 +51,13 @@
       "calibrate_accuracy": {
         "description": "Was this accurate? (between 3.95-4.05ml). Choosing no restarts the calibration.",
         "data": {
-          "accurate": "Yes, continue"
+          "accurate": "Was the 4 ml test dose accurate?"
+        }
+      },
+      "calibrate_dose_unclear": {
+        "description": "The {dose} may or may not have run: the frame was sent, but the connection failed before the pump confirmed it. Retry sends the dose frame again (dosing a second time if the first run happened); Continue moves on without dosing again.",
+        "data": {
+          "dose_choice": "Retry the dose or continue"
         }
       }
     },

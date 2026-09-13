@@ -14,6 +14,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .vendor.chihiros_led_control.commands import DosingWorkPoint
 from .vendor.chihiros_led_control.models import DOSING_PUMP
 
 STORAGE_KEY = f"{DOMAIN}_dosing_daily_totals"
@@ -327,6 +328,34 @@ def derive_first_setting(tracker: DosingProgrammingTracker | None, channel: int,
     if tracker is None:
         return True
     return not tracker.channel_programmed_today(channel)
+
+
+def serialize_points(points: list[DosingWorkPoint]) -> list[dict[str, Any]]:
+    """Convert work points into JSON-safe dicts for the programming record."""
+    return [
+        {
+            "start_hour": point.start_hour,
+            "start_minute": point.start_minute,
+            "volume_ml": point.volume_ml,
+            "duration_minutes": point.duration_minutes,
+            "number": point.number,
+        }
+        for point in points
+    ]
+
+
+def deserialize_points(raw: list[dict[str, Any]]) -> list[DosingWorkPoint]:
+    """Rebuild work points from a programming record."""
+    return [
+        DosingWorkPoint(
+            item["start_hour"],
+            item["start_minute"],
+            volume_ml=item.get("volume_ml", 0.0),
+            duration_minutes=item.get("duration_minutes", 0),
+            number=item.get("number", 2),
+        )
+        for item in raw
+    ]
 
 
 def normalize_pump_count(value: object) -> int:

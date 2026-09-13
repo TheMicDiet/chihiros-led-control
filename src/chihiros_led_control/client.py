@@ -853,9 +853,11 @@ class ChihirosDosingPump(ChihirosDevice):
         """Program one channel in a *single* connection (app's ``startWork``, §5).
 
         Sends the active/compensation frame, the optional ``dosingSet`` daily
-        volume, and the schedule frames as one paced transaction, so a BLE
-        failure can never leave the channel half-programmed (the pump either
-        accepted the whole sequence or none of it). ``dose_per_day_ml=None``
+        volume, and the schedule frames as one paced write batch. The frames
+        are idempotent and the whole batch is retried on failure, so a retry
+        that eventually succeeds converges the channel — but a BLE write batch
+        is not atomic: if every retry fails partway, the pump can end up
+        half-programmed. ``dose_per_day_ml=None``
         skips the ``dosingSet`` frame; ``mode=None`` skips the schedule frames.
         """
         commands_to_send = [

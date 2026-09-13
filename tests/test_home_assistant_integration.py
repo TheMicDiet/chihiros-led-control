@@ -728,7 +728,7 @@ async def test_calibration_wizard_records_measured_volume_and_sensor(
     assert dosing_client.dose_ml_calls == [(1, 4.0)]
 
     # Step 4: "Yes! Continue" finishes; the daily total sensor got the 4 ml dose.
-    result = await hass.config_entries.flow.async_configure(flow_id, {"accurate": True})
+    result = await hass.config_entries.flow.async_configure(flow_id, {"accurate": "yes"})
     await _flush_ha_state_updates()
 
     assert result["type"] == FlowResultType.ABORT
@@ -764,7 +764,7 @@ async def test_calibration_wizard_recalibrate_on_inaccurate_test_dose(
     await hass.config_entries.flow.async_configure(flow_id, {"volume_ml": 2.5})
     await hass.config_entries.flow.async_configure(flow_id, {})
 
-    result = await hass.config_entries.flow.async_configure(flow_id, {"accurate": False})
+    result = await hass.config_entries.flow.async_configure(flow_id, {"accurate": "no"})
     assert result["step_id"] == "calibrate_run"
 
     # Restarting runs the 5 s calibration dose a second time.
@@ -823,6 +823,136 @@ async def test_calibration_wizard_survives_broadcast_failure(
     assert result["step_id"] == "calibrate_accuracy"
     assert dosing_client.dose_ml_calls == [(0, 4.0)]
 
-    result = await hass.config_entries.flow.async_configure(flow_id, {"accurate": True})
+    result = await hass.config_entries.flow.async_configure(flow_id, {"accurate": "yes"})
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "calibration_complete"
+
+
+async def test_calibration_wizard_ambiguous_run_asks_retry_or_continue(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """A failed timed-run write offers retry/continue instead of silently re-dosing."""
+    dosing_client = TrackingDosingClient()
+    await _setup_entry(hass, monkeypatch, dosing_client)
+    flow_id = await _start_calibration_flow(hass, entity_registry)
+
+    await hass.config_entries.flow.async_configure(flow_id, {"pump": "1"})
+
+    run_frames: list[int] = []
+    original = dosing_client.calibrate_channel
+    fail_next = {"count": 1}
+
+    async def _flaky_run(channel: int, *, seconds: int | None = None, volume_ml: float | None = None) -> bytes:
+        """Fail the first timed run as an ambiguous disconnect-after-write."""
+        if seconds is not None:
+            run_frames.append(seconds)
+            if fail_next["count"] > 0:
+                fail_next["count"] -= 1
+                raise HomeAssistantError("connection dropped after the frame was written")
+            return b""
+        return await original(channel, seconds=seconds, volume_ml=volume_ml)
+
+    monkeypatch.setattr(dosing_client, "calibrate_channel", _flaky_run)
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
+    assert result["step_id"] == "calibrate_dose_unclear"
+    assert run_frames == [5]
+
+    # "Continue" moves to the measured volume without dosing again.
+    result = await hass.config_entries.flow.async_configure(flow_id, {"dose_choice": "continue"})
+    assert result["step_id"] == "calibrate_measure"
+    assert run_frames == [5]
+
+    # The measured volume is still recorded on the device and locally.
+    result = await hass.config_entries.flow.async_configure(flow_id, {"volume_ml": 4.05})
+    assert result["step_id"] == "calibrate_test"
+    assert dosing_client.calibrate_calls[-1] == {"channel": 0, "seconds": None, "volume_ml": 4.05}
+
+    # The 4 ml test dose runs (dose_ml was not patched for this test).
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
+    assert result["step_id"] == "calibrate_accuracy"
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {"accurate": "yes"})
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "calibration_complete"
+
+
+async def test_calibration_wizard_ambiguous_run_retry_sends_fresh_dose(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """Choosing Retry after an ambiguous timed run re-sends the dose frame."""
+    dosing_client = TrackingDosingClient()
+    await _setup_entry(hass, monkeypatch, dosing_client)
+    flow_id = await _start_calibration_flow(hass, entity_registry)
+
+    await hass.config_entries.flow.async_configure(flow_id, {"pump": "1"})
+
+    run_frames: list[int] = []
+    original = dosing_client.calibrate_channel
+    fail_next = {"count": 1}
+
+    async def _flaky_run(channel: int, *, seconds: int | None = None, volume_ml: float | None = None) -> bytes:
+        """Fail the first timed run, then succeed on the retry."""
+        if seconds is not None:
+            run_frames.append(seconds)
+            if fail_next["count"] > 0:
+                fail_next["count"] -= 1
+                raise HomeAssistantError("connection dropped after the frame was written")
+            return b""
+        return await original(channel, seconds=seconds, volume_ml=volume_ml)
+
+    monkeypatch.setattr(dosing_client, "calibrate_channel", _flaky_run)
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
+    assert result["step_id"] == "calibrate_dose_unclear"
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {"dose_choice": "retry"})
+    assert result["step_id"] == "calibrate_run"
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
+    assert result["step_id"] == "calibrate_measure"
+    assert run_frames == [5, 5]
+
+
+async def test_calibration_wizard_ambiguous_test_dose_asks_retry_or_continue(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """A failed 4 ml test-dose write offers retry/continue instead of re-dosing."""
+    dosing_client = TrackingDosingClient()
+    await _setup_entry(hass, monkeypatch, dosing_client)
+    flow_id = await _start_calibration_flow(hass, entity_registry)
+
+    await hass.config_entries.flow.async_configure(flow_id, {"pump": "1"})
+    await hass.config_entries.flow.async_configure(flow_id, {})
+    await hass.config_entries.flow.async_configure(flow_id, {"volume_ml": 4.0})
+
+    dose_calls: list[tuple[int, float]] = []
+    fail_next = {"count": 1}
+
+    async def _flaky_dose(pump_idx: int, volume_ml: float) -> bytes:
+        """Fail the first 4 ml test dose after the frame was written."""
+        dose_calls.append((pump_idx, volume_ml))
+        if fail_next["count"] > 0:
+            fail_next["count"] -= 1
+            raise HomeAssistantError("connection dropped after the frame was written")
+        return b""
+
+    monkeypatch.setattr(dosing_client, "dose_ml", _flaky_dose)
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
+    assert result["step_id"] == "calibrate_dose_unclear"
+    assert dose_calls == [(0, 4.0)]
+
+    # "Continue" skips to the accuracy step without a second dose.
+    result = await hass.config_entries.flow.async_configure(flow_id, {"dose_choice": "continue"})
+    assert result["step_id"] == "calibrate_accuracy"
+    assert dose_calls == [(0, 4.0)]
+
+    result = await hass.config_entries.flow.async_configure(flow_id, {"accurate": "yes"})
     assert result["type"] == FlowResultType.ABORT
     assert result["reason"] == "calibration_complete"

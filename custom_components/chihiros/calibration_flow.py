@@ -40,10 +40,17 @@ STEP_CALIBRATE_RUN = "calibrate_run"
 STEP_CALIBRATE_MEASURE = "calibrate_measure"
 STEP_CALIBRATE_TEST = "calibrate_test"
 STEP_CALIBRATE_ACCURACY = "calibrate_accuracy"
+STEP_CALIBRATE_DOSE_UNCLEAR = "calibrate_dose_unclear"
 
 ATTR_PUMP = "pump"
 ATTR_ACCURATE = "accurate"
 ATTR_VOLUME_ML = "volume_ml"
+ATTR_DOSE_CHOICE = "dose_choice"
+DOSE_RETRY = "retry"
+DOSE_CONTINUE = "continue"
+
+ACCURACY_YES = "yes"
+ACCURACY_NO = "no"
 
 CALIBRATION_RUN_SECONDS = 5
 TEST_DOSE_ML = 4.0
@@ -114,7 +121,24 @@ def _measure_schema() -> vol.Schema:
 
 def _accuracy_schema() -> vol.Schema:
     """Return the was-this-accurate schema (app: Yes!Continue / No!Re-calibrate)."""
-    return vol.Schema({vol.Required(ATTR_ACCURATE, default=True): bool})
+    return vol.Schema(
+        {
+            vol.Required(ATTR_ACCURATE): vol.In(
+                {ACCURACY_YES: "Yes — the 4 ml test dose was accurate", ACCURACY_NO: "No — re-calibrate"}
+            )
+        }
+    )
+
+
+def _dose_unclear_schema() -> vol.Schema:
+    """Return the retry-or-continue schema for an ambiguous dose frame."""
+    return vol.Schema(
+        {
+            vol.Required(ATTR_DOSE_CHOICE): vol.In(
+                {DOSE_RETRY: "Retry the dose", DOSE_CONTINUE: "Continue without dosing"}
+            )
+        }
+    )
 
 
 def _dosing_device(chihiros_data: ChihirosData) -> DosingChihirosClient:
@@ -184,6 +208,9 @@ class DosingCalibrationFlowMixin:
     _calibration_entry_id: str
     _calibration_data: ChihirosData
     _calibration_pump: int
+    # Step to jump to when the user chooses "continue" after an ambiguous
+    # dose frame (measure after a failed run, accuracy after a failed test dose).
+    _calibration_after_unclear: str
 
     async def async_step_calibrate_pump(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Pick the pump channel to calibrate."""
@@ -202,21 +229,27 @@ class DosingCalibrationFlowMixin:
 
     async def async_step_calibrate_run(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Run the fixed 5 s timed calibration dose (app wizard step 1)."""
-        errors: dict[str, str] = {}
         if user_input is not None:
             try:
                 await _async_send_calibration_run(self.hass, self._calibration_data, self._calibration_pump)
-            except Exception as ex:  # noqa: BLE001 — wizard steps must re-show the form on failure
+            except Exception as ex:  # noqa: BLE001 — wizard steps must not crash on failure
                 _LOGGER.warning(
                     "Calibration run for pump %d on %s failed: %s",
                     self._calibration_pump + 1,
                     self._calibration_data.device.name,
                     ex,
                 )
-                errors["base"] = "cannot_connect"
+                # The pump write failed ambiguously: the frame may already
+                # have been dispensed. Never silently re-offer the dose —
+                # let the user decide between retrying (a fresh dose) and
+                # continuing to the measured-volume step.
+                self._calibration_after_unclear = STEP_CALIBRATE_MEASURE
+                return await self.async_step_calibrate_dose_unclear(
+                    description_placeholders={"dose": "timed calibration run"}
+                )
             else:
                 return await self.async_step_calibrate_measure()
-        return self.async_show_form(step_id=STEP_CALIBRATE_RUN, data_schema=vol.Schema({}), errors=errors)
+        return self.async_show_form(step_id=STEP_CALIBRATE_RUN, data_schema=vol.Schema({}))
 
     async def async_step_calibrate_measure(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Enter the measured volume (app wizard step 2)."""
@@ -241,27 +274,54 @@ class DosingCalibrationFlowMixin:
 
     async def async_step_calibrate_test(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Dose a known 4 mL volume (app wizard step 3, "Dose 4ml" button)."""
-        errors: dict[str, str] = {}
         if user_input is not None:
             try:
                 await _async_run_test_dose(self.hass, self._calibration_data, self._calibration_pump)
-            except Exception as ex:  # noqa: BLE001 — wizard steps must re-show the form on failure
+            except Exception as ex:  # noqa: BLE001 — wizard steps must not crash on failure
                 _LOGGER.warning(
                     "Test dose for pump %d on %s failed: %s",
                     self._calibration_pump + 1,
                     self._calibration_data.device.name,
                     ex,
                 )
-                errors["base"] = "cannot_connect"
+                # Same ambiguity as the timed run: the 4 ml frame may have
+                # been dispensed even though the write failed.
+                self._calibration_after_unclear = STEP_CALIBRATE_ACCURACY
+                return await self.async_step_calibrate_dose_unclear(description_placeholders={"dose": "4 ml test dose"})
             else:
                 return await self.async_step_calibrate_accuracy()
-        return self.async_show_form(step_id=STEP_CALIBRATE_TEST, data_schema=vol.Schema({}), errors=errors)
+        return self.async_show_form(step_id=STEP_CALIBRATE_TEST, data_schema=vol.Schema({}))
+
+    async def async_step_calibrate_dose_unclear(
+        self, user_input: dict[str, Any] | None = None, description_placeholders: dict[str, str] | None = None
+    ) -> ConfigFlowResult:
+        """Ask whether to re-send an ambiguous dose frame or move on.
+
+        A failed pump write for the timed run or the 4 ml test dose is
+        ambiguous: the frame may already have been dispensed. Re-offering the
+        dose form directly would invite a second dose on resubmit, so the
+        wizard asks explicitly (Retry sends a fresh dose frame; Continue
+        skips to the next step without dosing again).
+        """
+        if user_input is None:
+            return self.async_show_form(
+                step_id=STEP_CALIBRATE_DOSE_UNCLEAR,
+                data_schema=_dose_unclear_schema(),
+                description_placeholders=description_placeholders or {},
+            )
+        if user_input[ATTR_DOSE_CHOICE] == DOSE_RETRY:
+            if self._calibration_after_unclear == STEP_CALIBRATE_MEASURE:
+                return await self.async_step_calibrate_run()
+            return await self.async_step_calibrate_test()
+        if self._calibration_after_unclear == STEP_CALIBRATE_MEASURE:
+            return await self.async_step_calibrate_measure()
+        return await self.async_step_calibrate_accuracy()
 
     async def async_step_calibrate_accuracy(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Ask whether the 4 mL test dose was accurate (app wizard step 4)."""
         if user_input is None:
             return self.async_show_form(step_id=STEP_CALIBRATE_ACCURACY, data_schema=_accuracy_schema())
-        if user_input.get(ATTR_ACCURATE):
+        if user_input.get(ATTR_ACCURATE) == ACCURACY_YES:
             return self.async_abort(
                 reason="calibration_complete",
                 description_placeholders={"pump": str(self._calibration_pump + 1)},

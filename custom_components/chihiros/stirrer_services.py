@@ -12,7 +12,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
-from .dosing import derive_first_setting
+from .dosing import derive_first_setting, serialize_points
 from .models import ChihirosData
 from .service_utils import (
     ATTR_WEEKDAYS,
@@ -146,9 +146,21 @@ async def _async_set_stir_schedule(hass: HomeAssistant, call: ServiceCall) -> No
         is_first_setting=first_setting,
     )
     if data.dosing_programming is not None:
+        # Record exactly what was sent (set_stir_schedule always sends
+        # dosingSet with a daily volume of 0 plus the timer frames), so the
+        # record is complete enough for a verbatim replay via
+        # _apply_channel_setup instead of a partial mode-without-points trap.
         await data.dosing_programming.async_record(
             channel,
-            {"active": active, "frequency": frequency, "mode": "timer"},
+            {
+                "active": active,
+                "compensate": False,
+                "dose_per_day_ml": 0.0,
+                "frequency": frequency,
+                "mode": "timer",
+                "points": serialize_points(points),
+                "first_setting": first_setting,
+            },
         )
 
 

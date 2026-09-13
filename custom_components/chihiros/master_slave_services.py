@@ -29,7 +29,12 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import CONF_MASTER_ADDRESS, DOMAIN
-from .dosing import derive_first_setting, is_dosing_capable
+from .dosing import (
+    derive_first_setting,
+    deserialize_points,
+    is_dosing_capable,
+    serialize_points,
+)
 from .models import ChihirosData
 from .service_utils import (
     ATTR_ADDRESS,
@@ -192,34 +197,6 @@ def _free_point(point: dict[str, Any]) -> DosingWorkPoint:
         duration += MINUTES_PER_DAY  # windows may wrap past midnight
     count = int(point.get("count", 2))  # 2 = the app's DosingWorkPoint default
     return DosingWorkPoint(start // 60, start % 60, duration_minutes=duration, number=count)
-
-
-def serialize_points(points: list[DosingWorkPoint]) -> list[dict[str, Any]]:
-    """Convert work points into JSON-safe dicts for the programming record."""
-    return [
-        {
-            "start_hour": point.start_hour,
-            "start_minute": point.start_minute,
-            "volume_ml": point.volume_ml,
-            "duration_minutes": point.duration_minutes,
-            "number": point.number,
-        }
-        for point in points
-    ]
-
-
-def deserialize_points(raw: list[dict[str, Any]]) -> list[DosingWorkPoint]:
-    """Rebuild work points from a programming record."""
-    return [
-        DosingWorkPoint(
-            item["start_hour"],
-            item["start_minute"],
-            volume_ml=item.get("volume_ml", 0.0),
-            duration_minutes=item.get("duration_minutes", 0),
-            number=item.get("number", 2),
-        )
-        for item in raw
-    ]
 
 
 def _config_entry_for_address(hass: HomeAssistant, address: str) -> ConfigEntry | None:
@@ -452,8 +429,11 @@ def async_register_pump_services(hass: HomeAssistant) -> None:
         # day for a channel; derive the flag from the programming record when
         # the caller does not pass it explicitly.
         first_setting = derive_first_setting(data.dosing_programming, channel, call.data.get(ATTR_FIRST_SETTING))
-        # One transaction: the pump accepts the whole sequence or none of it,
-        # so the recorded setup can never diverge from the hardware.
+        # One paced write batch. The frames are idempotent and the whole batch
+        # is retried on failure, so a transient disconnect converges — but a
+        # BLE batch is not atomic: if every retry fails partway, the pump is
+        # left half-programmed and the record below then mirrors what was
+        # *sent*, not what the hardware holds. Mirroring replays it verbatim.
         await data.device.program_channel(
             channel,
             active=bool(call.data[ATTR_ACTIVE]),
