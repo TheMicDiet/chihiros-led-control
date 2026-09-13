@@ -1,4 +1,4 @@
-"""Dosing pump calibration wizard exposed as a Home Assistant config flow.
+"""Dosing pump calibration wizard exposed as a Home Assistant repairs flow.
 
 Replays the vendor app's per-channel calibration wizard
 (``DosingCalibrateWidget``, verified against the 2.8.59 decompile and the
@@ -24,10 +24,10 @@ import logging
 from typing import Any, cast
 
 import voluptuous as vol
-from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import issue_registry as ir
 
 from .const import DOMAIN
 from .models import ChihirosData
@@ -35,7 +35,7 @@ from .runtime import DosingChihirosClient
 
 _LOGGER = logging.getLogger(__name__)
 
-SOURCE_CALIBRATE_PUMP = "calibrate_pump"
+SOURCE_CALIBRATE_PUMP = "calibrate_pump"  # kept for context tagging; the wizard now runs as a repairs flow
 STEP_CALIBRATE_PUMP = "calibrate_pump"
 STEP_CALIBRATE_RUN = "calibrate_run"
 STEP_CALIBRATE_MEASURE = "calibrate_measure"
@@ -67,70 +67,40 @@ def _find_entry_id(hass: HomeAssistant, chihiros_data: ChihirosData) -> str | No
     return None
 
 
-def wizard_notification_id(entry_id: str) -> str:
-    """Return the persistent notification id for one entry's wizard."""
-    return f"{DOMAIN}_calibration_{entry_id}"
+def calibration_issue_id(entry_id: str) -> str:
+    """Return the repairs issue id for one entry's calibration wizard."""
+    return f"{DOMAIN}_calibrate_{entry_id}"
 
 
-def _async_create_wizard_notification(hass: HomeAssistant, entry_id: str, device_name: str) -> None:
-    """Raise a persistent notification linking to the in-progress wizard.
+def async_start_calibration_issue(hass: HomeAssistant, chihiros_data: ChihirosData) -> None:
+    """Raise the repairs issue that opens the calibration wizard for one pump.
 
-    Config flows started outside the frontend never open a dialog on their
-    own, so a button press would otherwise look like it did nothing. The
-    notification links straight to the integration page, which shows the
-    pending flow; it is dismissed when the wizard finishes or aborts.
-    """
-    persistent_notification.async_create(
-        hass,
-        f"A calibration wizard for {device_name} was started. "
-        f"Open [Settings → Devices & services → Chihiros](/config/integrations/integration/{DOMAIN}) to continue.",
-        title="Chihiros calibration wizard",
-        notification_id=wizard_notification_id(entry_id),
-    )
+    Home Assistant never opens a config-flow dialog that was started outside
+    the frontend, so a button press alone would look like a no-op. Instead the
+    wizard is exposed as a *fixable repairs issue*: pressing the button raises
+    the issue, the frontend surfaces it as a clickable notification, and
+    opening it runs the wizard dialog directly (the core pattern used e.g. by
+    unifiprotect). Re-raising an existing issue is a no-op update, so repeated
+    button presses are harmless.
 
-
-def _async_dismiss_wizard_notification(hass: HomeAssistant, entry_id: str) -> None:
-    """Remove the wizard-started notification."""
-    persistent_notification.async_dismiss(hass, wizard_notification_id(entry_id))
-
-
-def calibration_in_progress(hass: HomeAssistant, entry_id: str) -> bool:
-    """Return whether a calibration wizard is already running for a config entry."""
-    return bool(
-        hass.config_entries.flow.async_progress_by_handler(
-            DOMAIN, match_context={"source": SOURCE_CALIBRATE_PUMP, "entry_id": entry_id}
-        )
-    )
-
-
-async def async_start_calibration_flow(hass: HomeAssistant, chihiros_data: ChihirosData) -> None:
-    """Launch the calibration wizard for one dosing pump.
-
-    Raises ``HomeAssistantError`` when the target is not a dosing pump, is not
-    loaded, or already has a wizard in progress. On success a persistent
-    notification with a link to the wizard is raised — flows started outside
-    the frontend never open a dialog on their own.
+    Raises ``HomeAssistantError`` when the target is not a dosing pump or is
+    not loaded.
     """
     if not chihiros_data.dosing_totals:
         raise HomeAssistantError(f"{chihiros_data.device.name} is not a dosing pump")
     entry_id = _find_entry_id(hass, chihiros_data)
     if entry_id is None:
         raise HomeAssistantError(f"{chihiros_data.device.name} is not loaded")
-    if calibration_in_progress(hass, entry_id):
-        raise HomeAssistantError(f"A calibration flow for {chihiros_data.device.name} is already in progress")
-    try:
-        await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={
-                "source": SOURCE_CALIBRATE_PUMP,
-                "entry_id": entry_id,
-                "title_placeholders": {"name": chihiros_data.device.name},
-            },
-        )
-    except Exception as ex:  # noqa: BLE001 — the wizard must surface flow failures to the caller
-        _LOGGER.warning("Failed to start the calibration flow for %s: %s", chihiros_data.device.name, ex)
-        raise HomeAssistantError(f"Failed to start the calibration flow: {ex}") from ex
-    _async_create_wizard_notification(hass, entry_id, chihiros_data.device.name)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        calibration_issue_id(entry_id),
+        is_fixable=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="calibrate_pump",
+        translation_placeholders={"name": chihiros_data.device.name},
+        data={"entry_id": entry_id},
+    )
 
 
 def _pump_schema(pump_count: int) -> vol.Schema:
@@ -243,13 +213,23 @@ class DosingCalibrationFlowMixin:
     # dose frame (measure after a failed run, accuracy after a failed test dose).
     _calibration_after_unclear: str
 
+    def _async_dismiss_issue(self) -> None:
+        """Delete the repairs issue backing this wizard (no-op outside repairs).
+
+        The repairs flow manager only auto-deletes the issue on
+        ``create_entry``; the wizard always finishes with a descriptive abort,
+        so the issue is removed explicitly here.
+        """
+        issue_id = getattr(self, "issue_id", None)
+        if issue_id is not None:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+
     async def async_step_calibrate_pump(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Pick the pump channel to calibrate."""
-        entry_id = self.context.get("entry_id")
+        entry_id = self.context.get("entry_id") or getattr(self, "_calibration_entry_id", None)
         data = self.hass.data.get(DOMAIN, {}).get(entry_id) if entry_id else None
         if data is None or data.dosing_totals is None:
-            if entry_id:
-                _async_dismiss_wizard_notification(self.hass, entry_id)
+            self._async_dismiss_issue()
             return self.async_abort(reason="not_dosing_pump")
         self._calibration_entry_id = entry_id
         self._calibration_data = data
@@ -355,7 +335,7 @@ class DosingCalibrationFlowMixin:
         if user_input is None:
             return self.async_show_form(step_id=STEP_CALIBRATE_ACCURACY, data_schema=_accuracy_schema())
         if user_input.get(ATTR_ACCURATE) == ACCURACY_YES:
-            _async_dismiss_wizard_notification(self.hass, self._calibration_entry_id)
+            self._async_dismiss_issue()
             return self.async_abort(
                 reason="calibration_complete",
                 description_placeholders={"pump": str(self._calibration_pump + 1)},

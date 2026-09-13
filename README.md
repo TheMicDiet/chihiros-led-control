@@ -167,7 +167,11 @@ data:
 #### Calibrating a dosing pump
 
 Each dosing pump exposes a **Calibrate pump** button (shown under
-"Configuration" on the device page). Pressing it starts a wizard that replays
+"Configuration" on the device page). Pressing it raises a Home Assistant
+repair issue; open it from the notification bell (or **Settings → System →
+Repairs**) and the wizard dialog runs in place — Home Assistant never opens
+config-flow dialogs started outside the frontend, so the wizard is exposed as
+a fixable repair. The wizard replays
 the vendor app's calibration exactly (`DosingCalibrateWidget`, verified
 against the 2.8.59 decompile; note its call-site constants are smi-tagged, so
 raw `8000` = 4000 µL and raw `10` = 5 s):

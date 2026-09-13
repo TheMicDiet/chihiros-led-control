@@ -4,9 +4,7 @@
             "already_configured": "Device is already configured",
             "already_in_progress": "Configuration flow is already in progress",
             "no_devices_found": "No devices found on the network",
-            "not_supported": "Device not supported",
-            "not_dosing_pump": "This device is not a dosing pump",
-            "calibration_complete": "Calibration of pump {pump} finished: the 4 ml test dose was confirmed accurate"
+            "not_supported": "Device not supported"
         },
         "error": {
             "cannot_connect": "Failed to connect",
@@ -37,36 +35,6 @@
                 },
                 "description": "Choose how many stir channels this magnetic stirrer should expose"
             },
-            "calibrate_pump": {
-                "data": {
-                    "pump": "Pump"
-                },
-                "description": "Choose which pump channel to calibrate"
-            },
-            "calibrate_run": {
-                "description": "Put the measuring cylinder at the outlet of the tube, then submit to start the calibration dose. This will dose between 2 and 4 ml and will take up to 5 seconds."
-            },
-            "calibrate_measure": {
-                "data": {
-                    "volume_ml": "Measured volume (mL)"
-                },
-                "description": "Enter exact volume of ml here. Place the measuring cylinder on a horizontal surface, check the level of the water surface, estimate the level of the bottom of the concave water surface to the nearest 0.05ml"
-            },
-            "calibrate_test": {
-                "description": "Make sure the tube measuring cylinder is empty and completely dry, then submit to dose a known 4 ml volume."
-            },
-            "calibrate_accuracy": {
-                "data": {
-                    "accurate": "Was the 4 ml test dose accurate?"
-                },
-                "description": "Was this accurate? (between 3.95-4.05ml). Choosing no restarts the calibration."
-            },
-            "calibrate_dose_unclear": {
-                "data": {
-                    "dose_choice": "Retry the dose or continue"
-                },
-                "description": "The {dose} may or may not have run: the frame was sent, but the connection failed before the pump confirmed it. Retry sends the dose frame again (dosing a second time if the first run happened); Continue moves on without dosing again."
-            },
             "user": {
                 "data": {
                     "device": "Device"
@@ -89,6 +57,49 @@
                 },
                 "description": "Choose how many channels this device should expose",
                 "title": "Chihiros options"
+            }
+        }
+    },
+    "issues": {
+        "calibrate_pump": {
+            "title": "Calibrate a pump channel on {name}",
+            "fix_flow": {
+                "step": {
+                    "calibrate_pump": {
+                        "data": {
+                            "pump": "Pump"
+                        },
+                        "description": "Choose which pump channel to calibrate"
+                    },
+                    "calibrate_run": {
+                        "description": "Put the measuring cylinder at the outlet of the tube, then submit to start the calibration dose. This will dose between 2 and 4 ml and will take up to 5 seconds."
+                    },
+                    "calibrate_measure": {
+                        "data": {
+                            "volume_ml": "Measured volume (mL)"
+                        },
+                        "description": "Enter exact volume of ml here. Place the measuring cylinder on a horizontal surface, check the level of the water surface, estimate the level of the bottom of the concave water surface to the nearest 0.05ml"
+                    },
+                    "calibrate_test": {
+                        "description": "Make sure the tube measuring cylinder is empty and completely dry, then submit to dose a known 4 ml volume."
+                    },
+                    "calibrate_accuracy": {
+                        "data": {
+                            "accurate": "Was the 4 ml test dose accurate?"
+                        },
+                        "description": "Was this accurate? (between 3.95-4.05ml). Choosing no restarts the calibration."
+                    },
+                    "calibrate_dose_unclear": {
+                        "data": {
+                            "dose_choice": "Retry the dose or continue"
+                        },
+                        "description": "The {dose} may or may not have run: the frame was sent, but the connection failed before the pump confirmed it. Retry sends the dose frame again (dosing a second time if the first run happened); Continue moves on without dosing again."
+                    }
+                },
+                "abort": {
+                    "not_dosing_pump": "This device is not a dosing pump",
+                    "calibration_complete": "Calibration of pump {pump} finished: the 4 ml test dose was confirmed accurate"
+                }
             }
         }
     }

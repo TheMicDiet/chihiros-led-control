@@ -69,6 +69,6 @@ class ChihirosCalibrationButton(ButtonEntity):
 
     async def async_press(self) -> None:
         """Start the per-channel calibration wizard."""
-        from .calibration_flow import async_start_calibration_flow
+        from .calibration_flow import async_start_calibration_issue
 
-        await async_start_calibration_flow(self.hass, self._chihiros_data)
+        async_start_calibration_issue(self.hass, self._chihiros_data)

@@ -14,7 +14,6 @@ from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResu
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.core import callback
 
-from .calibration_flow import DosingCalibrationFlowMixin
 from .const import CONF_MASTER_ADDRESS, DOMAIN
 from .discovery import ChihirosDiscovery, discovery_title
 from .dosing import (
@@ -45,7 +44,7 @@ _LOGGER = logging.getLogger(__name__)
 UNLINKED_MASTER = "none"
 
 
-class ChihirosConfigFlow(DosingCalibrationFlowMixin, ConfigFlow, domain=DOMAIN):
+class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for chihiros."""
 
     VERSION = 1
