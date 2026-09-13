@@ -166,53 +166,32 @@ data:
 
 #### Calibrating a dosing pump
 
-Each dosing pump exposes a **Calibrate pump** button (shown under
-"Configuration" on the device page). Pressing it raises a Home Assistant
-repair issue; open it from the notification bell (or **Settings → System →
-Repairs**) and the wizard dialog runs in place — Home Assistant never opens
-config-flow dialogs started outside the frontend, so the wizard is exposed as
-a fixable repair. The wizard replays
-the vendor app's calibration exactly (`DosingCalibrateWidget`, verified
-against the 2.8.59 decompile; note its call-site constants are smi-tagged, so
-raw `8000` = 4000 µL and raw `10` = 5 s):
+Each dosing pump exposes a **Calibrate pump** button. Pressing it raises a
+Home Assistant repair notification; opening it (from the bell, or
+**Settings → System → Repairs**) runs the wizard in place. The wizard replays
+the vendor app's calibration:
 
-1. **Calibration dose** — a fixed 5-second timed run (`dosingCalibrate`
-   `[ch, 5, 255, 255]`); the pump dispenses 2–4 ml in up to 5 seconds.
-2. **Enter the measured volume** — what the pump actually dispensed, read to
-   the nearest 0.05 ml (`dosingCalibrate` `[ch, 255, int, frac]`).
-3. **Dose 4ml test** — a fixed 4 ml manual dose (the app's `tempDosing(4000)`
-   "Dose 4ml" button; counted in the daily totals like any manual dose).
-4. **"Was this accurate? (between 3.95-4.05ml)"** — *Yes* finishes the
-   wizard, *No* restarts it from step 1 (the app's "No!Re-calibrate" path).
+1. **Calibration dose** — a fixed 5-second timed run.
+2. **Enter the measured volume** — what the pump dispensed, to the nearest
+   0.05 ml.
+3. **Dose 4ml test** — a fixed 4 ml manual dose (counted in the daily totals).
+4. **"Was this accurate?"** — *Yes* finishes the wizard, *No* restarts it
+   from step 1.
 
-While a stirrer slave is linked, every frame is broadcast to the stirrer
-verbatim, matching the app's device-null `DataSendEvent` routing (verified in
-`DosingPumpInfo.calibration` @ 0xa6922c). A per-channel `last calibration`
-sensor shows when each channel was last calibrated (the app tracks the same
-flag locally; the device never reports it). The app's optional channel-rename
-step is local-only and has no HA equivalent.
-Magnetic stirrers are not calibratable and do not get the wizard button
-(matching the app, which has no stirrer calibration UI).
+While a stirrer slave is linked, every calibration frame is broadcast to the
+stirrer verbatim, like the vendor app. A per-channel `last calibration`
+sensor shows when each channel was last calibrated. Magnetic stirrers are not
+calibratable (matching the app).
 
 Magnetic stirrers (`DYMIXR`) expose one stir switch and a speed number
 (0-100 %, device default 40) per channel; the pre-run number (0-999 s) is
-created **disabled by default** because it only takes effect while the
-stirrer runs as a slave of a linked dosing pump. The first setup asks how
-many stir channels to expose (2, 4, or all 8; changeable later from the
-integration's Configure dialog), so unused channels do not clutter the
-entity list. The stirrer sends no status notifications, so all
-stirrer states are optimistic and restored across Home Assistant restarts
-(matching the vendor app, which also only shows its persisted model state).
-
-> **Warning:** because the device never reports back, the stir switch state
-> can diverge from reality — if a schedule point fires or the vendor app
-> starts a stir, the Home Assistant switch still shows its last local state.
-> Do not build automations on the switch *state*; use it (or
-> `chihiros.stir_for`) to *drive* the channel instead.
-
-Run a channel for a bounded time with `chihiros.stir_for` (the stir switch
-runs until switched off; the device supports minute+second resolution, up to
-255 min 59 s):
+created **disabled by default** because it only matters while the stirrer
+runs as a slave of a linked dosing pump. Setup asks how many stir channels to
+expose (2, 4, or all 8; changeable later from the integration's Configure
+dialog). The stirrer sends no status notifications, so stirrer states are
+optimistic and restored across Home Assistant restarts. Do not build
+automations on the switch *state* — use it (or `chihiros.stir_for`) to
+*drive* the channel.
 
 ```yaml
 service: chihiros.stir_for
@@ -223,10 +202,8 @@ data:
 ```
 
 Replace a channel's timer schedule with `chihiros.set_stir_schedule`; run
-times are given in minutes and encoded with the vendor app's 0.6 mL/min
-equivalence, and points must be at least 2 minutes apart. The repetition is
-picked with a `weekdays` selector (`everyday`, `monday`, …) instead of the
-protocol's raw bitmask:
+times are given in minutes and must be at least 2 minutes apart (the
+repetition is picked with a `weekdays` selector):
 
 ```yaml
 service: chihiros.set_stir_schedule
@@ -250,50 +227,31 @@ the integration's programming record and no longer needs to be passed.
 ### Master/slave mirroring (pump → stirrer)
 
 The vendor app mirrors a linked stirrer by broadcasting the pump's programming
-frames to every connected device. Home Assistant cannot broadcast, so the
-integration reproduces master/slave explicitly:
+frames. Home Assistant cannot broadcast, so mirroring is explicit:
 
 - `chihiros.set_dosing_schedule` and `chihiros.set_channel_active` program a
-  dosing pump channel and record the write. While a stirrer is linked, every
-  write is replayed to the stirrer automatically.
-- `chihiros.set_stirrer_master` links a stirrer to a pump (persisted on the
-  stirrer's config entry) and replays the pump's recorded programming on
-  linking; call it without master fields to unlink.
-- `chihiros.mirror_stirrer` replays the linked pump's full programming on
-  demand (the vendor app's "start as slave" sequence, ending with the dose
-  delay frame — which always includes a `dosingSet` frame per channel, using
-  the recorded daily volume or the channel-model default of 0).
+  pump channel and replay the write to linked stirrers automatically.
+- `chihiros.set_stirrer_master` links a stirrer to a pump and replays the
+  pump's recorded programming on linking; omit the master fields to unlink.
+- `chihiros.mirror_stirrer` replays the pump's full recorded programming on
+  demand (including the dose-delay frame).
 - `chihiros.dose_ml` and `chihiros.reset_dosing_channel` broadcast their
-  frames verbatim to linked stirrers, exactly like the vendor app's BLE
-  broadcast (`tempDosing` and `resetDosingChannel` both apply the same
-  slave-linked broadcast rule; DOSING_CONTROL.md §5). The stirrer firmware
-  interprets a broadcast manual dose as an immediate stir.
+  frames verbatim to linked stirrers; the stirrer treats a broadcast manual
+  dose as an immediate stir.
 
 #### Stir-before-dose timing
 
-There are **no runtime coordination frames** between a linked pump and
-stirrer — both devices run the same mirrored schedule times on their own
-clocks, and ordering is achieved entirely by offsets programmed up front
-(all binary-verified, DOSING_CONTROL.md §6):
+There are no coordination frames between a linked pump and stirrer — both run
+the same mirrored schedule times on their own clocks, and ordering comes from
+programmed offsets:
 
-- the stirrer starts stirring `pre_second` seconds **in advance** of each
-  schedule point (the app's "Run time in advance" setting; default 0); its
-  overlap validator (`duplicateJudge`) adds the pre-stir time on top of the
-  stir workload when checking the ≥2-minute point gap;
-- the pump optionally **waits** before dosing each supplement when its
-  dose-delay flag is set (app text: "Dose will wait for 30 seconds before
-  dosing each supplement"); the app mirrors this flag onto the stirrer when
-  linking (§6.4).
+- the stirrer can start `pre_second` seconds **before** each schedule point
+  (the per-channel `Stir channel N pre-run` number; default 0);
+- the pump can **wait** before dosing each supplement when its dose-delay flag
+  is set (`chihiros.set_dose_delay`, mirrored to the stirrer on linking).
 
-So stirring precedes dosing **only if** the stirrer's pre-run is set (> 0)
-and/or the pump's dose delay is enabled — with both at their defaults, both
-devices act at the same scheduled instant. From Home Assistant:
-
-- set the stirrer's `Stir channel N pre-run` number (or the pre-run value in
-  any automation), and
-- set the pump's flag with `chihiros.set_dose_delay` — it is recorded and
-  mirrored to the linked stirrer, and `chihiros.mirror_stirrer` replays the
-  recorded flag.
+So stirring precedes dosing only if the pre-run is set and/or the dose delay
+is enabled — at the defaults, both devices act at the same instant.
 
 ```yaml
 # Link the stirrer to the pump and mirror the pump's current programming:
@@ -315,9 +273,8 @@ data:
       ml: 1.0
 ```
 
-The link is the same persisted-only bookkeeping the vendor app uses (no BLE
-pairing frame exists); the app and Home Assistant links are independent.
-
+The link is persisted bookkeeping only (no BLE pairing frame exists); the
+vendor app and Home Assistant links are independent.
 ## Requirements
 - a device with bluetooth LE support for sending the commands to the LED
 - [uv](https://docs.astral.sh/uv/) for Python environment and dependency management
