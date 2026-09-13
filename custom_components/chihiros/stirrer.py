@@ -13,6 +13,9 @@ from __future__ import annotations
 import logging
 from typing import cast
 
+from homeassistant.components.bluetooth.passive_update_coordinator import (
+    PassiveBluetoothCoordinatorEntity,
+)
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import UnitOfTime
@@ -22,6 +25,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
+from .coordinator import ChihirosDataUpdateCoordinator
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData, StirrerChannelState
 from .runtime import StirrerChihirosClient
@@ -79,7 +83,11 @@ def _channel_states(chihiros_data: ChihirosData) -> list[StirrerChannelState]:
     return chihiros_data.stirrer_states
 
 
-class ChihirosStirSwitch(SwitchEntity, RestoreEntity):
+class ChihirosStirSwitch(
+    PassiveBluetoothCoordinatorEntity[ChihirosDataUpdateCoordinator],
+    SwitchEntity,
+    RestoreEntity,
+):
     """Switch to manually start/stop one stir channel (app's ``tempRun``).
 
     State is optimistic: the device confirms nothing back, and the vendor app
@@ -93,6 +101,7 @@ class ChihirosStirSwitch(SwitchEntity, RestoreEntity):
 
     def __init__(self, device: object, chihiros_data: ChihirosData, channel: int) -> None:
         """Initialize the stir switch for one channel."""
+        super().__init__(chihiros_data.coordinator)
         self._device = device
         self._coordinator = chihiros_data.coordinator
         self._state = _channel_states(chihiros_data)[channel]
@@ -105,10 +114,13 @@ class ChihirosStirSwitch(SwitchEntity, RestoreEntity):
     @property
     def available(self) -> bool:
         """Return whether the device is reachable (or faked)."""
-        return self._coordinator.always_available or self._coordinator.last_update_success
+        if self._coordinator.always_available:
+            return True
+        return super().available
 
     async def async_added_to_hass(self) -> None:
         """Restore the last known optimistic state without re-sending it."""
+        await super().async_added_to_hass()
         if last_state := await self.async_get_last_state():
             self._state.running = last_state.state == "on"
 
@@ -136,7 +148,11 @@ class ChihirosStirSwitch(SwitchEntity, RestoreEntity):
         self.async_write_ha_state()
 
 
-class ChihirosStirNumberBase(NumberEntity, RestoreEntity):
+class ChihirosStirNumberBase(
+    PassiveBluetoothCoordinatorEntity[ChihirosDataUpdateCoordinator],
+    NumberEntity,
+    RestoreEntity,
+):
     """Base for the per-channel stir speed and pre-run numbers.
 
     Both values ride on one ``(0xA5, 42)`` frame (``stirrerPreSecond``), so
@@ -153,6 +169,7 @@ class ChihirosStirNumberBase(NumberEntity, RestoreEntity):
 
     def __init__(self, device: object, chihiros_data: ChihirosData, channel: int) -> None:
         """Initialize the number for one stir channel."""
+        super().__init__(chihiros_data.coordinator)
         self._device = device
         self._coordinator = chihiros_data.coordinator
         self._state = _channel_states(chihiros_data)[channel]
@@ -179,6 +196,7 @@ class ChihirosStirNumberBase(NumberEntity, RestoreEntity):
 
     async def async_added_to_hass(self) -> None:
         """Restore the last configured value into the shared state (no write)."""
+        await super().async_added_to_hass()
         if last_state := await self.async_get_last_state():
             try:
                 value = int(float(last_state.state))
@@ -190,7 +208,9 @@ class ChihirosStirNumberBase(NumberEntity, RestoreEntity):
     @property
     def available(self) -> bool:
         """Return whether the device is reachable (or faked)."""
-        return self._coordinator.always_available or self._coordinator.last_update_success
+        if self._coordinator.always_available:
+            return True
+        return super().available
 
     @property
     def native_value(self) -> float | None:
