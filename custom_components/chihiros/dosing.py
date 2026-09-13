@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_time
@@ -13,14 +14,24 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .vendor.chihiros_led_control.commands import DosingWorkPoint
 from .vendor.chihiros_led_control.models import DOSING_PUMP
 
 STORAGE_KEY = f"{DOMAIN}_dosing_daily_totals"
 STORAGE_VERSION = 1
+PROGRAMMING_STORAGE_KEY = f"{DOMAIN}_dosing_programming"
+CALIBRATION_STORAGE_KEY = f"{DOMAIN}_dosing_calibration"
+SIGNAL_DOSING_TOTALS_UPDATED = f"{DOMAIN}_dosing_totals_updated"
+SIGNAL_DOSING_CALIBRATION_UPDATED = f"{DOMAIN}_dosing_calibration_updated"
 CONF_PUMP_COUNT = "pump_count"
 PUMP_COUNT = 4
 PUMP_COUNT_OPTIONS = (2, 4, 8)
-SIGNAL_DOSING_TOTALS_UPDATED = f"{DOMAIN}_dosing_totals_updated"
+# The stirrer speaks the dosing-pump protocol with up to 8 channels
+# (DOSING_CONTROL.md §2/§6.1); the config flow lets owners of smaller units
+# hide the channels they do not use.
+CONF_STIRRER_CHANNEL_COUNT = "stirrer_channel_count"
+STIRRER_CHANNEL_MAX = 8
+STIRRER_CHANNEL_COUNT_OPTIONS = (2, 4, 8)
 
 
 @dataclass
@@ -142,9 +153,209 @@ class DosingDailyTotals:
             raise ValueError(f"Pump index must be between 0 and {self.pump_count - 1}")
 
 
+@dataclass
+class DosingCalibrationTracker:
+    """Persisted record of one pump channel's last calibration.
+
+    The wizard writes a record when a channel's measured volume is submitted.
+    That is the point at which the device itself stores the calibration, so the
+    record mirrors the hardware even if the user then rejects the follow-up
+    accuracy check and runs the wizard again (the new record overwrites it).
+    The ``last_calibration`` sensors read from here; records keep the test run
+    duration and the measured volume for reference.
+    """
+
+    hass: HomeAssistant
+    address: str
+    _store: Store[dict[str, Any]] = field(init=False)
+    _channels: dict[int, dict[str, Any]] = field(init=False, default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Create the per-address store."""
+        self._store = Store(
+            self.hass,
+            STORAGE_VERSION,
+            f"{CALIBRATION_STORAGE_KEY}_{self.address.lower().replace(':', '_')}",
+        )
+
+    async def async_load(self) -> None:
+        """Load recorded calibrations from Home Assistant storage."""
+        stored = await self._store.async_load()
+        if isinstance(stored, dict):
+            self._channels = {int(channel): record for channel, record in stored.get("channels", {}).items()}
+
+    @property
+    def address_signal(self) -> str:
+        """Return the dispatcher signal for this device's calibration records."""
+        return f"{SIGNAL_DOSING_CALIBRATION_UPDATED}_{self.address.lower()}"
+
+    def record(self, channel: int) -> dict[str, Any] | None:
+        """Return one channel's calibration record, or None."""
+        stored = self._channels.get(channel)
+        return dict(stored) if stored else None
+
+    def calibrated_at(self, channel: int) -> datetime | None:
+        """Return one channel's last calibration timestamp, if any."""
+        stored = self._channels.get(channel)
+        if not stored or not stored.get("calibrated"):
+            return None
+        try:
+            return datetime.fromisoformat(str(stored["calibrated"]))
+        except ValueError:
+            return None
+
+    async def async_record(self, channel: int, *, seconds: int | None, volume_ml: float | None) -> None:
+        """Store one channel's calibration result and persist it."""
+        self._channels[channel] = {
+            "calibrated": dt_util.now().isoformat(),
+            "seconds": seconds,
+            "volume_ml": volume_ml,
+        }
+        await self._async_save()
+        async_dispatcher_send(self.hass, self.address_signal)
+
+    async def _async_save(self) -> None:
+        """Persist the per-channel calibration records."""
+        await self._store.async_save({"channels": {str(channel): record for channel, record in self._channels.items()}})
+
+
 def is_dosing_capable(device: object) -> bool:
     """Return whether a runtime client or model supports manual dosing."""
     return getattr(device, "model_name", getattr(device, "name", None)) == DOSING_PUMP.name
+
+
+@dataclass
+class DosingProgrammingTracker:
+    """Persisted record of one pump's channel programming.
+
+    Home Assistant cannot read schedules back from the device, so every
+    programming write made through Home Assistant is recorded here. The
+    master/slave mirror uses these records to replay a pump's channels onto a
+    linked stirrer (the app's ``startAsSlave``, DOSING_CONTROL.md §6.4).
+    Records are partial per channel and merged on update, so an
+    active-flag-only write keeps the stored schedule.
+
+    ``device_settings`` holds device-level flags (currently ``dose_delay``)
+    that the app mirrors onto the stirrer after the channel loop (§6.4).
+    """
+
+    hass: HomeAssistant
+    address: str
+    _store: Store[dict[str, Any]] = field(init=False)
+    _channels: dict[int, dict[str, Any]] = field(init=False, default_factory=dict)
+    _device: dict[str, Any] = field(init=False, default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Create the per-address store."""
+        self._store = Store(
+            self.hass,
+            STORAGE_VERSION,
+            f"{PROGRAMMING_STORAGE_KEY}_{self.address.lower().replace(':', '_')}",
+        )
+
+    async def async_load(self) -> None:
+        """Load recorded channel programming from Home Assistant storage."""
+        stored = await self._store.async_load()
+        if isinstance(stored, dict):
+            self._channels = {int(channel): record for channel, record in stored.get("channels", {}).items()}
+            device = stored.get("device")
+            if isinstance(device, dict):
+                self._device = device
+
+    @property
+    def channels(self) -> dict[int, dict[str, Any]]:
+        """Return a copy of the recorded per-channel programming."""
+        return {channel: dict(record) for channel, record in self._channels.items()}
+
+    @property
+    def device_settings(self) -> dict[str, Any]:
+        """Return a copy of the recorded device-level settings."""
+        return dict(self._device)
+
+    async def async_record(self, channel: int, setup: dict[str, Any], *, stamp_programmed: bool = True) -> None:
+        """Merge one channel's programming write into the record and persist it.
+
+        ``stamp_programmed`` records the date of the write; schedule writes
+        (which send the device's ``dosingSet`` frame) set it, so the service
+        can derive the "first setting of the day" flag. State-only writes
+        (``set_channel_active``) keep any earlier stamp.
+        """
+        record = {**self._channels.get(channel, {}), **setup}
+        if stamp_programmed:
+            record["last_programmed"] = self._today()
+        self._channels[channel] = record
+        await self._async_save()
+
+    def channel_programmed_today(self, channel: int) -> bool:
+        """Return whether the channel's schedule was written through HA today."""
+        record = self._channels.get(channel)
+        return bool(record) and record.get("last_programmed") == self._today()
+
+    def _today(self) -> str:
+        """Return the local date string used for programming stamps."""
+        return dt_util.now().date().isoformat()
+
+    async def async_record_device(self, settings: dict[str, Any]) -> None:
+        """Merge device-level settings into the record and persist them."""
+        self._device = {**self._device, **settings}
+        await self._async_save()
+
+    async def async_clear_channel(self, channel: int) -> None:
+        """Drop one channel's record (app's ``resetChannel``) and persist."""
+        self._channels.pop(channel, None)
+        await self._async_save()
+
+    async def _async_save(self) -> None:
+        """Persist channels and device settings."""
+        await self._store.async_save(
+            {
+                "channels": {str(channel): record for channel, record in self._channels.items()},
+                "device": self._device,
+            }
+        )
+
+
+def derive_first_setting(tracker: DosingProgrammingTracker | None, channel: int, explicit: bool | None) -> bool:
+    """Return the device's ``first_setting`` flag for a channel write.
+
+    The device resets its daily counters on the first ``dosingSet`` of the day
+    for a channel, so the flag is True unless this channel was already
+    programmed through Home Assistant today. An explicit service value wins;
+    without a programming record the flag defaults to True.
+    """
+    if explicit is not None:
+        return explicit
+    if tracker is None:
+        return True
+    return not tracker.channel_programmed_today(channel)
+
+
+def serialize_points(points: list[DosingWorkPoint]) -> list[dict[str, Any]]:
+    """Convert work points into JSON-safe dicts for the programming record."""
+    return [
+        {
+            "start_hour": point.start_hour,
+            "start_minute": point.start_minute,
+            "volume_ml": point.volume_ml,
+            "duration_minutes": point.duration_minutes,
+            "number": point.number,
+        }
+        for point in points
+    ]
+
+
+def deserialize_points(raw: list[dict[str, Any]]) -> list[DosingWorkPoint]:
+    """Rebuild work points from a programming record."""
+    return [
+        DosingWorkPoint(
+            item["start_hour"],
+            item["start_minute"],
+            volume_ml=item.get("volume_ml", 0.0),
+            duration_minutes=item.get("duration_minutes", 0),
+            number=item.get("number", 2),
+        )
+        for item in raw
+    ]
 
 
 def normalize_pump_count(value: object) -> int:
@@ -156,6 +367,28 @@ def normalize_pump_count(value: object) -> int:
     if pump_count in PUMP_COUNT_OPTIONS:
         return pump_count
     return PUMP_COUNT
+
+
+def normalize_stirrer_channel_count(value: object) -> int:
+    """Return a supported stirrer channel count, defaulting to all channels."""
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return STIRRER_CHANNEL_MAX
+    if count in STIRRER_CHANNEL_COUNT_OPTIONS:
+        return count
+    return STIRRER_CHANNEL_MAX
+
+
+def entry_pump_count(entry: ConfigEntry) -> int:
+    """Return a config entry's pump count, preferring options over data."""
+    return normalize_pump_count(entry.options.get(CONF_PUMP_COUNT, entry.data.get(CONF_PUMP_COUNT)))
+
+
+def entry_stirrer_channel_count(entry: ConfigEntry) -> int:
+    """Return a config entry's stirrer channel count, preferring options over data."""
+    value = entry.options.get(CONF_STIRRER_CHANNEL_COUNT, entry.data.get(CONF_STIRRER_CHANNEL_COUNT))
+    return normalize_stirrer_channel_count(value)
 
 
 def _coerce_total(value: object) -> float:

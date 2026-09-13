@@ -12,13 +12,15 @@ from rich import print
 from rich.table import Table
 from typing_extensions import Annotated
 
-from .client import ChihirosDevice, ChihirosDosingPump
+from .client import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
+from .commands import DOSE_VOLUME_MAX_ML, DosingMode, DosingWorkPoint, stirrer_dosage_for_minutes
 from .factory import detect_model, get_device_from_address
 from .weekday_encoding import WeekdaySelect
 
 app = typer.Typer()
 
 DeviceCommand = Callable[[ChihirosDevice], Awaitable[None]]
+DosingDeviceCommand = Callable[[ChihirosDosingPump], Awaitable[None]]
 
 
 def _run_device_func(device_address: str, command: DeviceCommand) -> None:
@@ -27,6 +29,88 @@ def _run_device_func(device_address: str, command: DeviceCommand) -> None:
         await command(dev)
 
     asyncio.run(_async_func())
+
+
+def _run_dosing_func(device_address: str, command: DosingDeviceCommand) -> None:
+    """Run a dosing-device command, rejecting non-dosing devices."""
+
+    async def _async_func() -> None:
+        dev = await get_device_from_address(device_address)
+        if not isinstance(dev, ChihirosDosingPump):
+            raise typer.BadParameter(f"{dev.name} is not a dosing pump or stirrer")
+        await command(dev)
+
+    asyncio.run(_async_func())
+
+
+def _parse_clock(value: str) -> tuple[int, int]:
+    """Parse an ``HH:MM`` wall-clock time."""
+    try:
+        hour_text, minute_text = value.split(":")
+        hour, minute = int(hour_text), int(minute_text)
+    except ValueError as ex:
+        raise typer.BadParameter(f"Invalid time {value!r}, expected HH:MM") from ex
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise typer.BadParameter(f"Invalid time {value!r}")
+    return hour, minute
+
+
+def _parse_dose_point(value: str) -> DosingWorkPoint:
+    """Parse a schedule point as ``HH:MM:ML`` (dose volume in mL)."""
+    try:
+        time_text, volume_text = value.rsplit(":", 1)
+        hour, minute = _parse_clock(time_text)
+        volume = float(volume_text)
+    except (ValueError, typer.BadParameter) as ex:
+        raise typer.BadParameter(f"Invalid dose point {value!r}, expected HH:MM:ML") from ex
+    if not 0 <= volume <= DOSE_VOLUME_MAX_ML:
+        raise typer.BadParameter(f"Dose volume must be between 0 and {DOSE_VOLUME_MAX_ML} mL, got {volume}")
+    return DosingWorkPoint(hour, minute, volume_ml=volume)
+
+
+def _parse_free_point(value: str) -> DosingWorkPoint:
+    """Parse a free-mode point as ``HH:MM-HH:MM:COUNT`` (window + dose count)."""
+    try:
+        window_text, count_text = value.rsplit(":", 1)
+        start_text, end_text = window_text.split("-")
+        start_hour, start_minute = _parse_clock(start_text)
+        end_hour, end_minute = _parse_clock(end_text)
+        start_minutes = start_hour * 60 + start_minute
+        end_minutes = end_hour * 60 + end_minute
+        if end_minutes <= start_minutes:
+            end_minutes += 24 * 60  # windows may wrap past midnight
+        count = int(count_text)
+        if not 0 <= count <= 255:
+            raise typer.BadParameter(f"Dose count must be between 0 and 255, got {count}")
+        return DosingWorkPoint(
+            start_hour,
+            start_minute,
+            duration_minutes=end_minutes - start_minutes,
+            number=count,
+        )
+    except (ValueError, typer.BadParameter) as ex:
+        raise typer.BadParameter(f"Invalid free-mode point {value!r}, expected HH:MM-HH:MM:COUNT") from ex
+
+
+def _parse_stir_point(value: str) -> DosingWorkPoint:
+    """Parse a stir point as ``HH:MM:MINUTES`` (run time in minutes, 1-999)."""
+    try:
+        time_text, minutes_text = value.rsplit(":", 1)
+        hour, minute = _parse_clock(time_text)
+        minutes = float(minutes_text)
+    except (ValueError, typer.BadParameter) as ex:
+        raise typer.BadParameter(f"Invalid stir point {value!r}, expected HH:MM:MINUTES") from ex
+    if not 1 <= minutes <= 999:
+        raise typer.BadParameter(f"Stir run time must be between 1 and 999 minutes, got {minutes:g}")
+    return DosingWorkPoint(hour, minute, volume_ml=stirrer_dosage_for_minutes(minutes))
+
+
+def _parse_mode(mode: str) -> DosingMode:
+    """Resolve a schedule mode name."""
+    try:
+        return DosingMode[mode.upper()]
+    except KeyError as ex:
+        raise typer.BadParameter(f"Invalid mode {mode!r}, expected single/auto/free/timer") from ex
 
 
 @app.command()
@@ -128,6 +212,192 @@ def dose_ml(
         await dev.dose_ml(pump - 1, ml)
 
     _run_device_func(device_address, command)
+
+
+@app.command()
+def doser_schedule(
+    device_address: str,
+    channel: Annotated[int, typer.Argument(min=1, max=8)],
+    points: Annotated[list[str], typer.Argument()],
+    mode: Annotated[str, typer.Option(case_sensitive=False)] = "timer",
+) -> None:
+    """Replace one dosing pump channel's schedule.
+
+    Points are ``HH:MM:ML`` (dose volume) for single/auto/timer mode and
+    ``HH:MM-HH:MM:COUNT`` (window and dose count) for free mode.
+    """
+    dosing_mode = _parse_mode(mode)
+    parse_point = _parse_free_point if dosing_mode is DosingMode.FREE else _parse_dose_point
+    work_points = [parse_point(point) for point in points]
+    _run_dosing_func(device_address, lambda dev: dev.set_schedule(channel - 1, dosing_mode, work_points))
+
+
+@app.command()
+def doser_active(
+    device_address: str,
+    channel: Annotated[int, typer.Argument(min=1, max=8)],
+    enable: Annotated[bool, typer.Option("--enable/--disable")] = True,
+    compensate: Annotated[bool, typer.Option("--compensate/--no-compensate")] = False,
+) -> None:
+    """Enable or disable a dosing pump channel (and interrupt compensation)."""
+    _run_dosing_func(
+        device_address,
+        lambda dev: dev.set_channel_active(channel - 1, active=enable, compensate=compensate),
+    )
+
+
+@app.command()
+def doser_daily_dose(
+    device_address: str,
+    channel: Annotated[int, typer.Argument(min=1, max=8)],
+    ml: Annotated[float, typer.Argument(min=0, max=6553.5)],
+    frequency: Annotated[int, typer.Option(min=0, max=255)] = 127,
+    first_setting: Annotated[bool, typer.Option("--first-setting/--not-first-setting")] = True,
+) -> None:
+    """Program a channel's daily dose volume and weekday repetition bitmask."""
+    _run_dosing_func(
+        device_address,
+        lambda dev: dev.apply_dosing_settings(channel - 1, ml, frequency, is_first_setting=first_setting),
+    )
+
+
+@app.command()
+def doser_reset_channel(device_address: str, channel: Annotated[int, typer.Argument(min=1, max=8)]) -> None:
+    """Reset a dosing pump channel's programming."""
+    _run_dosing_func(device_address, lambda dev: dev.reset_channel(channel - 1))
+
+
+@app.command()
+def doser_reset_totals(device_address: str, channel: Annotated[int, typer.Argument(min=1, max=8)]) -> None:
+    """Zero a dosing pump channel's lifetime dosed counter."""
+    _run_dosing_func(device_address, lambda dev: dev.reset_total_dosed(channel - 1))
+
+
+@app.command()
+def doser_calibrate(
+    device_address: str,
+    channel: Annotated[int, typer.Argument(min=1, max=8)],
+    seconds: Annotated[int | None, typer.Option(min=0, max=254, help="Timed test dose in seconds (0-254).")] = None,
+    volume: Annotated[float | None, typer.Option(min=0, max=255.99)] = None,
+) -> None:
+    """Calibrate a dosing pump channel via a timed run or a measured volume."""
+    if seconds is None and volume is None:
+        raise typer.BadParameter("Provide either --seconds or --volume")
+    _run_dosing_func(device_address, lambda dev: dev.calibrate_channel(channel - 1, seconds=seconds, volume_ml=volume))
+
+
+@app.command()
+def doser_delay(
+    device_address: str,
+    enable: Annotated[bool, typer.Option("--enable/--disable")] = True,
+) -> None:
+    """Toggle the dosing pump's device-level dose delay flag."""
+    _run_dosing_func(device_address, lambda dev: dev.set_dose_delay(enable))
+
+
+@app.command()
+def doser_totals(device_address: str) -> None:
+    """Query and print a dosing pump's lifetime dosed volumes."""
+
+    async def command(dev: ChihirosDosingPump) -> None:
+        await dev.query_dosed_totals()
+        notification = dev.last_dosing_totals_notification
+        if notification is None:
+            raise typer.BadParameter(f"{dev.name} did not report lifetime totals")
+        table = Table("Channel", "Total (mL)")
+        for channel, micro_liters in enumerate(notification.total_dosed_ul, start=1):
+            table.add_row(str(channel), f"{micro_liters / 1000:.1f}")
+        print(f"Lifetime dosed volumes for {dev.name}:")
+        print(table)
+
+    _run_dosing_func(device_address, command)
+
+
+@app.command()
+def doser_today(device_address: str) -> None:
+    """Query and print a dosing pump's volumes dosed today."""
+
+    async def command(dev: ChihirosDosingPump) -> None:
+        await dev.query_dosed_today()
+        notification = dev.last_dosing_daily_notification
+        if notification is None:
+            raise typer.BadParameter(f"{dev.name} did not report today's volumes")
+        table = Table("Channel", "Today (mL)")
+        for channel, micro_liters in enumerate(notification.dose_use_in_day_ul, start=1):
+            table.add_row(str(channel), f"{micro_liters / 1000:.1f}")
+        print(f"Volumes dosed today for {dev.name}:")
+        print(table)
+
+    _run_dosing_func(device_address, command)
+
+
+@app.command()
+def stir_on(
+    device_address: str,
+    channel: Annotated[int, typer.Argument(min=1, max=8)],
+    seconds: Annotated[int | None, typer.Option(min=0, max=15359)] = None,
+) -> None:
+    """Manually start one stirrer channel (optionally for a limited time)."""
+
+    async def command(dev: ChihirosDosingPump) -> None:
+        if not isinstance(dev, ChihirosMagStirrer):
+            raise typer.BadParameter(f"{dev.name} is not a magnetic stirrer")
+        await dev.stir(channel - 1, True, seconds=seconds)
+
+    _run_dosing_func(device_address, command)
+
+
+@app.command()
+def stir_off(device_address: str, channel: Annotated[int, typer.Argument(min=1, max=8)]) -> None:
+    """Manually stop one stirrer channel."""
+
+    async def command(dev: ChihirosDosingPump) -> None:
+        if not isinstance(dev, ChihirosMagStirrer):
+            raise typer.BadParameter(f"{dev.name} is not a magnetic stirrer")
+        await dev.stir(channel - 1, False)
+
+    _run_dosing_func(device_address, command)
+
+
+@app.command()
+def stir_speed(
+    device_address: str,
+    channel: Annotated[int, typer.Argument(min=1, max=8)],
+    speed: Annotated[int, typer.Argument(min=0, max=100)],
+    pre_seconds: Annotated[int, typer.Option(min=0, max=999)] = 0,
+) -> None:
+    """Set a stirrer channel's speed and pre-stir time (run-advance seconds)."""
+
+    async def command(dev: ChihirosDosingPump) -> None:
+        if not isinstance(dev, ChihirosMagStirrer):
+            raise typer.BadParameter(f"{dev.name} is not a magnetic stirrer")
+        await dev.set_pre_second(channel - 1, pre_seconds, speed)
+
+    _run_dosing_func(device_address, command)
+
+
+@app.command()
+def stir_schedule(
+    device_address: str,
+    channel: Annotated[int, typer.Argument(min=1, max=8)],
+    points: Annotated[list[str], typer.Argument()],
+    frequency: Annotated[int, typer.Option(min=0, max=255)] = 127,
+    disable: Annotated[bool, typer.Option("--disable")] = False,
+) -> None:
+    """Replace one stirrer channel's timer schedule.
+
+    Points are ``HH:MM:MINUTES`` where MINUTES is the stir run time; the
+    device encodes run minutes with the pump's 0.6 mL/min equivalence.
+    Frequency is the weekday repetition bitmask (127 = every day).
+    """
+    work_points = [_parse_stir_point(point) for point in points]
+
+    async def command(dev: ChihirosDosingPump) -> None:
+        if not isinstance(dev, ChihirosMagStirrer):
+            raise typer.BadParameter(f"{dev.name} is not a magnetic stirrer")
+        await dev.set_stir_schedule(channel - 1, work_points, frequency=frequency, active=not disable)
+
+    _run_dosing_func(device_address, command)
 
 
 @app.command()

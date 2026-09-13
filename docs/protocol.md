@@ -539,13 +539,18 @@ Example for pump `0`, `2.0 mL`:
 
 ### Dosing Pump Notifications
 
-Dosing pumps report counters with the newer `0xb6` header (not the `0x5b` LED
-header). Two frame types are parsed by this repository:
+Dosing pumps report dose counters on two carriers, both parsed by this
+repository. Newer firmware uses the `0xb6` header (not the `0x5b` LED header);
+some captured DYDOSE firmware (fw `07.25.18`) instead answers the `[4]`/`[5]`
+queries with `0x5b` uplink frames whose per-channel layout and 0.1 mL scaling
+are identical (DOSING_CONTROL.md §7.3):
 
-| Byte 5 | Meaning | Payload |
-| ---: | --- | --- |
-| `0x3c` / `60` | Lifetime totals | Per channel `i`: `(data[6+2i] << 8 | data[7+2i]) * 100` µL |
-| `0x44` / `68` | Dosed today | Per channel `i`: `(data[6+2i] << 8 | data[7+2i]) * 100` µL |
+| Header | Byte 5 | Meaning | Payload |
+| --- | ---: | --- | --- |
+| `0xb6` | `0x3c` / `60` | Lifetime totals | Per channel `i`: `(data[6+2i] << 8 | data[7+2i]) * 100` µL |
+| `0xb6` | `0x44` / `68` | Dosed today | Per channel `i`: `(data[6+2i] << 8 | data[7+2i]) * 100` µL |
+| `0x5b` | `0x1e` / `30` | Lifetime totals | Same layout/scaling as `0xb6 0x3c` |
+| `0x5b` | `0x22` / `34` | Dosed today | Same layout/scaling as `0xb6 0x44` |
 
 Example lifetime frame (channels `0..1` = `105.5 mL`, `0 mL`):
 
@@ -558,6 +563,59 @@ coordinator data and exposes them as attributes on the per-pump dosing sensors
 (`device_total_ml`, `device_dosed_today_ml`), so doses made from the pump or
 the vendor app are reflected even though the daily/lifetime sensors themselves
 stay locally tracked for immediate feedback.
+
+### Dosing Pump Schedules, Settings, and Calibration (2.8.59 app)
+
+Reverse-engineered from `My Chihiros` 2.8.59 (`chihiros_xapk/DOSING_CONTROL.md`);
+all frames use header `165` (`0xA5`) and payload bytes are sent verbatim (no
+reserved-byte escaping). Volumes ride as 0.1 mL buckets: `hi * 25.6 mL + lo *
+0.1 mL` (0 to 6553.5 mL); 105.5 mL encodes as `(4, 31)`.
+
+Schedule modes (`DosingMode`, the enum index is the wire mode byte):
+
+| Index | Mode | Frame shape |
+| ---: | --- | --- |
+| 0 | single | one `(0xA5, 21)` frame per point: `[ch, 0, hour, minute, vol_hi, vol_lo]` |
+| 1 | auto (24h) | one `(0xA5, 21)` frame per point: `[ch, 1, hour, minute, vol_hi, vol_lo]` |
+| 2 | free | batched `(0xA5, 23)` frames: `[ch] + [sh, sm, eh, em, number] * N` |
+| 3 | timer | batched `(0xA5, 21)` frames: `[ch, 3] + [hour, minute, vol_hi, vol_lo] * N` |
+
+Free/timer records batch like the app's accumulator: records are appended
+first and a frame flushes once its payload *exceeds* 50 bytes, so frames can
+carry up to 54 payload bytes. Free-mode end times come from
+`end = start + duration` and are *not* wrapped past midnight (23:00 + 180 min
+encodes end hour 26). Free mode carries no volume: the pump splits the daily
+total itself.
+
+| Command ID | Mode | Parameters | Meaning |
+| ---: | ---: | --- | --- |
+| `165` | `27` | `[ch, frequency, 1, first?0:1, vol_hi, vol_lo]` | Program a channel's daily dose (`dosingSet`); byte 4 is polarity-inverted: `0` when this is the channel's first programming of the day; `vol = [255, 255]` for a null volume |
+| `165` | `32` | `[ch, compensate?1:0, active?1:0]` | Enable/disable a channel and interrupt compensation (`setDosingInterruptCompensationAndActive`) |
+| `165` | `22` | `[ch, time?255, vol_int, vol_frac]` | Calibration: `time` = test-dose seconds (255 = omitted); volume splits as `[int mL, 2-digit fraction]` (2.5 mL = `(2, 50)`), fraction rounded half-up (`LibcRound` @ 0xa69398) so it can be `100` = next whole mL (2.999 mL = `(2, 100)`); `255/255` when omitted |
+| `165` | `5` | `[ch+25, 255, 255]` | Reset a channel's programming (`resetDosingChannel`) |
+| `165` | `5` | `[ch+21, 255, 255]` | Zero a channel's lifetime counter (`resetTotalDosing`) |
+| `165` | `31` | `[enabled?1:0]` | Device-level dose delay flag (`setDosingDelay`) |
+| `165` | `59` | `[ch, color]` | New-generation pump channel color (`dosingChannelColor`) |
+| `165` | `4` | `[4]` | Query lifetime totals (reply: `0xB6`/`0x3C`, or `0x5B` mode `0x1E` on some captured DYDOSE firmware — both parsed) |
+| `165` | `4` | `[5]` | Query dosed-today (reply: `0xB6`/`0x44`, or `0x5B` mode `0x22` on some captured DYDOSE firmware — both parsed) |
+
+### Magnetic Stirrer (DYMIXR)
+
+The magnetic stirrer (`DYMIXR...` names, app device type `MagStirrer`) speaks
+the dosing-pump protocol verbatim: its eight channels are programmed in timer
+mode through `dosingSet` / `setDosingInterruptCompensationAndActive` /
+`dosingWorkNew`, and each timer point's "volume" encodes the stir workload at
+the pump's 0.6 mL/min dosing-rate equivalence (`minutes = dosage_ml / 0.6`).
+The vendor app's stirrer UI is fire-and-forget: it never parses stirrer
+notifications.
+
+| Command ID | Mode | Parameters | Meaning |
+| ---: | ---: | --- | --- |
+| `165` | `42` | `[ch, sec_hi, sec_lo, speed]` | Pre-stir seconds (0 to 999) and stir speed — the only wire carrier for speed (`stirrerPreSecond`) |
+| `165` | `20` | `[8 channel bytes][min][sec]` | Manual run/stop: channel bytes default `255`, overlaid with `1` (run) / `0` (stop); duration `255/255` = unlimited (`generalTempSet`, the app's `tempRun`) |
+
+The app changes the speed of a running channel by stopping it, re-sending
+`(0xA5, 42)`, and restarting — speed is never sent standalone.
 
 ## Decompiler Notes
 

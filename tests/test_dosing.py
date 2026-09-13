@@ -9,11 +9,14 @@ import pytest
 
 pytest.importorskip("homeassistant", reason="Home Assistant test group is not installed")
 
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.util import dt as dt_util
 
 from custom_components.chihiros.dosing import (
     PUMP_COUNT,
+    SIGNAL_DOSING_CALIBRATION_UPDATED,
     SIGNAL_DOSING_TOTALS_UPDATED,
+    DosingCalibrationTracker,
     DosingDailyTotals,
     _coerce_cycles_list,
     _coerce_total,
@@ -195,3 +198,64 @@ async def test_midnight_reset_resets_totals_and_reschedules(hass: Any) -> None:
     assert totals._unsub_midnight_reset is not None
     assert totals._unsub_midnight_reset is not first_reset_handle
     totals.async_close()
+
+
+@pytest.mark.asyncio
+async def test_calibration_tracker_starts_empty(hass: Any) -> None:
+    """A fresh tracker has no records and reports no calibration timestamps."""
+    tracker = DosingCalibrationTracker(hass, "FA:CE:C0:FF:00:06")
+    await tracker.async_load()
+
+    assert tracker.record(0) is None
+    assert tracker.calibrated_at(0) is None
+
+
+@pytest.mark.asyncio
+async def test_calibration_tracker_records_and_notifies(hass: Any) -> None:
+    """async_record stores the result, persists it, and fires the address signal."""
+    saved: list[dict[str, Any]] = []
+    tracker = DosingCalibrationTracker(hass, "FA:CE:C0:FF:00:07")
+    await tracker.async_load()
+
+    async def _save(data: dict[str, Any]) -> None:
+        saved.append(data)
+
+    tracker._store.async_save = _save  # type: ignore[assignment]
+
+    received: list[str] = []
+    remove = async_dispatcher_connect(hass, tracker.address_signal, lambda: received.append("update"))
+    await tracker.async_record(0, seconds=30, volume_ml=7.5)
+    await hass.async_block_till_done()
+    remove()
+
+    record = tracker.record(0)
+    assert record is not None
+    assert record["seconds"] == 30
+    assert record["volume_ml"] == 7.5
+    assert tracker.calibrated_at(0) is not None
+    assert received == ["update"]
+    assert saved and saved[-1]["channels"]["0"]["volume_ml"] == 7.5
+
+
+@pytest.mark.asyncio
+async def test_calibration_tracker_loads_stored_records(hass: Any) -> None:
+    """Stored records are restored; invalid timestamps degrade to None."""
+    tracker = DosingCalibrationTracker(hass, "FA:CE:C0:FF:00:08")
+
+    async def _load() -> dict[str, Any]:
+        return {
+            "channels": {
+                "1": {"calibrated": dt_util.now().isoformat(), "seconds": 10, "volume_ml": 2.5},
+                "2": {"calibrated": "not-a-date", "seconds": 5, "volume_ml": 1.0},
+            }
+        }
+
+    tracker._store.async_load = _load  # type: ignore[assignment]
+    await tracker.async_load()
+
+    record = tracker.record(1)
+    assert record is not None
+    assert record["volume_ml"] == 2.5
+    assert tracker.calibrated_at(1) is not None
+    assert tracker.calibrated_at(2) is None
+    assert tracker.address_signal == f"{SIGNAL_DOSING_CALIBRATION_UPDATED}_fa:ce:c0:ff:00:08"

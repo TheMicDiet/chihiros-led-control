@@ -42,6 +42,9 @@ GENERIC_RGB = DeviceModel("Generic RGB", (), RGB_CHANNELS)
 GENERIC_WRGB = DeviceModel("Generic WRGB", (), WRGB_CHANNELS)
 FALLBACK = DeviceModel("fallback", (), COMMANDER_CHANNELS, needs_device_type=True, fallback=True)
 DOSING_PUMP = DeviceModel("Dosing Pump", ("DYDOSE", "DYDOSED", "DYTDOS", "DYNDOS"), DOSING_CHANNELS)
+# The magnetic stirrer (DYMIXR) speaks the dosing-pump protocol; per the app's
+# device registry it persists as device_type "MagStirrer" with 8 channels.
+MAG_STIRRER = DeviceModel("Mag Stirrer", ("DYMIXR",), DOSING_CHANNELS)
 
 SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     DeviceModel("Z Light TINY", ("DYSSD", "DYZSD"), Z_LIGHT_TINY_CHANNELS),
@@ -140,6 +143,7 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     DeviceModel("Commander 4", ("DYLED",), WRGB_CHANNELS),
     DeviceModel("Commander 4", ("DYNLED",), WRGB_CHANNELS, sea_led_family=True),
     DOSING_PUMP,
+    MAG_STIRRER,
 )
 
 GENERIC_MODELS_BY_DEVICE_TYPE = MappingProxyType(

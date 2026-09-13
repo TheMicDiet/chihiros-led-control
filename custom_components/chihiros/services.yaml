@@ -2,6 +2,13 @@ add_schedule:
   name: Add schedule period
   description: Add one auto mode schedule period to a Chihiros light.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       description: Chihiros config entry ID. Required only when more than one Chihiros device is configured.
@@ -80,6 +87,13 @@ remove_schedule:
   name: Remove schedule period
   description: Remove one auto mode schedule period from a Chihiros light.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       selector:
@@ -128,6 +142,13 @@ reset_schedule:
   name: Reset schedule
   description: Remove all auto mode schedule periods from a Chihiros light.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       selector:
@@ -141,6 +162,13 @@ dose_ml:
   name: Manual dose
   description: Trigger a one-shot manual dose on a Chihiros dosing pump and add it to today's local total.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       description: Chihiros config entry ID. Required only when more than one Chihiros device is configured.
@@ -158,7 +186,7 @@ dose_ml:
       selector:
         number:
           min: 1
-          max: 4
+          max: 8
           step: 1
           mode: box
     ml:
@@ -176,6 +204,13 @@ set_schedule:
   name: Set schedule
   description: Replace auto mode schedule periods on a Chihiros light. Only one period per weekday is supported.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       selector:
@@ -215,6 +250,13 @@ set_auto_curve:
     but only active while the device is in auto mode (use the Auto Mode
     switch). Use YAML mode.
   fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
     entry_id:
       name: Config entry ID
       description: Chihiros config entry ID. Required only when more than one Chihiros device is configured.
@@ -238,3 +280,419 @@ set_auto_curve:
           - [720, 0]
       selector:
         object:
+
+set_stir_schedule:
+  name: Set stir schedule
+  description: >
+    Replace one magnetic stirrer channel's timer schedule (DYMIXR). Each
+    point is a start time and a run time in minutes; the device encodes run
+    minutes with the vendor app's 0.6 mL/min dose-rate equivalence. Points
+    must be at least 2 minutes apart (vendor app rule). Use YAML mode.
+  fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
+    entry_id:
+      name: Config entry ID
+      description: Chihiros config entry ID. Required only when more than one Chihiros device is configured.
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      description: Chihiros Bluetooth address. Required only when more than one Chihiros device is configured.
+      example: AA:BB:CC:DD:EE:FF
+      selector:
+        text:
+    channel:
+      name: Channel
+      description: Stirrer channel number (1-8).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 8
+          step: 1
+          mode: box
+    points:
+      name: Points
+      description: >
+        Timer points to write, each with start (HH:MM) and minutes (run
+        time, 1-999). Replaces the channel's previous schedule.
+      required: true
+      example:
+        - start: "08:00"
+          minutes: 30
+        - start: "20:00"
+          minutes: 15
+      selector:
+        object:
+    weekdays:
+      name: Weekdays
+      description: Days when the schedule applies. Leave empty for every day.
+      default:
+        - everyday
+      selector:
+        select:
+          multiple: true
+          options:
+            - everyday
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
+    active:
+      name: Active
+      description: Whether the channel is active after programming.
+      default: true
+      selector:
+        boolean:
+
+stir_for:
+  name: Stir for duration
+  description: >
+    Manually stir one magnetic stirrer channel for a bounded duration
+    (unlike the stir switch, which runs until switched off). The device
+    supports minute+second resolution, up to 255 min 59 s.
+  fields:
+    device_id:
+      name: Stirrer
+      description: The magnetic stirrer to control. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
+    entry_id:
+      name: Config entry ID
+      description: The stirrer's config entry ID.
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      description: The stirrer's Bluetooth address.
+      example: AA:BB:CC:DD:EE:FF
+      selector:
+        text:
+    channel:
+      name: Channel
+      description: Stirrer channel number.
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 8
+          step: 1
+          mode: box
+    duration:
+      name: Duration
+      description: How long to stir (up to 255 minutes 59 seconds).
+      required: true
+      example: "00:05:00"
+      selector:
+        duration:
+          enable_day: false
+
+set_dosing_schedule:
+  name: Set dosing schedule
+  description: >
+    Replace one dosing pump channel's schedule (and optionally its daily dose
+    volume). If a magnetic stirrer is linked to this pump as slave
+    (chihiros.set_stirrer_master), the write is mirrored to the stirrer
+    automatically. Use YAML mode.
+  fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
+    entry_id:
+      name: Config entry ID
+      description: Chihiros config entry ID. Required only when more than one Chihiros device is configured.
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      description: Chihiros Bluetooth address. Required only when more than one Chihiros device is configured.
+      example: AA:BB:CC:DD:EE:FF
+      selector:
+        text:
+    channel:
+      name: Channel
+      description: Pump channel number (1-8).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 8
+          step: 1
+          mode: box
+    mode:
+      name: Mode
+      description: Schedule mode.
+      required: true
+      example: timer
+      selector:
+        select:
+          options:
+            - single
+            - auto
+            - free
+            - timer
+    points:
+      name: Points
+      description: >
+        single/auto/timer: each point is {start: "HH:MM", ml: volume}.
+        free: each point is {start: "HH:MM", end: "HH:MM", count: doses per window}.
+      required: true
+      example:
+        - start: "08:00"
+          ml: 2.5
+        - start: "20:00"
+          ml: 1.0
+      selector:
+        object:
+    weekdays:
+      name: Weekdays
+      description: Days when the schedule applies. Leave empty for every day.
+      default:
+        - everyday
+      selector:
+        select:
+          multiple: true
+          options:
+            - everyday
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
+    active:
+      name: Active
+      description: Whether the channel is active.
+      default: true
+      selector:
+        boolean:
+    daily_ml:
+      name: Daily dose
+      description: Optional daily dose volume in mL, sent as the channel's dosingSet frame.
+      selector:
+        number:
+          min: 0
+          max: 6553.5
+          step: 0.1
+          mode: box
+          unit_of_measurement: mL
+
+set_channel_active:
+  name: Set channel active
+  description: >
+    Enable or disable one dosing pump channel (and its interrupt
+    compensation). Mirrored to a linked stirrer.
+  fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
+    entry_id:
+      name: Config entry ID
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      example: AA:BB:CC:DD:EE:FF
+      selector:
+        text:
+    channel:
+      name: Channel
+      description: Pump channel number (1-8).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 8
+          step: 1
+          mode: box
+    enable:
+      name: Enable
+      description: Whether the channel is active.
+      default: true
+      selector:
+        boolean:
+    compensate:
+      name: Compensate
+      description: Whether interrupt compensation is enabled for the channel.
+      default: false
+      selector:
+        boolean:
+
+set_stirrer_master:
+  name: Set stirrer master
+  description: >
+    Link a magnetic stirrer to a master dosing pump (the vendor app's
+    master/slave bookkeeping). The pump's Home Assistant programming is
+    replayed onto the stirrer when linking (mirroring can be disabled), and
+    every later pump programming write is mirrored automatically. Call
+    without master fields to unlink.
+  fields:
+    device_id:
+      name: Stirrer
+      description: The magnetic stirrer to control. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
+    entry_id:
+      name: Config entry ID
+      description: The stirrer's config entry ID.
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      description: The stirrer's Bluetooth address.
+      example: AA:BB:CC:DD:EE:FF
+      selector:
+        text:
+    master_device_id:
+      name: Master dosing pump
+      description: The master dosing pump. Omit all master fields (master_device_id / master_address / master_entry_id) to unlink.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
+    master_address:
+      name: Master address
+      description: Bluetooth address of the master dosing pump. Omit (together with master_entry_id) to unlink.
+      example: AA:BB:CC:DD:EE:FF
+      selector:
+        text:
+    master_entry_id:
+      name: Master entry ID
+      description: Config entry ID of the master dosing pump. Omit to unlink.
+      selector:
+        text:
+    mirror:
+      name: Mirror now
+      description: Replay the pump's recorded programming onto the stirrer when linking.
+      default: true
+      selector:
+        boolean:
+    delay:
+      name: Dose delay
+      description: Value sent for the pump's dose-delay flag while mirroring. Leave unset to replay the pump's recorded flag.
+      selector:
+        boolean:
+
+mirror_stirrer:
+  name: Mirror stirrer
+  description: >
+    Replay the linked master pump's recorded channel programming onto the
+    stirrer (the vendor app's "start as slave" sequence, including the dose
+    delay frame).
+  fields:
+    device_id:
+      name: Stirrer
+      description: The magnetic stirrer to control. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
+    entry_id:
+      name: Config entry ID
+      description: The stirrer's config entry ID.
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      description: The stirrer's Bluetooth address.
+      example: AA:BB:CC:DD:EE:FF
+      selector:
+        text:
+    delay:
+      name: Dose delay
+      description: Value sent for the pump's dose-delay flag in the closing (0xA5, 31) frame. Leave unset to replay the pump's recorded flag.
+      selector:
+        boolean:
+
+set_dose_delay:
+  name: Set dose delay
+  description: >
+    Set the dosing pump's dose-delay flag ("Dose will wait for 30 seconds
+    before dosing each supplement"). When a stirrer is linked as slave, the
+    flag is mirrored to the stirrer too, so stirring can start before the
+    delayed dose. The flag is recorded and replayed by
+    chihiros.mirror_stirrer.
+  fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
+    entry_id:
+      name: Config entry ID
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      example: AA:BB:CC:DD:EE:FF
+      selector:
+        text:
+    enabled:
+      name: Enabled
+      description: Whether the pump waits before dosing each supplement.
+      default: true
+      selector:
+        boolean:
+
+reset_dosing_channel:
+  name: Reset dosing channel
+  description: >
+    Reset one dosing pump channel's programming (the vendor app's
+    resetDosingChannel frame). Any Home Assistant record of the channel's
+    schedule is dropped, and the reset is broadcast to linked stirrers.
+  fields:
+    device_id:
+      name: Device
+      description: Chihiros device. Required only when more than one Chihiros device is configured.
+      selector:
+        device:
+          filter:
+            - integration: chihiros
+    entry_id:
+      name: Config entry ID
+      selector:
+        text:
+    address:
+      name: Bluetooth address
+      example: AA:BB:CC:DD:EE:FF
+      selector:
+        text:
+    channel:
+      name: Channel
+      description: Pump channel number (1-8).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 8
+          step: 1
+          mode: box

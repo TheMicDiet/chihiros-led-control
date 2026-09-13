@@ -10,13 +10,27 @@ from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,
 )
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlowWithReload
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
+from homeassistant.core import callback
 
-from .const import DOMAIN
+from .const import CONF_MASTER_ADDRESS, DOMAIN
 from .discovery import ChihirosDiscovery, discovery_title
-from .dosing import CONF_PUMP_COUNT, PUMP_COUNT, PUMP_COUNT_OPTIONS, is_dosing_capable, normalize_pump_count
+from .dosing import (
+    CONF_PUMP_COUNT,
+    CONF_STIRRER_CHANNEL_COUNT,
+    PUMP_COUNT,
+    PUMP_COUNT_OPTIONS,
+    STIRRER_CHANNEL_COUNT_OPTIONS,
+    STIRRER_CHANNEL_MAX,
+    is_dosing_capable,
+    normalize_pump_count,
+    normalize_stirrer_channel_count,
+)
 from .fake import iter_enabled_fake_devices
+from .master_slave_services import async_mirror_pump_to_stirrer
+from .models import ChihirosData
+from .stirrer import is_stirrer_capable, set_stirrer_pre_run_entities_enabled
 from .vendor.chihiros_led_control import (
     ChihirosDevice,
     create_device,
@@ -26,11 +40,20 @@ from .vendor.chihiros_led_control.factory import is_known_unsupported_device
 
 _LOGGER = logging.getLogger(__name__)
 
+# Sentinel select value for "no master pump linked" (addresses never look like this).
+UNLINKED_MASTER = "none"
+
 
 class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for chihiros."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> ChihirosOptionsFlow:
+        """Return the options flow that changes the exposed channel count."""
+        return ChihirosOptionsFlow()
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -49,9 +72,18 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         device = create_device(discovery_info.device)
         self._discovery_info = discovery_info
         self._discovered_device = device
+        # The dosing/stirrer steps below create the entry from these fields, so
+        # they must be populated on the discovery shortcut (not just after the
+        # confirm step).
+        self._entry_title = device.name or discovery_info.name
+        self._entry_address = discovery_info.address
         _LOGGER.debug("async_step_bluetooth - discovered device %s", discovery_info.name)
         if needs_device_type(discovery_info.name):
             return await self.async_step_fallback_config()
+        if is_dosing_capable(device):
+            return await self.async_step_dosing_config()
+        if is_stirrer_capable(device):
+            return await self.async_step_stirrer_config()
 
         return await self.async_step_bluetooth_confirm()
 
@@ -67,6 +99,8 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
             self._entry_address = discovery_info.address
             if is_dosing_capable(device):
                 return await self.async_step_dosing_config()
+            if is_stirrer_capable(device):
+                return await self.async_step_stirrer_config()
             return self.async_create_entry(title=title, data={CONF_ADDRESS: discovery_info.address})
 
         self._set_confirm_only()
@@ -92,6 +126,29 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
             {vol.Required(CONF_PUMP_COUNT, default=PUMP_COUNT): vol.All(vol.Coerce(int), vol.In(PUMP_COUNT_OPTIONS))}
         )
         return self.async_show_form(step_id="dosing_config", data_schema=data_schema, errors={})
+
+    async def async_step_stirrer_config(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Ask user how many stir channels the magnetic stirrer should expose."""
+        assert self._entry_title is not None
+        assert self._entry_address is not None
+
+        if user_input is not None:
+            return self.async_create_entry(
+                title=self._entry_title,
+                data={
+                    CONF_ADDRESS: self._entry_address,
+                    CONF_STIRRER_CHANNEL_COUNT: normalize_stirrer_channel_count(user_input[CONF_STIRRER_CHANNEL_COUNT]),
+                },
+            )
+
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_STIRRER_CHANNEL_COUNT, default=STIRRER_CHANNEL_MAX): vol.All(
+                    vol.Coerce(int), vol.In(STIRRER_CHANNEL_COUNT_OPTIONS)
+                )
+            }
+        )
+        return self.async_show_form(step_id="stirrer_config", data_schema=data_schema, errors={})
 
     async def async_step_fallback_config(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Ask user for device details when fallback device is detected."""
@@ -128,6 +185,8 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         self._entry_address = discovery.address
         if discovery.fake_info and is_dosing_capable(discovery.fake_info.model):
             return await self.async_step_dosing_config()
+        if discovery.fake_info and is_stirrer_capable(discovery.fake_info.model):
+            return await self.async_step_stirrer_config()
         return self.async_create_entry(title=discovery.name, data=discovery.entry_data())
 
     async def _async_handle_bluetooth_submission(self, discovery: ChihirosDiscovery) -> ConfigFlowResult:
@@ -148,6 +207,8 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         self._entry_address = discovery_info.address
         if is_dosing_capable(device):
             return await self.async_step_dosing_config()
+        if is_stirrer_capable(device):
+            return await self.async_step_stirrer_config()
         return self.async_create_entry(title=title, data={CONF_ADDRESS: discovery_info.address})
 
     async def _async_handle_user_submission(self, user_input: dict[str, Any]) -> ConfigFlowResult:
@@ -204,3 +265,137 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
             }
         )
         return self.async_show_form(step_id="user", data_schema=data_schema, errors=errors)
+
+
+class ChihirosOptionsFlow(OptionsFlowWithReload):
+    """Change channel counts and, for a stirrer, the linked master pump.
+
+    The master link is stored on the stirrer's config entry data (the same
+    ``master_address`` the ``chihiros.set_stirrer_master`` service writes), so
+    both surfaces share one source of truth. Selecting a master here replays
+    the pump's recorded programming immediately, best-effort.
+    """
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Show the options for the configured device type."""
+        data = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
+        if data is None:
+            return self.async_abort(reason="not_loaded")
+        if is_dosing_capable(data.device):
+            return self._channel_count_step(CONF_PUMP_COUNT, PUMP_COUNT, PUMP_COUNT_OPTIONS, user_input)
+        if is_stirrer_capable(data.device):
+            return await self._async_stirrer_step(data, user_input)
+        return self.async_abort(reason="no_options")
+
+    def _channel_count_step(
+        self,
+        key: str,
+        default: int,
+        options: tuple[int, ...],
+        user_input: dict[str, Any] | None,
+    ) -> ConfigFlowResult:
+        """Handle the dosing-pump channel-count form.
+
+        The select carries string values (coerced back to int on save): the
+        frontend reliably preselects the configured value only for string
+        options, so keep this consistent with the stirrer/master selects.
+        """
+        if user_input is not None:
+            return self.async_create_entry(title="", data={key: int(user_input[key])})
+        current = self.config_entry.options.get(key, self.config_entry.data.get(key, default))
+        data_schema = vol.Schema(
+            {
+                vol.Required(key, default=str(current)): vol.All(
+                    vol.Coerce(str), vol.In({str(option): str(option) for option in options})
+                )
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=data_schema)
+
+    async def _async_stirrer_step(self, data: ChihirosData, user_input: dict[str, Any] | None) -> ConfigFlowResult:
+        """Handle the stirrer channel-count + master-pump form."""
+        if user_input is not None:
+            return await self._async_apply_stirrer_options(user_input, data)
+        return self._async_stirrer_form()
+
+    async def _async_apply_stirrer_options(self, user_input: dict[str, Any], data: ChihirosData) -> ConfigFlowResult:
+        """Persist the selected master link and mirror the pump programming.
+
+        An omitted ``master_address`` field leaves the persisted link untouched
+        instead of unlinking it (the select normally submits its default, but a
+        partial/automation-driven submission must not drop the link).
+        """
+        if CONF_MASTER_ADDRESS in user_input:
+            selected = user_input[CONF_MASTER_ADDRESS]
+            master = None if selected in (None, "", UNLINKED_MASTER) else selected
+            self._update_master_link(master)
+            set_stirrer_pre_run_entities_enabled(
+                self.hass, data.device.address, len(data.stirrer_states), enabled=master is not None
+            )
+            if master is not None:
+                await self._async_mirror_new_master(master, data)
+        return self.async_create_entry(
+            title="", data={CONF_STIRRER_CHANNEL_COUNT: int(user_input[CONF_STIRRER_CHANNEL_COUNT])}
+        )
+
+    def _async_stirrer_form(self) -> ConfigFlowResult:
+        """Render the stirrer options form (channel count + master pump)."""
+        entry = self.config_entry
+        current_count = entry.options.get(
+            CONF_STIRRER_CHANNEL_COUNT, entry.data.get(CONF_STIRRER_CHANNEL_COUNT, STIRRER_CHANNEL_MAX)
+        )
+        current_master = str(entry.data.get(CONF_MASTER_ADDRESS, "")) or UNLINKED_MASTER
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_STIRRER_CHANNEL_COUNT, default=str(current_count)): vol.All(
+                    vol.Coerce(str), vol.In({str(option): str(option) for option in STIRRER_CHANNEL_COUNT_OPTIONS})
+                ),
+                vol.Optional(CONF_MASTER_ADDRESS, default=current_master): vol.In(
+                    self._master_select_options(current_master)
+                ),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=data_schema)
+
+    def _master_select_options(self, current_master: str) -> dict[str, str]:
+        """Return the selectable master pumps as ``{address: label}`` plus unlink."""
+        options = {UNLINKED_MASTER: "None (unlinked)"}
+        for entry_id, candidate in self.hass.data.get(DOMAIN, {}).items():
+            if entry_id == self.config_entry.entry_id or not is_dosing_capable(candidate.device):
+                continue
+            options[candidate.device.address] = f"{candidate.title} ({candidate.device.address})"
+        if current_master != UNLINKED_MASTER and current_master not in options:
+            options[current_master] = f"{current_master} (not loaded)"
+        return options
+
+    def _update_master_link(self, master: str | None) -> None:
+        """Write or clear the persisted master address on the stirrer entry."""
+        entry = self.config_entry
+        if master is None:
+            new_data = {key: value for key, value in entry.data.items() if key != CONF_MASTER_ADDRESS}
+        else:
+            new_data = {**entry.data, CONF_MASTER_ADDRESS: master}
+        self.hass.config_entries.async_update_entry(entry, data=new_data)
+
+    async def _async_mirror_new_master(self, master_address: str, stirrer_data: ChihirosData) -> None:
+        """Replay the pump's recorded programming onto the stirrer (best effort)."""
+        master_data = self._find_master(master_address)
+        if master_data is None:
+            return
+        try:
+            await async_mirror_pump_to_stirrer(master_data, stirrer_data)
+        except Exception as ex:  # noqa: BLE001 — linking must succeed even if replay does not
+            _LOGGER.warning(
+                "Linked %s to %s, but replaying the pump programming failed: %s",
+                stirrer_data.device.name,
+                master_data.device.name,
+                ex,
+            )
+
+    def _find_master(self, master_address: str) -> ChihirosData | None:
+        """Return the loaded device data for a master address, if any."""
+        target = master_address.upper()
+        for candidate in self.hass.data.get(DOMAIN, {}).values():
+            if candidate.device.address.upper() == target:
+                return candidate
+        return None

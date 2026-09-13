@@ -18,6 +18,7 @@ from .coordinator import ChihirosDataUpdateCoordinator
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData
 from .runtime import ChihirosClient
+from .stirrer import ChihirosStirSwitch, is_stirrer_capable
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,14 +30,22 @@ async def async_setup_entry(
 ) -> None:
     """Set up the switch platform for Chihiros LED Control."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
+    entities: list[SwitchEntity] = []
+    if is_stirrer_capable(chihiros_data.device) and chihiros_data.stirrer_states:
+        entities.extend(
+            ChihirosStirSwitch(chihiros_data.device, chihiros_data, channel)
+            for channel in range(len(chihiros_data.stirrer_states))
+        )
     if not chihiros_data.device.colors:
+        if entities:
+            async_add_entities(entities)
         return
-    entities: list[SwitchEntity] = [
+    entities.append(
         ChihirosAutoManualSwitch(
             chihiros_data.coordinator,
             chihiros_data.device,
         )
-    ]
+    )
     if chihiros_data.device.model.is_vivid3:
         entities.append(
             ChihirosVivid3Switch(

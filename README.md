@@ -22,7 +22,8 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 - Chihiros Commander 1
 - Chihiros Commander 4
 - Chihiros Commander X
-- Chihiros dosing pump (`DYDOSE*`, `DYNDOS`) with first Home Assistant support for manual dosing, daily dose totals, and lifetime pump cycle/ml counters
+- Chihiros dosing pump (`DYDOSE*`, `DYNDOS`) with first Home Assistant support for manual dosing, per-channel calibration, daily dose totals, and lifetime pump cycle/ml counters
+- Chihiros magnetic stirrer (`DYMIXR*`) with per-channel stir switches, speed and pre-run numbers, timer schedule programming, and master/slave mirroring of a linked dosing pump
 - [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
 - Chihiros New C
 - Chihiros RGB+APLUS
@@ -151,7 +152,8 @@ the following locally tracked sensors per pump channel:
 The lifetime `total ml` and `total cycles` sensors are `total_increasing`, so they
 can be fed directly into the Home Assistant `utility_meter` to derive daily,
 weekly, monthly, or yearly consumption sensors. The first setup asks
-whether the pump has two or four channels. Manual doses can also be triggered
+how many channels the pump has (2, 4, or 8; changeable later from the
+integration's Configure dialog). Manual doses can also be triggered
 from automations with `chihiros.dose_ml`:
 
 ```yaml
@@ -162,6 +164,117 @@ data:
   ml: 2.5
 ```
 
+#### Calibrating a dosing pump
+
+Each dosing pump exposes a **Calibrate pump** button. Pressing it raises a
+Home Assistant repair notification; opening it (from the bell, or
+**Settings → System → Repairs**) runs the wizard in place. The wizard replays
+the vendor app's calibration:
+
+1. **Calibration dose** — a fixed 5-second timed run.
+2. **Enter the measured volume** — what the pump dispensed, to the nearest
+   0.05 ml.
+3. **Dose 4ml test** — a fixed 4 ml manual dose (counted in the daily totals).
+4. **"Was this accurate?"** — *Yes* finishes the wizard, *No* restarts it
+   from step 1.
+
+While a stirrer slave is linked, every calibration frame is broadcast to the
+stirrer verbatim, like the vendor app. A per-channel `last calibration`
+sensor shows when each channel was last calibrated. Magnetic stirrers are not
+calibratable (matching the app).
+
+Magnetic stirrers (`DYMIXR`) expose one stir switch and a speed number
+(0-100 %, device default 40) per channel; the pre-run number (0-999 s) is
+created **disabled by default** because it only matters while the stirrer
+runs as a slave of a linked dosing pump. Setup asks how many stir channels to
+expose (2, 4, or all 8; changeable later from the integration's Configure
+dialog). The stirrer sends no status notifications, so stirrer states are
+optimistic and restored across Home Assistant restarts. Do not build
+automations on the switch *state* — use it (or `chihiros.stir_for`) to
+*drive* the channel.
+
+```yaml
+service: chihiros.stir_for
+data:
+  device_id: <device id>
+  channel: 1
+  duration: "00:05:00"   # or seconds: 300
+```
+
+Replace a channel's timer schedule with `chihiros.set_stir_schedule`; run
+times are given in minutes and must be at least 2 minutes apart (the
+repetition is picked with a `weekdays` selector):
+
+```yaml
+service: chihiros.set_stir_schedule
+data:
+  device_id: <device id>
+  channel: 1
+  weekdays:
+    - everyday
+  points:
+    - start: "08:00"
+      minutes: 30
+    - start: "20:00"
+      minutes: 15
+```
+
+All services accept a Home Assistant `device` target (`device_id`) in
+addition to the raw `entry_id`/`address` fields, so they can be picked from
+the UI device selector. The "first setting of the day" flag is derived from
+the integration's programming record and no longer needs to be passed.
+
+### Master/slave mirroring (pump → stirrer)
+
+The vendor app mirrors a linked stirrer by broadcasting the pump's programming
+frames. Home Assistant cannot broadcast, so mirroring is explicit:
+
+- `chihiros.set_dosing_schedule` and `chihiros.set_channel_active` program a
+  pump channel and replay the write to linked stirrers automatically.
+- `chihiros.set_stirrer_master` links a stirrer to a pump and replays the
+  pump's recorded programming on linking; omit the master fields to unlink.
+- `chihiros.mirror_stirrer` replays the pump's full recorded programming on
+  demand (including the dose-delay frame).
+- `chihiros.dose_ml` and `chihiros.reset_dosing_channel` broadcast their
+  frames verbatim to linked stirrers; the stirrer treats a broadcast manual
+  dose as an immediate stir.
+
+#### Stir-before-dose timing
+
+There are no coordination frames between a linked pump and stirrer — both run
+the same mirrored schedule times on their own clocks, and ordering comes from
+programmed offsets:
+
+- the stirrer can start `pre_second` seconds **before** each schedule point
+  (the per-channel `Stir channel N pre-run` number; default 0);
+- the pump can **wait** before dosing each supplement when its dose-delay flag
+  is set (`chihiros.set_dose_delay`, mirrored to the stirrer on linking).
+
+So stirring precedes dosing only if the pre-run is set and/or the dose delay
+is enabled — at the defaults, both devices act at the same instant.
+
+```yaml
+# Link the stirrer to the pump and mirror the pump's current programming:
+service: chihiros.set_stirrer_master
+data:
+  address: "AA:BB:CC:DD:EE:FF"   # stirrer
+  master_address: "11:22:33:44:55:66"
+
+# Program the master — the stirrer follows automatically:
+service: chihiros.set_dosing_schedule
+data:
+  address: "11:22:33:44:55:66"   # pump
+  channel: 1
+  mode: timer
+  points:
+    - start: "08:00"
+      ml: 2.5
+    - start: "20:00"
+      ml: 1.0
+```
+
+The link is persisted bookkeeping only (no BLE pairing frame exists); the
+vendor app and Home Assistant links are independent.
 ## Requirements
 - a device with bluetooth LE support for sending the commands to the LED
 - [uv](https://docs.astral.sh/uv/) for Python environment and dependency management
@@ -215,6 +328,23 @@ uv run chihirosctl reset-settings <device-address>
 
 # trigger a manual dose on a dosing pump: pump 1, 2.5 mL
 uv run chihirosctl dose-ml <device-address> 1 2.5
+
+# program a dosing pump channel (timer mode: HH:MM:ML points) and its daily volume
+uv run chihirosctl doser-schedule <device-address> 1 08:00:5.5 20:00:5.5
+uv run chihirosctl doser-daily-dose <device-address> 1 60
+uv run chihirosctl doser-active <device-address> 1 --disable
+uv run chihirosctl doser-calibrate <device-address> 1 --seconds 10
+uv run chihirosctl doser-reset-channel <device-address> 1
+
+# read the pump's counters back
+uv run chihirosctl doser-totals <device-address>
+uv run chihirosctl doser-today <device-address>
+
+# magnetic stirrer: start/stop, speed/pre-run, and timer schedule
+uv run chihirosctl stir-on <device-address> 1 --seconds 300
+uv run chihirosctl stir-off <device-address> 1
+uv run chihirosctl stir-speed <device-address> 1 60 --pre-seconds 30
+uv run chihirosctl stir-schedule <device-address> 1 08:00:10 20:30:5
 
 ```
 
