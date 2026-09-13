@@ -24,6 +24,7 @@ import logging
 from typing import Any, cast
 
 import voluptuous as vol
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -66,6 +67,33 @@ def _find_entry_id(hass: HomeAssistant, chihiros_data: ChihirosData) -> str | No
     return None
 
 
+def wizard_notification_id(entry_id: str) -> str:
+    """Return the persistent notification id for one entry's wizard."""
+    return f"{DOMAIN}_calibration_{entry_id}"
+
+
+def _async_create_wizard_notification(hass: HomeAssistant, entry_id: str, device_name: str) -> None:
+    """Raise a persistent notification linking to the in-progress wizard.
+
+    Config flows started outside the frontend never open a dialog on their
+    own, so a button press would otherwise look like it did nothing. The
+    notification links straight to the integration page, which shows the
+    pending flow; it is dismissed when the wizard finishes or aborts.
+    """
+    persistent_notification.async_create(
+        hass,
+        f"A calibration wizard for {device_name} was started. "
+        f"Open [Settings → Devices & services → Chihiros](/config/integrations/integration/{DOMAIN}) to continue.",
+        title="Chihiros calibration wizard",
+        notification_id=wizard_notification_id(entry_id),
+    )
+
+
+def _async_dismiss_wizard_notification(hass: HomeAssistant, entry_id: str) -> None:
+    """Remove the wizard-started notification."""
+    persistent_notification.async_dismiss(hass, wizard_notification_id(entry_id))
+
+
 def calibration_in_progress(hass: HomeAssistant, entry_id: str) -> bool:
     """Return whether a calibration wizard is already running for a config entry."""
     return bool(
@@ -79,7 +107,9 @@ async def async_start_calibration_flow(hass: HomeAssistant, chihiros_data: Chihi
     """Launch the calibration wizard for one dosing pump.
 
     Raises ``HomeAssistantError`` when the target is not a dosing pump, is not
-    loaded, or already has a wizard in progress.
+    loaded, or already has a wizard in progress. On success a persistent
+    notification with a link to the wizard is raised — flows started outside
+    the frontend never open a dialog on their own.
     """
     if not chihiros_data.dosing_totals:
         raise HomeAssistantError(f"{chihiros_data.device.name} is not a dosing pump")
@@ -100,6 +130,7 @@ async def async_start_calibration_flow(hass: HomeAssistant, chihiros_data: Chihi
     except Exception as ex:  # noqa: BLE001 — the wizard must surface flow failures to the caller
         _LOGGER.warning("Failed to start the calibration flow for %s: %s", chihiros_data.device.name, ex)
         raise HomeAssistantError(f"Failed to start the calibration flow: {ex}") from ex
+    _async_create_wizard_notification(hass, entry_id, chihiros_data.device.name)
 
 
 def _pump_schema(pump_count: int) -> vol.Schema:
@@ -217,6 +248,8 @@ class DosingCalibrationFlowMixin:
         entry_id = self.context.get("entry_id")
         data = self.hass.data.get(DOMAIN, {}).get(entry_id) if entry_id else None
         if data is None or data.dosing_totals is None:
+            if entry_id:
+                _async_dismiss_wizard_notification(self.hass, entry_id)
             return self.async_abort(reason="not_dosing_pump")
         self._calibration_entry_id = entry_id
         self._calibration_data = data
@@ -322,6 +355,7 @@ class DosingCalibrationFlowMixin:
         if user_input is None:
             return self.async_show_form(step_id=STEP_CALIBRATE_ACCURACY, data_schema=_accuracy_schema())
         if user_input.get(ATTR_ACCURATE) == ACCURACY_YES:
+            _async_dismiss_wizard_notification(self.hass, self._calibration_entry_id)
             return self.async_abort(
                 reason="calibration_complete",
                 description_placeholders={"pump": str(self._calibration_pump + 1)},

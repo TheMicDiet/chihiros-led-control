@@ -956,3 +956,33 @@ async def test_calibration_wizard_ambiguous_test_dose_asks_retry_or_continue(
     result = await hass.config_entries.flow.async_configure(flow_id, {"accurate": "yes"})
     assert result["type"] == FlowResultType.ABORT
     assert result["reason"] == "calibration_complete"
+
+
+async def test_calibration_wizard_raises_and_dismisses_notification(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """Starting the wizard raises a persistent notification; finishing removes it."""
+    from homeassistant.components import persistent_notification
+
+    from custom_components.chihiros.calibration_flow import wizard_notification_id
+
+    dosing_client = TrackingDosingClient()
+    entry, _client = await _setup_entry(hass, monkeypatch, dosing_client)
+    flow_id = await _start_calibration_flow(hass, entity_registry)
+
+    notifications = persistent_notification._async_get_or_create_notifications(hass)
+    notification_id = wizard_notification_id(entry.entry_id)
+    assert notification_id in notifications
+    assert f"/config/integrations/integration/{DOMAIN}" in notifications[notification_id]["message"]
+
+    # Walk the full wizard; the notification is dismissed when it finishes.
+    await hass.config_entries.flow.async_configure(flow_id, {"pump": "1"})
+    await hass.config_entries.flow.async_configure(flow_id, {})
+    await hass.config_entries.flow.async_configure(flow_id, {"volume_ml": 4.0})
+    await hass.config_entries.flow.async_configure(flow_id, {})
+    result = await hass.config_entries.flow.async_configure(flow_id, {"accurate": "yes"})
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "calibration_complete"
+    assert notification_id not in notifications
