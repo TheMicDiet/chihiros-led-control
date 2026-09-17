@@ -78,8 +78,8 @@ def test_scripted_stirrer_pre_second_and_manual_stir(monkeypatch: pytest.MonkeyP
         pre_second = next(frame for frame in transport.writes if frame[5] == 42)
         assert pre_second[6:10] == bytes([0, 0, 90, 60])
         start, stop = (frame for frame in transport.writes if frame[5] == 20)
-        assert list(start[6:-1]) == [255, 255, 1, 255, 255, 255, 255, 255, 255, 255]
-        assert list(stop[6:-1]) == [255, 255, 0, 255, 255, 255, 255, 255, 5, 0]
+        assert list(start[6:-1]) == [255, 255, 255, 255, 1, 255, 255, 255, 255, 255]
+        assert list(stop[6:-1]) == [5, 0, 255, 255, 0, 255, 255, 255, 255, 255]
 
     asyncio.run(run())
 

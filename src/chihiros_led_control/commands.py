@@ -300,11 +300,14 @@ def create_general_temp_run_command(
 ) -> bytearray:
     """Create the shared ``generalTempSet`` "temporary run" frame ``(0xA5, 20)``.
 
-    Payload ``[8 channel bytes][duration_min][duration_sec]``; channel bytes
-    default to 255 and are overlaid with 1 (run) / 0 (stop) per the ``states``
-    mapping. A ``seconds`` of ``None`` encodes the unlimited duration
-    ``[255, 255]``. Note: the app only ever overlays the first 4 channel
-    bytes; addressing channels 4-7 here is an unobserved generalization.
+    Payload ``[duration_min][duration_sec][8 channel bytes]``; the duration
+    bytes come FIRST (binary-verified against My Chihiros 2.8.59:
+    generalTempSet builds ``[min, sec]`` then ``addAll`` the channel bytes at
+    0x91fdb8/0x920030). Channel bytes default to 255 and are overlaid with
+    1 (run) / 0 (stop) per the ``states`` mapping. A ``seconds`` of ``None``
+    encodes the unlimited duration ``[255, 255]``. Note: the app only ever
+    overlays the first 4 channel bytes; addressing channels 4-7 here is an
+    unobserved generalization.
     """
     channel_bytes = [255] * 8
     for channel, run in states.items():
@@ -317,7 +320,7 @@ def create_general_temp_run_command(
             raise ValueError("Duration must be between 0 and 15359 seconds")
         minutes, remainder = divmod(seconds, 60)
         duration = [minutes, remainder]
-    return create_command_encoding(165, 20, msg_id, [*channel_bytes, *duration], avoid_reserved_byte=False)
+    return create_command_encoding(165, 20, msg_id, [*duration, *channel_bytes], avoid_reserved_byte=False)
 
 
 def create_stirrer_pre_second_command(
