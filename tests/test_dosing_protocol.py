@@ -180,14 +180,19 @@ def test_dosing_channel_color_command() -> None:
 
 
 def test_general_temp_run_command_layout() -> None:
-    """GeneralTempSet is [8 channel bytes][min][sec]; unset channels stay 255."""
+    """GeneralTempSet is [min][sec][8 channel bytes]; duration comes first."""
+    # Binary-verified against My Chihiros 2.8.59: generalTempSet builds the
+    # [min, sec] list first, then appends the channel bytes (addAll at
+    # 0x920030). The old [channels][min][sec] order shifted every channel up
+    # by two device slots (GitHub issue #115: switches 1-2 hit the duration
+    # bytes, switches 3-6 drove physical channels 1-4).
     unlimited = commands.create_general_temp_run_command(MSG_ID, {2: True})
     assert unlimited[5] == 20
-    assert _payload(unlimited) == [255, 255, 1, 255, 255, 255, 255, 255, 255, 255]
+    assert _payload(unlimited) == [255, 255, 255, 255, 1, 255, 255, 255, 255, 255]
     stopped = commands.create_general_temp_run_command(MSG_ID, {0: False})
-    assert _payload(stopped)[0] == 0
+    assert _payload(stopped)[2] == 0
     timed = commands.create_general_temp_run_command(MSG_ID, {7: True}, seconds=90)
-    assert _payload(timed)[-2:] == [1, 30]
+    assert _payload(timed)[:2] == [1, 30]
     with pytest.raises(ValueError, match="Duration"):
         commands.create_general_temp_run_command(MSG_ID, {0: True}, seconds=15360)
     with pytest.raises(ValueError, match="Channel"):
