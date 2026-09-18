@@ -88,6 +88,27 @@ _LAST_NOTIFICATION_FIELDS: dict[type, tuple[str, str, tuple[str, ...]]] = {
 }
 
 
+def _pair_notify_characteristic(
+    services: BleakGATTServiceCollection, write_char: BleakGATTCharacteristic | None
+) -> BleakGATTCharacteristic | None:
+    """Return the notify characteristic that belongs to ``write_char``.
+
+    ``8ec90003-…`` doubles as the Nordic Secure DFU buttonless characteristic,
+    which nRF-based lights (e.g. the WRGB II Slim) expose next to the Nordic
+    UART service. Subscribing there succeeds but replies arrive on
+    ``6e400003-…``, so the notify characteristic is chosen relative to the
+    write characteristic (issue #116):
+
+    * Nordic UART write (``6e400002-…``): only ``6e400003-…`` qualifies; never
+      fall back to ``8ec90003-…`` — on such devices it is the DFU endpoint.
+    * Classic HM-10 write (``ffe1-…``) or unknown write: prefer ``8ec90003-…``
+      (verified against the official app) with ``6e400003-…`` as fallback.
+    """
+    if write_char is not None and write_char.uuid.lower() == UART_RX_CHAR_UUID.lower():
+        return services.get_characteristic(UART_TX_CHAR_UUID)
+    return services.get_characteristic(CUSTOM_NOTIFY_CHAR_UUID) or services.get_characteristic(UART_TX_CHAR_UUID)
+
+
 class ChihirosDevice:
     """Concrete BLE client for a Chihiros LED device."""
 
@@ -609,6 +630,14 @@ class ChihirosDevice:
         * write:  ``0000ffe1-…`` (classic) or ``6e400002-…`` (AIX/Nordic UART RX)
         * notify: ``8ec90003-…`` (classic custom) or ``6e400003-…`` (Nordic UART TX)
 
+        Unlike the app's fixed two lookups, the notify characteristic is paired
+        with the resolved write characteristic (see issue #116): nRF-based
+        lights such as the WRGB II Slim additionally expose the Nordic Secure
+        DFU buttonless characteristic ``8ec90003-…`` (service ``0xFE59``) next
+        to the Nordic UART service, so a global preference for ``8ec90003``
+        subscribes to the DFU endpoint instead of the UART channel the device
+        actually replies on.
+
         The notify characteristic may legitimately be absent (e.g. "RGB A Plus",
         where ``ffe1`` itself is full duplex). Like the app, this does not fail:
         the notify subscription is simply skipped and the client runs
@@ -618,9 +647,7 @@ class ChihirosDevice:
         self._write_char = services.get_characteristic(HM10_RX_CHAR_UUID) or services.get_characteristic(
             UART_RX_CHAR_UUID
         )
-        self._read_char = services.get_characteristic(CUSTOM_NOTIFY_CHAR_UUID) or services.get_characteristic(
-            UART_TX_CHAR_UUID
-        )
+        self._read_char = _pair_notify_characteristic(services, self._write_char)
         return self._write_char is not None
 
     def _is_connected(self) -> bool:

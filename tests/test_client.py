@@ -12,6 +12,12 @@ import pytest
 from bleak_retry_connector import BleakError
 
 from chihiros_led_control.client import ChihirosDevice, ChihirosDosingPump
+from chihiros_led_control.const import (
+    CUSTOM_NOTIFY_CHAR_UUID,
+    HM10_RX_CHAR_UUID,
+    UART_RX_CHAR_UUID,
+    UART_TX_CHAR_UUID,
+)
 from chihiros_led_control.exceptions import CharacteristicMissingError
 from chihiros_led_control.models import DOSING_PUMP, RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
 from chihiros_led_control.protocol import (
@@ -300,7 +306,7 @@ class _PreludeFailureClient:
     """Fake client whose first write fails during the connection prelude."""
 
     is_connected = True
-    services = SimpleNamespace(get_characteristic=lambda uuid: uuid)
+    services = SimpleNamespace(get_characteristic=lambda uuid: SimpleNamespace(uuid=uuid))
     stopped = False
 
     async def start_notify(self, *_args: object) -> None:
@@ -314,6 +320,76 @@ class _PreludeFailureClient:
 
     async def disconnect(self) -> None:
         self.is_connected = False
+
+
+def _services_with(uuids: list[str]) -> SimpleNamespace:
+    """Fake service collection exposing one lowercase-UUID characteristic per entry."""
+    characteristics = {uuid.lower(): SimpleNamespace(uuid=uuid.lower()) for uuid in uuids}
+    return SimpleNamespace(get_characteristic=lambda uuid: characteristics.get(uuid.lower()))
+
+
+def test_notify_pairing_nordic_write_ignores_dfu_characteristic() -> None:
+    """Nordic UART devices subscribe to 6e400003 even when 8ec90003 (DFU) exists.
+
+    Regression test for issue #116: the WRGB II Slim exposes the Nordic Secure
+    DFU buttonless characteristic (8ec90003-…) next to the Nordic UART service;
+    a global preference for it subscribes to the wrong endpoint and the device
+    never sends notifications.
+    """
+
+    async def run() -> None:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WRGB_CHANNELS))  # type: ignore[arg-type]
+        services = _services_with([UART_RX_CHAR_UUID, UART_TX_CHAR_UUID, CUSTOM_NOTIFY_CHAR_UUID])
+        resolved = device._resolve_characteristics(services)  # noqa: SLF001
+        assert resolved
+        assert device._write_char is not None  # noqa: SLF001
+        assert device._write_char.uuid == UART_RX_CHAR_UUID.lower()  # noqa: SLF001
+        assert device._read_char is not None  # noqa: SLF001
+        assert device._read_char.uuid == UART_TX_CHAR_UUID.lower()  # noqa: SLF001
+
+    asyncio.run(run())
+
+
+def test_notify_pairing_nordic_write_without_uart_tx_is_fire_and_forget() -> None:
+    """A Nordic write characteristic never falls back to 8ec90003 (DFU endpoint)."""
+
+    async def run() -> None:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WRGB_CHANNELS))  # type: ignore[arg-type]
+        services = _services_with([UART_RX_CHAR_UUID, CUSTOM_NOTIFY_CHAR_UUID])
+        resolved = device._resolve_characteristics(services)  # noqa: SLF001
+        assert resolved
+        assert device._read_char is None  # noqa: SLF001
+
+    asyncio.run(run())
+
+
+def test_notify_pairing_hm10_write_prefers_custom_notify() -> None:
+    """Classic HM-10 devices prefer 8ec90003 for notifications, as the app does."""
+
+    async def run() -> None:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WRGB_CHANNELS))  # type: ignore[arg-type]
+        services = _services_with([HM10_RX_CHAR_UUID, CUSTOM_NOTIFY_CHAR_UUID, UART_TX_CHAR_UUID])
+        resolved = device._resolve_characteristics(services)  # noqa: SLF001
+        assert resolved
+        assert device._write_char is not None  # noqa: SLF001
+        assert device._write_char.uuid == HM10_RX_CHAR_UUID.lower()  # noqa: SLF001
+        assert device._read_char is not None  # noqa: SLF001
+        assert device._read_char.uuid == CUSTOM_NOTIFY_CHAR_UUID.lower()  # noqa: SLF001
+
+    asyncio.run(run())
+
+
+def test_notify_pairing_full_duplex_hm10_without_notify_char() -> None:
+    """Devices with full-duplex ffe1 and no notify characteristic stay fire-and-forget."""
+
+    async def run() -> None:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WRGB_CHANNELS))  # type: ignore[arg-type]
+        services = _services_with([HM10_RX_CHAR_UUID])
+        resolved = device._resolve_characteristics(services)  # noqa: SLF001
+        assert resolved
+        assert device._read_char is None  # noqa: SLF001
+
+    asyncio.run(run())
 
 
 def test_connection_prelude_failure_cleans_up_connection() -> None:
