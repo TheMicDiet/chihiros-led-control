@@ -425,10 +425,9 @@ The trailing byte is not a valid XOR checksum for this mode, so parsers should
 treat bytes after offset `8` as opaque. Fan speed is set with the
 `0x5a / 0x0f` command listed above; measured RPM follows the set percentage.
 
-Some VIVID III firmware revisions instead report the fan readout with the
-newer `0xb6` header and mode `0x16` (the vendor app's `vvd3_fan_widget`):
-`rpm = (data[6] << 8) | data[7]`, `temperature = data[8]`. This repository
-parses both frame shapes into fan notifications.
+The vendor app's `vvd3_fan_widget` reads this same `0x5b`/`0x0b` frame — its
+disassembly immediates `#0xb6`/`#0x16` are Dart smis, i.e. `0x5b`/`0x0b`:
+`rpm = (data[6] << 8) | data[7]`, `temperature = data[8]`.
 
 Fan control on the VIVID III has a manual speed and a temperature-controlled
 auto mode (both confirmed in `dataMaker.dart`):
@@ -539,23 +538,20 @@ Example for pump `0`, `2.0 mL`:
 
 ### Dosing Pump Notifications
 
-Dosing pumps report dose counters on two carriers, both parsed by this
-repository. Newer firmware uses the `0xb6` header (not the `0x5b` LED header);
-some captured DYDOSE firmware (fw `07.25.18`) instead answers the `[4]`/`[5]`
-queries with `0x5b` uplink frames whose per-channel layout and 0.1 mL scaling
-are identical (DOSING_CONTROL.md §7.3):
+Dosing pumps answer the `[4]`/`[5]` queries with `0x5b` uplink frames
+(confirmed by the DYDOSE HCI capture, fw `07.25.18`); the vendor app's
+`dosing_state_widget` compares the smi immediates `#0x3c`/`#0x44` =
+`0x1e`/`0x22`:
 
 | Header | Byte 5 | Meaning | Payload |
 | --- | ---: | --- | --- |
-| `0xb6` | `0x3c` / `60` | Lifetime totals | Per channel `i`: `(data[6+2i] << 8 | data[7+2i]) * 100` µL |
-| `0xb6` | `0x44` / `68` | Dosed today | Per channel `i`: `(data[6+2i] << 8 | data[7+2i]) * 100` µL |
-| `0x5b` | `0x1e` / `30` | Lifetime totals | Same layout/scaling as `0xb6 0x3c` |
-| `0x5b` | `0x22` / `34` | Dosed today | Same layout/scaling as `0xb6 0x44` |
+| `0x5b` | `0x1e` / `30` | Lifetime totals | Per channel `i`: `(data[6+2i] << 8 | data[7+2i]) * 100` µL |
+| `0x5b` | `0x22` / `34` | Dosed today | Same layout/scaling |
 
 Example lifetime frame (channels `0..1` = `105.5 mL`, `0 mL`):
 
 ```text
-b6 10 10 00 01 3c 04 1f 00 00
+5b 10 10 00 01 1e 04 1f 00 00
 ```
 
 The Home Assistant integration stores these device-reported counters in the
@@ -596,8 +592,8 @@ total itself.
 | `165` | `5` | `[ch+21, 255, 255]` | Zero a channel's lifetime counter (`resetTotalDosing`) |
 | `165` | `31` | `[enabled?1:0]` | Device-level dose delay flag (`setDosingDelay`) |
 | `165` | `59` | `[ch, color]` | New-generation pump channel color (`dosingChannelColor`) |
-| `165` | `4` | `[4]` | Query lifetime totals (reply: `0xB6`/`0x3C`, or `0x5B` mode `0x1E` on some captured DYDOSE firmware — both parsed) |
-| `165` | `4` | `[5]` | Query dosed-today (reply: `0xB6`/`0x44`, or `0x5B` mode `0x22` on some captured DYDOSE firmware — both parsed) |
+| `165` | `4` | `[4]` | Query lifetime totals (reply: `0x5B` mode `0x1E`) |
+| `165` | `4` | `[5]` | Query dosed-today (reply: `0x5B` mode `0x22`) |
 
 ### Magnetic Stirrer (DYMIXR)
 

@@ -217,7 +217,7 @@ def test_parse_captured_firmware_reply_frames() -> None:
 
     Values from the DOSING_CONTROL.md §7.3 capture: today 60.0/205.2/33.9/19.5
     mL on channels 0..3. Wire bytes are 0.1 mL units, ×100 for µL, at the same
-    positions as the 0xB6 0x3C/0x44 frames; the trailing checksum byte sits
+    positions as the 0x5B 0x1E/0x22 frames; the trailing checksum byte sits
     outside the channel region.
     """
     from chihiros_led_control.protocol import parse_notification

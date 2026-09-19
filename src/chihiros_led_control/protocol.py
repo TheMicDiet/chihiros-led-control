@@ -55,7 +55,7 @@ class ScheduleSnapshotNotification:
 class DosingTotalsNotification:
     """Per-channel lifetime dosed volumes reported by a dosing pump.
 
-    Dosing pumps notify with header 0xB6 and mode 0x3C. Each channel is a
+    Dosing pumps notify with header 0x5B and mode 0x1E. Each channel is a
     big-endian 16-bit counter scaled to microliters: ``(hi << 8 | lo) * 100``.
     """
 
@@ -67,24 +67,11 @@ class DosingTotalsNotification:
 class DosingDailyNotification:
     """Per-channel "dosed today" volumes reported by a dosing pump.
 
-    Dosing pumps notify with header 0xB6 and mode 0x44. Each channel is a
+    Dosing pumps notify with header 0x5B and mode 0x22. Each channel is a
     big-endian 16-bit counter scaled to microliters: ``(hi << 8 | lo) * 100``.
     """
 
     dose_use_in_day_ul: tuple[int, ...]
-    raw: bytes = field(default=b"", compare=False)
-
-
-@dataclass(frozen=True)
-class Vivid3FanStatusNotification:
-    """VIVID3 fan RPM/temperature readout notification.
-
-    The vendor app reads fan RPM from header 0xB6 mode 0x16 frames with
-    ``rpm = (data[6] << 8) | data[7]`` and ``temperature = data[8]``.
-    """
-
-    fan_rpm: int
-    temperature_celsius: int
     raw: bytes = field(default=b"", compare=False)
 
 
@@ -94,7 +81,6 @@ ParsedNotification = (
     | ScheduleSnapshotNotification
     | DosingTotalsNotification
     | DosingDailyNotification
-    | Vivid3FanStatusNotification
 )
 
 
@@ -198,8 +184,6 @@ def parse_notification(
     mode = data[5]
     if data[0] == 0x5B:
         return _parse_legacy_notification(data, mode, color_channels)
-    if data[0] == 0xB6:
-        return _parse_newer_notification(data, mode)
     return None
 
 
@@ -211,10 +195,10 @@ def _parse_legacy_dosing_reply(
 
     Some captured DYDOSE firmware (fw ``07.25.18``) answers the
     ``(0xA5, 4, [4])`` / ``([5])`` pulls with ``0x5B`` uplink frames — modes
-    ``0x1E`` (lifetime) and ``0x22`` (today) — instead of the ``0xB6``
-    ``0x3C``/``0x44`` notifications. Layout and 0.1 mL scaling are identical
-    to the ``0xB6`` frames (DOSING_CONTROL.md §7.3), so the same decoding
-    applies; the trailing checksum byte sits outside the channel region.
+    ``0x1E`` (lifetime) and ``0x22`` (today). The app's ``dosing_state_widget``
+    compares those same bytes (its disassembly immediates ``#0x3c``/``#0x44``
+    are Dart smis, i.e. ``0x1E``/``0x22``). The trailing checksum byte sits
+    outside the channel region.
     """
     if mode == 0x1E and len(data) >= 8:
         return DosingTotalsNotification(_parse_dosing_channel_values(data), bytes(data))
@@ -250,7 +234,12 @@ def _parse_runtime_notification(data: bytes | bytearray, firmware_version: int) 
 
 
 def _parse_fan_status_notification(data: bytes | bytearray, firmware_version: int) -> ParsedNotification | None:
-    """Parse 0x5B mode 0x0B fan status frames."""
+    """Parse 0x5B mode 0x0B fan status frames.
+
+    This is the fan RPM/temperature readout (the app's ``vvd3_fan_widget``
+    compares the smi immediates ``#0xb6``/``#0x16`` = ``0x5B``/``0x0B``):
+    ``rpm = (data[6] << 8) | data[7]``, ``temperature = data[8]``.
+    """
     if len(data) < 9:
         return None
     fan_rpm = (data[6] << 8) | data[7]
@@ -299,19 +288,3 @@ def _is_valid_schedule_point(hour: int, minute: int, level: int, levels: Mapping
     if hour == 0 and minute == 0:
         return any(level_value != 0 for level_value in levels.values())
     return True
-
-
-def _parse_newer_notification(data: bytes | bytearray, mode: int) -> ParsedNotification | None:
-    """Parse 0xB6 newer-generation notification frames (pumps, fan readouts)."""
-    if mode == 0x3C and len(data) >= 8:
-        return DosingTotalsNotification(_parse_dosing_channel_values(data), bytes(data))
-
-    if mode == 0x44 and len(data) >= 8:
-        return DosingDailyNotification(_parse_dosing_channel_values(data), bytes(data))
-
-    if mode == 0x16 and len(data) >= 9:
-        fan_rpm = (data[6] << 8) | data[7]
-        temperature_celsius = data[8]
-        return Vivid3FanStatusNotification(fan_rpm, temperature_celsius, bytes(data))
-
-    return None

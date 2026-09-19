@@ -21,7 +21,6 @@ from .vendor.chihiros_led_control.protocol import (
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
-    Vivid3FanStatusNotification,
 )
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
@@ -193,20 +192,10 @@ def _apply_dosing_daily_notification(
     coordinator.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "dosing_daily")
 
 
-def _apply_vivid3_fan_notification(
-    coordinator: ChihirosDataUpdateCoordinator, notification: Vivid3FanStatusNotification
-) -> None:
-    """Store VIVID3 fan readout data."""
-    coordinator.data[ATTR_FAN_RPM] = notification.fan_rpm
-    coordinator.data[ATTR_FAN_TEMPERATURE_CELSIUS] = notification.temperature_celsius
-    coordinator.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "vivid3_fan_status")
-
-
 _NOTIFICATION_APPLIERS: dict[type, Callable[[ChihirosDataUpdateCoordinator, ParsedNotification], None]] = {
     RuntimeNotification: _apply_runtime_notification,
     FanStatusNotification: _apply_fan_status_notification,
     ScheduleSnapshotNotification: _apply_schedule_snapshot_notification,
     DosingTotalsNotification: _apply_dosing_totals_notification,
     DosingDailyNotification: _apply_dosing_daily_notification,
-    Vivid3FanStatusNotification: _apply_vivid3_fan_notification,
 }
