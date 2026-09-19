@@ -113,7 +113,7 @@ def test_scripted_fan_commands_round_trip(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_scripted_dosing_pump_dose_sequence(monkeypatch: pytest.MonkeyPatch) -> None:
     """A manual dose writes the pump auth pair plus the dose frame in order."""
-    dosing_frame = bytes.fromhex("b6 10 10 00 01 3c 04 1f 00 00")
+    dosing_frame = bytes.fromhex("5b 10 10 00 01 1e 04 1f 00 00")
     transport = ScriptedTransport(name="DYDOSE-test")
     # The pump reports its counters in response to the connect auth frame.
     transport.expect(90, 4, [1], respond=[dosing_frame])

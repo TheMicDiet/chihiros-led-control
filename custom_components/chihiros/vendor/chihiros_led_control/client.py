@@ -38,7 +38,6 @@ from .protocol import (
     ParsedNotification,
     RuntimeNotification,
     ScheduleSnapshotNotification,
-    Vivid3FanStatusNotification,
     next_message_id,
     parse_notification,
 )
@@ -79,11 +78,6 @@ _LAST_NOTIFICATION_FIELDS: dict[type, tuple[str, str, tuple[str, ...]]] = {
         "last_dosing_daily_notification",
         "Dosing daily notification received; dose_use_in_day_ul=%s",
         ("dose_use_in_day_ul",),
-    ),
-    Vivid3FanStatusNotification: (
-        "last_vivid3_fan_status_notification",
-        "VIVID3 fan notification received; fan_rpm=%s temperature_celsius=%s",
-        ("fan_rpm", "temperature_celsius"),
     ),
 }
 
@@ -145,7 +139,6 @@ class ChihirosDevice:
         self.last_schedule_snapshot_notification: ScheduleSnapshotNotification | None = None
         self.last_dosing_totals_notification: DosingTotalsNotification | None = None
         self.last_dosing_daily_notification: DosingDailyNotification | None = None
-        self.last_vivid3_fan_status_notification: Vivid3FanStatusNotification | None = None
         self.loop = asyncio.get_running_loop()
 
     def set_log_level(self, level: int | str) -> None:
@@ -584,8 +577,8 @@ class ChihirosDevice:
         if parsed is None:
             self._logger.debug("%s: Notification received: %s", self.name, data.hex())
             return
-        if isinstance(parsed, Vivid3FanStatusNotification) and not self.model.has_fan:
-            # 0xB6/0x16 frames are the VIVID3 fan readout; ignore on non-fan models.
+        if isinstance(parsed, FanStatusNotification) and not self.model.has_fan:
+            # 0x5B/0x0B fan readout: ignore it on models without a fan.
             self._logger.debug("%s: Ignoring fan readout frame on non-fan model %s", self.name, self.model.name)
             return
         self._record_notification(parsed)
@@ -816,11 +809,9 @@ class ChihirosDosingPump(ChihirosDevice):
     async def query_dosed_totals(self) -> None:
         """Request the lifetime-totals readout (app's ``getDosedFromDevice``).
 
-        The reply lands in :attr:`last_dosing_totals_notification` regardless
-        of carrier: newer firmware answers with a ``0xB6``/``0x3C`` frame,
-        while some captured DYDOSE firmware answers the same pull with a
-        ``0x5B``/``0x1E`` uplink frame (identical per-channel layout and
-        0.1 mL scaling — DOSING_CONTROL.md §7.3). Both are parsed.
+        The reply lands in :attr:`last_dosing_totals_notification` as a
+        ``0x5B``/``0x1E`` uplink frame (the app's ``dosing_state_widget``
+        compares the smi immediates ``#0x3c`` = ``0x1E``).
         """
         cmd = commands.create_dose_auth_1_command(self.get_next_msg_id())
         await self._send_command(cmd, 3, notification_wait=STATUS_NOTIFICATION_WAIT)
@@ -828,10 +819,8 @@ class ChihirosDosingPump(ChihirosDevice):
     async def query_dosed_today(self) -> None:
         """Request the dosed-today readout (app's ``getDosedInDayFromDevice``).
 
-        The reply lands in :attr:`last_dosing_daily_notification` regardless
-        of carrier: newer firmware answers with a ``0xB6``/``0x44`` frame,
-        while some captured DYDOSE firmware answers with a ``0x5B``/``0x22``
-        uplink frame (identical layout/scaling). Both are parsed.
+        The reply lands in :attr:`last_dosing_daily_notification` as a
+        ``0x5B``/``0x22`` uplink frame (the ``#0x44`` smi immediate).
         """
         cmd = commands.create_dose_auth_2_command(self.get_next_msg_id())
         await self._send_command(cmd, 3, notification_wait=STATUS_NOTIFICATION_WAIT)

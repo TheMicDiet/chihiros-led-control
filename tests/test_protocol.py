@@ -13,7 +13,6 @@ from chihiros_led_control.protocol import (
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
-    Vivid3FanStatusNotification,
     calculate_checksum,
     create_command_encoding,
     encode_timestamp,
@@ -474,16 +473,16 @@ def test_parse_schedule_snapshot_notification_skips_metadata_prefix() -> None:
 
 
 def test_parse_dosing_totals_notification() -> None:
-    """Dosing lifetime totals use 0xB6 header, mode 0x3C, 16-bit x100 uL counters."""
-    frame = bytearray([0xB6, 0x10, 0x10, 0x00, 0x01, 0x3C, 0x04, 0x1F, 0x00, 0x00, 0x05, 0xDC, 0x00, 0x00])
+    """Dosing lifetime totals use 0x5B header, mode 0x1E, 16-bit x100 uL counters."""
+    frame = bytearray([0x5B, 0x10, 0x10, 0x00, 0x01, 0x1E, 0x04, 0x1F, 0x00, 0x00, 0x05, 0xDC, 0x00, 0x00])
     notification = parse_notification(frame)
 
     assert notification == DosingTotalsNotification(total_dosed_ul=(105500, 0, 150000, 0), raw=bytes(frame))
 
 
 def test_parse_dosing_daily_notification() -> None:
-    """Dosing dosed-today totals use 0xB6 header, mode 0x44, 16-bit x100 uL counters."""
-    frame = bytearray([0xB6, 0x10, 0x0E, 0x00, 0x01, 0x44, 0x00, 0x64, 0x01, 0x90])
+    """Dosing dosed-today totals use 0x5B header, mode 0x22, 16-bit x100 uL counters."""
+    frame = bytearray([0x5B, 0x10, 0x0E, 0x00, 0x01, 0x22, 0x00, 0x64, 0x01, 0x90])
     notification = parse_notification(frame)
 
     assert notification == DosingDailyNotification(dose_use_in_day_ul=(10000, 40000), raw=bytes(frame))
@@ -491,21 +490,18 @@ def test_parse_dosing_daily_notification() -> None:
 
 def test_parse_dosing_notification_requires_minimum_length() -> None:
     """Dosing notifications without a full channel counter are ignored."""
-    assert parse_notification(bytearray([0xB6, 0, 0, 0, 0, 0x3C, 0])) is None
-    assert parse_notification(bytearray([0xB6, 0, 0, 0, 0, 0x44, 0])) is None
+    assert parse_notification(bytearray([0x5B, 0, 0, 0, 0, 0x1E, 0])) is None
+    assert parse_notification(bytearray([0x5B, 0, 0, 0, 0, 0x22, 0])) is None
 
 
-def test_parse_vivid3_fan_status_notification() -> None:
-    """VIVID3 fan readouts use 0xB6 header, mode 0x16, with RPM and temperature."""
-    frame = bytearray([0xB6, 0x00, 0x00, 0x00, 0x01, 0x16, 0x02, 0x58, 25])
-    notification = parse_notification(frame)
+def test_parse_unknown_notification_modes_are_ignored() -> None:
+    """Unknown headers/modes are not misparsed.
 
-    assert notification == Vivid3FanStatusNotification(fan_rpm=600, temperature_celsius=25, raw=bytes(frame))
-
-
-def test_parse_unknown_b6_modes_are_ignored() -> None:
-    """Unknown 0xB6 frames (heater, standalone fan) are not misparsed."""
+    ``0xB6`` is the Dart smi immediate of ``0x5B`` (never a real header), and
+    ``0x5B``/``0x99`` is an unknown mode.
+    """
     assert parse_notification(bytearray([0xB6, 0, 0, 0, 0, 0x4A, 1, 2, 3, 4, 5, 6])) is None
+    assert parse_notification(bytearray([0x5B, 0, 0, 0, 0, 0x99, 1, 2, 3, 4, 5, 6])) is None
 
 
 def test_switch_to_manual_mode_command_encoding() -> None:

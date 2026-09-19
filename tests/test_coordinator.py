@@ -43,11 +43,11 @@ from custom_components.chihiros.vendor.chihiros_led_control.models import RGB_CH
 from custom_components.chihiros.vendor.chihiros_led_control.protocol import (
     DosingDailyNotification,
     DosingTotalsNotification,
+    FanStatusNotification,
     ParsedNotification,
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
-    Vivid3FanStatusNotification,
 )
 
 pytestmark = [
@@ -253,11 +253,11 @@ async def test_handle_schedule_snapshot_notification_populates_data(
     assert points == ({"time": "08:05", "levels": {"red": 10}},)
 
 
-async def test_handle_newer_notifications_populates_data_without_firmware(
+async def test_handle_notifications_populates_data_without_firmware(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Newer pump and VIVID3 notifications do not require a firmware field."""
+    """Pump and fan notifications populate coordinator data without a firmware field."""
     _entry, _client, coordinator = await _setup(hass, monkeypatch)
     updates = 0
 
@@ -267,13 +267,13 @@ async def test_handle_newer_notifications_populates_data_without_firmware(
 
     coordinator.async_add_listener(_listener)
     coordinator._async_handle_notification(
-        DosingTotalsNotification((105500, 0), bytes.fromhex("b6 10 10 00 01 3c 04 1f 00 00"))
+        FanStatusNotification(27, 600, 25, bytes.fromhex("5b 1b 10 00 01 0b 02 58 19 00 01 00 00 00 00 00 48 22"))
     )
     coordinator._async_handle_notification(
-        DosingDailyNotification((10000, 40000), bytes.fromhex("b6 10 0e 00 01 44 00 64 01 90"))
+        DosingTotalsNotification((105500, 0), bytes.fromhex("5b 10 10 00 01 1e 04 1f 00 00"))
     )
     coordinator._async_handle_notification(
-        Vivid3FanStatusNotification(600, 25, bytes.fromhex("b6 00 00 00 01 16 02 58 19"))
+        DosingDailyNotification((10000, 40000), bytes.fromhex("5b 10 0e 00 01 22 00 64 01 90"))
     )
     await _flush()
 

@@ -26,7 +26,6 @@ from chihiros_led_control.protocol import (
     FanStatusNotification,
     RuntimeNotification,
     ScheduleSnapshotNotification,
-    Vivid3FanStatusNotification,
     calculate_checksum,
 )
 
@@ -837,7 +836,7 @@ def test_set_fan_speed_clamps_below_model_minimum() -> None:
 def test_notification_handler_stores_and_publishes_dosing_totals() -> None:
     """Parsed dosing totals are stored and sent to subscribers."""
     received: list[DosingTotalsNotification] = []
-    frame = bytearray([0xB6, 0x10, 0x10, 0x00, 0x01, 0x3C, 0x04, 0x1F, 0x00, 0x00])
+    frame = bytearray([0x5B, 0x10, 0x10, 0x00, 0x01, 0x1E, 0x04, 0x1F, 0x00, 0x00])
 
     async def run() -> ChihirosDevice:
         device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
@@ -856,7 +855,7 @@ def test_notification_handler_stores_and_publishes_dosing_totals() -> None:
 def test_notification_handler_stores_and_publishes_dosing_daily() -> None:
     """Parsed dosing daily counters are stored and sent to subscribers."""
     received: list[DosingDailyNotification] = []
-    frame = bytearray([0xB6, 0x10, 0x0E, 0x00, 0x01, 0x44, 0x00, 0x64, 0x01, 0x90])
+    frame = bytearray([0x5B, 0x10, 0x0E, 0x00, 0x01, 0x22, 0x00, 0x64, 0x01, 0x90])
 
     async def run() -> ChihirosDevice:
         device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
@@ -872,30 +871,10 @@ def test_notification_handler_stores_and_publishes_dosing_daily() -> None:
     assert received == [device.last_dosing_daily_notification]
 
 
-def test_notification_handler_stores_and_publishes_vivid3_fan_status() -> None:
-    """VIVID3 fan readouts are stored and sent to subscribers."""
-    received: list[Vivid3FanStatusNotification] = []
-    frame = bytearray([0xB6, 0x00, 0x00, 0x00, 0x01, 0x16, 0x02, 0x58, 25])
-
-    async def run() -> ChihirosDevice:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WRGB_CHANNELS, has_fan=True))  # type: ignore[arg-type]
-        device.add_notification_callback(received.append)
-        device._notification_handler(None, frame)  # type: ignore[arg-type]
-        return device
-
-    device = asyncio.run(run())
-    assert device.last_vivid3_fan_status_notification == Vivid3FanStatusNotification(
-        fan_rpm=600,
-        temperature_celsius=25,
-        raw=bytes(frame),
-    )
-    assert received == [device.last_vivid3_fan_status_notification]
-
-
-def test_notification_handler_ignores_vivid3_fan_readout_on_non_fan_model() -> None:
-    """0xB6/0x16 fan readout frames are ignored on models without a fan."""
-    received: list[Vivid3FanStatusNotification] = []
-    frame = bytearray([0xB6, 0x00, 0x00, 0x00, 0x01, 0x16, 0x02, 0x58, 25])
+def test_notification_handler_ignores_fan_readout_on_non_fan_model() -> None:
+    """0x5B/0x0B fan readout frames are ignored on models without a fan."""
+    received: list[FanStatusNotification] = []
+    frame = bytearray([0x5B, 0x1B, 0x10, 0x00, 0x01, 0x0B, 0x02, 0x58, 25])
 
     async def run() -> ChihirosDevice:
         device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), RGB_CHANNELS))  # type: ignore[arg-type]
@@ -904,7 +883,7 @@ def test_notification_handler_ignores_vivid3_fan_readout_on_non_fan_model() -> N
         return device
 
     device = asyncio.run(run())
-    assert device.last_vivid3_fan_status_notification is None
+    assert device.last_fan_status_notification is None
     assert received == []
 
 
