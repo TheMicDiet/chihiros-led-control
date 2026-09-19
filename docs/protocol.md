@@ -624,9 +624,10 @@ bitfield are read back from the device.
 
 | Command ID | Mode | Parameters | Meaning |
 | ---: | ---: | --- | --- |
-| `90` | `43` / `0x2b` | `[flag, temp_whole, temp_tenths, power]` | `setHeaterCode`: target temperature and power. `flag` is `0` for the manual setting (sent right after `switchToManual`) and `1` for the auto-mode defaults (`initAutoDefault`). Temperatures split as `round(temp * 10)` into whole/tenths (25.5 °C = `[25, 5]`) and power rides as watts ÷ 10 (800 W = `80`) |
-| `90` | `47` / `0x2f` | `[temp_whole, temp_tenths]` | `setHeaterProtectedTemp`: overheat protection limit |
-| `90` | `48` / `0x30` | `[temp_whole, temp_tenths]` | `setHeaterCalibrate`: measured reference temperature the sensor should read |
+| `90` | `43` / `0x2b` | `[flag, temp_whole, temp_hundredths, power]` | `setHeaterCode`: target temperature and power. `flag` is `0` for the manual setting (sent right after `switchToManual`) and `1` for the auto-mode defaults (`initAutoDefault`). Temperatures split into whole degrees plus the fraction in **hundredths** (`CommonTool.getDec`, the same 2-digit convention as the dosing calibration volume: 36.9 °C = `[36, 90]`), and power rides as watts ÷ 10 (800 W = `80`) |
+| `90` | `47` / `0x2f` | `[temp_whole, temp_hundredths]` | `setHeaterProtectedTemp`: overheat protection limit |
+| `90` | `48` / `0x30` | `[temp_whole, temp_hundredths]` | `setHeaterCalibrate`: measured reference temperature the sensor should read |
+| `165` | `56` / `0x38` | `[level, level, level, level, 127]` | `deviceBacklight`: display backlight on (`100`) / off (`200`); the app's backlight widget also writes the schedule (start/end hour and weekday mask) through this mode |
 | `90` | `5` | `[3, 255, 255]` | `switchToAuto` |
 | `90` | `5` | `[11, 255, 255]` | `switchToManual` (shared with the LED family) |
 | `90` | `5` | `[18, 255, 255]` | `switchToScene`: apply the stored scene/schedule |
@@ -661,8 +662,26 @@ The alarm bitfield sets one bit per fault; the app tests bits 0-6:
 The cleaning reminder is driven by the runtime counter rather than a bit: the
 app warns once `runtime_hours / 2160 > 0.9` (~1944 h) and offers
 `heaterResetWorkTime` after cleaning. The device never reports the power,
-auto-heating, unit or protection settings, so an integration has to track them
-itself.
+auto-heating, backlight, unit or protection settings, so an integration has to
+track them itself.
+
+A capture of the vendor app driving a heater confirms the layout and the app's
+own defaults; every frame below is reproduced byte-for-byte by this
+repository's encoders (message id `0005`, checksum omitted):
+
+| Captured payload | Meaning |
+| --- | --- |
+| `5a 01 09 … 2b 00 19 00 14` | `setHeaterCode` manual state: 25.0 °C at 200 W (the app's manual defaults) |
+| `5a 01 09 … 2b 01 14 00 32` | `setHeaterCode` auto defaults: 20.0 °C at 500 W |
+| `5a 01 07 … 2f 24 5a` | `setHeaterProtectedTemp` 36.9 °C (consecutive slider steps send `24 32`/`24 3c`/`24 46`/`24 50` for 36.5/36.6/36.7/36.8) |
+| `5a 01 07 … 30 17 00` | `setHeaterCalibrate` 23.0 °C |
+| `a5 01 0a … 38 64 64 64 64 7f` | `deviceBacklight` on (the backlight toggle's `change(true)`) |
+| `a5 01 0a … 38 c8 c8 c8 c8 7f` | `deviceBacklight` off (`change(false)`) |
+
+The protection-temperature series is what pins the temperature fraction to
+hundredths rather than tenths, and the 25.0 °C / 200 W pair confirms the
+model's stored defaults (`HEATER_CONTROL.md` §2 quotes the raw Dart smi
+immediates, i.e. twice these values).
 
 ## Decompiler Notes
 

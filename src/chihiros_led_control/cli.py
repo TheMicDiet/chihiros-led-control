@@ -510,6 +510,15 @@ def heater_auto_heating(
     _run_heater_func(device_address, lambda dev: dev.set_auto_heating(enable))
 
 
+@heater_app.command("backlight")
+def heater_backlight(
+    device_address: str,
+    enable: Annotated[bool, typer.Option("--enable/--disable")] = True,
+) -> None:
+    """Turn a heater's display backlight on or off."""
+    _run_heater_func(device_address, lambda dev: dev.set_backlight(enable))
+
+
 @heater_app.command("unit")
 def heater_unit(
     device_address: str,

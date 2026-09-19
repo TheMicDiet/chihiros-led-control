@@ -99,6 +99,10 @@ class HeaterChihirosClient(Protocol):
     def is_celsius(self) -> bool:
         """Return whether the device displays Celsius (as opposed to Fahrenheit)."""
 
+    @property
+    def backlight(self) -> bool:
+        """Return whether the tracked display-backlight state is on."""
+
     async def set_temperature(self, temperature_c: float) -> None:
         """Set the target temperature and switch to manual mode."""
 
@@ -110,6 +114,9 @@ class HeaterChihirosClient(Protocol):
 
     async def set_temperature_unit(self, *, celsius: bool) -> None:
         """Set the device's display unit."""
+
+    async def set_backlight(self, enabled: bool) -> None:
+        """Turn the device's display backlight on or off."""
 
     async def set_protector_temperature(self, temperature_c: float) -> None:
         """Set the overheat protection temperature."""

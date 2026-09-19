@@ -1069,6 +1069,7 @@ class ChihirosHeater(ChihirosDevice):
         self._protector_temperature = commands.HEATER_DEFAULT_PROTECTOR_TEMPERATURE_C
         self._auto_heating = False
         self._celsius = True
+        self._backlight = True
         self.last_heater_temperature_notification: HeaterTemperatureNotification | None = None
         self.last_heater_status_notification: HeaterStatusNotification | None = None
 
@@ -1113,6 +1114,11 @@ class ChihirosHeater(ChihirosDevice):
     def is_celsius(self) -> bool:
         """Return whether the device displays Celsius (as opposed to Fahrenheit)."""
         return self._celsius
+
+    @property
+    def backlight(self) -> bool:
+        """Return whether the tracked display-backlight state is on."""
+        return self._backlight
 
     @property
     def work_time_hours(self) -> int | None:
@@ -1208,6 +1214,16 @@ class ChihirosHeater(ChihirosDevice):
         """
         cmd = commands.create_heater_reset_work_time_command(self.get_next_msg_id())
         await self._send_command(cmd, 3)
+
+    async def set_backlight(self, enabled: bool) -> None:
+        """Turn the heater's display backlight on or off.
+
+        Mirrors the app's ``deviceBacklight`` toggle. The device does not report
+        the setting, so the new state is tracked optimistically.
+        """
+        cmd = commands.create_heater_backlight_command(self.get_next_msg_id(), enabled=enabled)
+        await self._send_command(cmd, 3)
+        self._backlight = enabled
 
     async def _send_manual_state(self, temperature_c: float, power_watts: int) -> None:
         """Send ``switchToManual`` plus the manual state frame in one batch."""

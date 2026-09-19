@@ -61,6 +61,7 @@ class _TrackingHeater:
         self.calibration_calls: list[float] = []
         self.auto_heating_calls: list[bool] = []
         self.unit_calls: list[bool] = []
+        self.backlight_calls: list[bool] = []
         self.reset_work_time_calls = 0
         self.write_exception: Exception | None = None
         self._setting_temperature = 25.0
@@ -68,6 +69,7 @@ class _TrackingHeater:
         self._protector_temperature = 37.0
         self._auto_heating = False
         self._celsius = True
+        self._backlight = True
         self._callbacks: set[Callable[[Any], None]] = set()
 
     @property
@@ -105,6 +107,10 @@ class _TrackingHeater:
     @property
     def is_celsius(self) -> bool:
         return self._celsius
+
+    @property
+    def backlight(self) -> bool:
+        return self._backlight
 
     def add_notification_callback(self, callback: Callable[[Any], None]) -> Callable[[], None]:
         """Register a notification callback."""
@@ -183,6 +189,12 @@ class _TrackingHeater:
         self._celsius = celsius
         self.unit_calls.append(celsius)
 
+    async def set_backlight(self, enabled: bool) -> None:
+        """Record a backlight write."""
+        await self._write()
+        self._backlight = enabled
+        self.backlight_calls.append(enabled)
+
     async def reset_work_time(self) -> None:
         """Record a runtime reset."""
         await self._write()
@@ -258,9 +270,7 @@ async def test_heater_setup_creates_all_entities(hass: HomeAssistant, monkeypatc
 
     registered = {
         domain: {
-            entry.unique_id.split("_", 1)[1]
-            for entry in er.async_get(hass).entities.values()
-            if entry.domain == domain
+            entry.unique_id.split("_", 1)[1] for entry in er.async_get(hass).entities.values() if entry.domain == domain
         }
         for domain in (NUMBER_DOMAIN, SWITCH_DOMAIN, SELECT_DOMAIN, SENSOR_DOMAIN)
     }
@@ -270,7 +280,7 @@ async def test_heater_setup_creates_all_entities(hass: HomeAssistant, monkeypatc
         "heater_protector_temperature",
         "heater_calibration_temperature",
     } <= registered[NUMBER_DOMAIN]
-    assert "heater_auto_heating" in registered[SWITCH_DOMAIN]
+    assert {"heater_auto_heating", "heater_backlight"} <= registered[SWITCH_DOMAIN]
     assert "heater_temperature_unit" in registered[SELECT_DOMAIN]
     assert {
         "heater_current_temperature_celsius",
@@ -398,6 +408,35 @@ async def test_heater_switch_restores_and_drives_client(
     assert hass.states.get(entity_id).state == STATE_ON
     # Restoring must not silently rewrite the device.
     assert client.auto_heating_calls == [True]
+
+
+async def test_heater_backlight_switch_restores_and_drives_client(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The backlight switch is optimistic, restored and writes to the client."""
+    entry, client = await _setup_heater(hass, monkeypatch)
+    entity_id = _entity_id(hass, SWITCH_DOMAIN, "heater_backlight")
+    assert hass.states.get(entity_id).state == STATE_ON
+
+    await hass.services.async_call(
+        SWITCH_DOMAIN,
+        "turn_off",
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
+    await _flush()
+    assert client.backlight_calls == [False]
+    assert hass.states.get(entity_id).state == STATE_OFF
+
+    await _reload_entry(
+        hass,
+        entry,
+        prime=lambda: _prime_restore_state(hass, entity_id, State(entity_id, STATE_OFF)),
+    )
+    assert hass.states.get(entity_id).state == STATE_OFF
+    # Restoring must not silently rewrite the device.
+    assert client.backlight_calls == [False]
 
 
 async def test_heater_unit_select_writes_client(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:

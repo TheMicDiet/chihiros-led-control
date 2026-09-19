@@ -241,6 +241,8 @@ Heaters expose the controls of the vendor app as ordinary entities:
   thermometer).
 - **Auto heating** (switch) — enables the heating element while the heater
   runs an automatic scene.
+- **Backlight** (switch, configuration) — turns the heater's own display
+  backlight on or off (the app's `deviceBacklight` toggle).
 - **Temperature unit** (select) — what the heater's own display shows. Home
   Assistant always shows temperatures in the unit system configured for your
   instance, so this only affects the device itself.
@@ -400,6 +402,7 @@ uv run chihirosctl heater <device-address> temp 26.5
 uv run chihirosctl heater <device-address> power 800
 uv run chihirosctl heater <device-address> auto-defaults 24 1000
 uv run chihirosctl heater <device-address> auto-heating --disable
+uv run chihirosctl heater <device-address> backlight --disable
 uv run chihirosctl heater <device-address> unit f
 uv run chihirosctl heater <device-address> protector 37
 uv run chihirosctl heater <device-address> calibrate 26.0

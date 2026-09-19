@@ -198,6 +198,7 @@ class FakeChihirosDevice:
         self._heater_protector_c = HEATER_DEFAULT_PROTECTOR_TEMPERATURE_C
         self._heater_auto_heating = False
         self._heater_celsius = True
+        self._heater_backlight = True
         self._heater_work_hours = 120
         self._heater_alarms = 0
         self.last_heater_temperature_notification: HeaterTemperatureNotification | None = None
@@ -567,6 +568,11 @@ class FakeChihirosDevice:
         await asyncio.sleep(0)
         self._heater_celsius = celsius
 
+    async def set_backlight(self, enabled: bool) -> None:
+        """Track the fake display-backlight state."""
+        await asyncio.sleep(0)
+        self._heater_backlight = enabled
+
     async def set_protector_temperature(self, temperature_c: float) -> None:
         """Track the fake overheat protection temperature."""
         await asyncio.sleep(0)
@@ -613,6 +619,11 @@ class FakeChihirosDevice:
     def is_celsius(self) -> bool:
         """Return whether the fake device displays Celsius."""
         return self._heater_celsius
+
+    @property
+    def backlight(self) -> bool:
+        """Return the fake display-backlight state."""
+        return self._heater_backlight
 
     @property
     def work_time_hours(self) -> int:

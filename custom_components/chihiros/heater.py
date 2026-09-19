@@ -241,47 +241,80 @@ class ChihirosHeaterCalibrationNumber(ChihirosHeaterNumber):
         await self._client.calibrate(value)
 
 
-class ChihirosHeaterAutoHeatingSwitch(ChihirosHeaterEntity, SwitchEntity, RestoreEntity):
-    """Switch the heater's automatic heating on or off.
+class ChihirosHeaterOptimisticSwitch(ChihirosHeaterEntity, SwitchEntity, RestoreEntity):
+    """Base for the heater's write-only switches.
 
-    The device does not report this setting, so its state is optimistic and
-    restored across restarts without being re-sent.
+    The device does not report the auto-heating or backlight state, so both are
+    optimistic and restored across restarts without being re-sent.
     """
 
+    _state_property = ""
+    _unique_id_suffix = ""
+    _name_suffix = ""
+
     def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
-        """Initialize the auto-heating switch."""
-        super().__init__(coordinator, device, "heater_auto_heating", "Auto heating")
+        """Initialize the heater switch."""
+        super().__init__(coordinator, device, self._unique_id_suffix, self._name_suffix)
         self._restored_state: bool | None = None
 
     async def async_added_to_hass(self) -> None:
-        """Restore the last known auto-heating state."""
+        """Restore the last known state."""
         await super().async_added_to_hass()
         if last_state := await self.async_get_last_state():
             self._restored_state = last_state.state == "on"
 
     @property
     def is_on(self) -> bool:
-        """Return the auto-heating state."""
+        """Return the tracked switch state."""
         if self._restored_state is not None:
             return self._restored_state
-        return self._client.auto_heating
+        return bool(getattr(self._client, self._state_property))
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        """Enable automatic heating."""
+        """Enable the setting on the device."""
         await self._async_apply(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Disable automatic heating."""
+        """Disable the setting on the device."""
         await self._async_apply(False)
 
     async def _async_apply(self, enabled: bool) -> None:
-        """Send the auto-heating state and update the optimistic state."""
+        """Send the switch state and update the optimistic state."""
         try:
-            await self._client.set_auto_heating(enabled)
+            await self._async_write(enabled)
         except Exception as ex:
             raise HomeAssistantError(f"Failed to set {self._attr_name}") from ex
         self._restored_state = enabled
         self.async_write_ha_state()
+
+    async def _async_write(self, enabled: bool) -> None:
+        """Send one switch state to the device."""
+        raise NotImplementedError
+
+
+class ChihirosHeaterAutoHeatingSwitch(ChihirosHeaterOptimisticSwitch):
+    """Switch the heater's automatic heating on or off."""
+
+    _state_property = "auto_heating"
+    _unique_id_suffix = "heater_auto_heating"
+    _name_suffix = "Auto heating"
+
+    async def _async_write(self, enabled: bool) -> None:
+        """Enable or disable automatic heating."""
+        await self._client.set_auto_heating(enabled)
+
+
+class ChihirosHeaterBacklightSwitch(ChihirosHeaterOptimisticSwitch):
+    """Switch the heater's display backlight on or off."""
+
+    _state_property = "backlight"
+    _unique_id_suffix = "heater_backlight"
+    _name_suffix = "Backlight"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    async def _async_write(self, enabled: bool) -> None:
+        """Turn the display backlight on or off."""
+        await self._client.set_backlight(enabled)
 
 
 class ChihirosHeaterTemperatureUnitSelect(ChihirosHeaterEntity, SelectEntity, RestoreEntity):

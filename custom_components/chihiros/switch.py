@@ -16,7 +16,11 @@ from homeassistant.util import dt as dt_util
 from .const import DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
-from .heater import ChihirosHeaterAutoHeatingSwitch, is_heater_capable
+from .heater import (
+    ChihirosHeaterAutoHeatingSwitch,
+    ChihirosHeaterBacklightSwitch,
+    is_heater_capable,
+)
 from .models import ChihirosData
 from .runtime import ChihirosClient
 from .stirrer import ChihirosStirSwitch, is_stirrer_capable
@@ -56,7 +60,12 @@ def _accessory_switches(chihiros_data: ChihirosData) -> list[SwitchEntity]:
             for channel in range(len(chihiros_data.stirrer_states))
         )
     if is_heater_capable(chihiros_data.device):
-        entities.append(ChihirosHeaterAutoHeatingSwitch(chihiros_data.coordinator, chihiros_data.device))
+        entities.extend(
+            (
+                ChihirosHeaterAutoHeatingSwitch(chihiros_data.coordinator, chihiros_data.device),
+                ChihirosHeaterBacklightSwitch(chihiros_data.coordinator, chihiros_data.device),
+            )
+        )
     return entities
 
 

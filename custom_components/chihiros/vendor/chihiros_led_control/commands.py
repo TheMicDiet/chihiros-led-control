@@ -26,6 +26,12 @@ HEATER_MAX_TEMPERATURE_C = 100.0
 HEATER_DEFAULT_TEMPERATURE_C = 25.0
 HEATER_DEFAULT_POWER_WATTS = 200
 HEATER_DEFAULT_PROTECTOR_TEMPERATURE_C = 37.0
+# The display backlight toggle sends a uniform four-byte level plus a fixed
+# trailer; the app's own literals (and captured frames) use 100 for on and
+# 200 for off.
+HEATER_BACKLIGHT_ON_LEVEL = 100
+HEATER_BACKLIGHT_OFF_LEVEL = 200
+HEATER_BACKLIGHT_TRAILER = 127
 
 # Dosing-pump wire limits (reverse-engineered from My Chihiros 2.8.59):
 # volumes ride in two bytes as 0.1 mL buckets (0..6553.5 mL) and the stirrer
@@ -568,16 +574,17 @@ def create_vivid3_bluetooth_led_command(msg_id: tuple[int, int], enabled: bool) 
 
 
 def split_heater_temperature(temperature_c: float) -> tuple[int, int]:
-    """Encode a heater temperature as the wire ``[whole, tenths]`` byte pair.
+    """Encode a heater temperature as the wire ``[whole, hundredths]`` byte pair.
 
-    The app's ``setHeaterCode``/``setHeaterProtectedTemp``/``setHeaterCalibrate``
-    payloads carry ``CommonTool.getInt``/``getDec`` of the model temperature,
-    i.e. ``round(temp * 10)`` split into its two decimal digits: 25.5 °C is
-    ``[25, 5]``.
+    The app builds this pair with ``CommonTool.getInt``/``getDec``, i.e. whole
+    degrees plus the fraction in hundredths. Captured app frames confirm it:
+    ``setHeaterProtectedTemp | 36.90 C`` goes out as ``24 5a`` (36, 90), and
+    ``36.50`` as ``24 32`` (36, 50) — the same 2-digit fraction convention as
+    the dosing pump's calibration volume.
     """
     if not 0 <= temperature_c <= HEATER_MAX_TEMPERATURE_C:
         raise ValueError(f"Heater temperature must be between 0 and {HEATER_MAX_TEMPERATURE_C} °C")
-    return divmod(round(temperature_c * 10), 10)
+    return divmod(round(temperature_c * 100), 100)
 
 
 def encode_heater_power_watts(power_watts: int) -> int:
@@ -664,3 +671,18 @@ def create_heater_reset_work_time_command(msg_id: tuple[int, int]) -> bytearray:
     that drives the cleaning warning.
     """
     return create_command_encoding(90, 5, msg_id, [58, 255, 255], avoid_reserved_byte=False)
+
+
+def create_heater_backlight_command(msg_id: tuple[int, int], *, enabled: bool) -> bytearray:
+    """Create the app's ``deviceBacklight`` frame ``(0xA5, 56)``.
+
+    The app's backlight toggle (``ScreenBackLightSettingWidget::change``) sends
+    one uniform four-byte payload with a trailing ``127``: ``[100, 100, 100,
+    100, 127]`` turns the display backlight on and ``[200, 200, 200, 200, 127]``
+    turns it off. Both frames appear in captured app traffic (``64 64 64 64 7f``
+    followed by ``c8 c8 c8 c8 7f``); the widget's other mode-56 writes carry the
+    backlight schedule (start/end hour and weekday mask) and are not modelled
+    here.
+    """
+    level = HEATER_BACKLIGHT_ON_LEVEL if enabled else HEATER_BACKLIGHT_OFF_LEVEL
+    return create_command_encoding(165, 56, msg_id, [level] * 4 + [HEATER_BACKLIGHT_TRAILER], avoid_reserved_byte=False)

@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 from chihiros_led_control import cli
 from chihiros_led_control.client import ChihirosDevice, ChihirosHeater
 from chihiros_led_control.commands import (
+    create_heater_backlight_command,
     create_heater_calibrate_command,
     create_heater_protector_temperature_command,
     create_heater_set_command,
@@ -88,9 +89,11 @@ def test_create_device_builds_heater_client() -> None:
 
 
 def test_heater_temperature_and_power_encoding() -> None:
-    """Temperatures split into whole/tenths and power rides as watts ÷ 10."""
-    assert split_heater_temperature(25.5) == (25, 5)
+    """Temperatures split into whole degrees plus hundredths; power rides as watts ÷ 10."""
+    assert split_heater_temperature(25.5) == (25, 50)
+    assert split_heater_temperature(36.9) == (36, 90)
     assert split_heater_temperature(24.0) == (24, 0)
+    assert split_heater_temperature(25.999) == (26, 0)
     assert encode_heater_power_watts(800) == 80
     with pytest.raises(ValueError, match="temperature"):
         split_heater_temperature(-1.0)
@@ -98,18 +101,26 @@ def test_heater_temperature_and_power_encoding() -> None:
         encode_heater_power_watts(3000)
 
 
-def test_heater_frames_match_documented_examples() -> None:
-    """The heater frames reproduce the byte-exact examples in the reference docs."""
+def test_heater_frames_match_captured_app_traffic() -> None:
+    """The heater frames reproduce the byte-exact frames captured from the app.
+
+    Source: a capture of the vendor app driving a DYHET heater
+    (``setHeaterCode`` defaults, the protection-temperature slider, calibration
+    and the backlight toggle).
+    """
     assert (
-        create_heater_set_command((0, 5), auto=False, temperature_c=25.5, power_watts=800).hex(" ")
-        == "5a 01 09 00 05 2b 00 19 05 50 6a"
+        create_heater_set_command((0, 5), auto=False, temperature_c=25.0, power_watts=200).hex(" ")
+        == "5a 01 09 00 05 2b 00 19 00 14 2b"
     )
     assert (
-        create_heater_set_command((0, 5), auto=True, temperature_c=24.0, power_watts=1000).hex(" ")
-        == "5a 01 09 00 05 2b 01 18 00 64 5b"
+        create_heater_set_command((0, 5), auto=True, temperature_c=20.0, power_watts=500).hex(" ")
+        == "5a 01 09 00 05 2b 01 14 00 32 01"
     )
-    assert create_heater_protector_temperature_command((0, 5), 74.0).hex(" ") == "5a 01 07 00 05 2f 4a 00 66"
-    assert create_heater_calibrate_command((0, 5), 25.5).hex(" ") == "5a 01 07 00 05 30 19 05 2f"
+    assert create_heater_protector_temperature_command((0, 5), 36.9).hex(" ") == "5a 01 07 00 05 2f 24 5a 52"
+    assert create_heater_protector_temperature_command((0, 5), 36.5).hex(" ") == "5a 01 07 00 05 2f 24 32 3a"
+    assert create_heater_calibrate_command((0, 5), 23.0).hex(" ") == "5a 01 07 00 05 30 17 00 24"
+    assert create_heater_backlight_command((0, 7), enabled=True).hex(" ") == "a5 01 0a 00 07 38 64 64 64 64 7f 4b"
+    assert create_heater_backlight_command((0, 7), enabled=False).hex(" ") == "a5 01 0a 00 07 38 c8 c8 c8 c8 7f 4b"
 
 
 def _fast_waits(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -131,11 +142,7 @@ def _sent_frames(transport: ScriptedTransport) -> list[tuple[int, list[int]]]:
     The connection prelude (``(0x5A, 4)`` device info and ``(0x5A, 9)`` time
     sync) is skipped so assertions only see the commands under test.
     """
-    return [
-        (frame[5], list(frame[6:-1]))
-        for frame in transport.writes
-        if frame[5] not in (4, 9)
-    ]
+    return [(frame[5], list(frame[6:-1])) for frame in transport.writes if frame[5] not in (4, 9)]
 
 
 def test_scripted_heater_manual_state_sequence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -151,8 +158,8 @@ def test_scripted_heater_manual_state_sequence(monkeypatch: pytest.MonkeyPatch) 
 
         state_frames = [frame for frame in transport.writes if frame[5] == 43]
         assert [list(frame[6:-1]) for frame in state_frames] == [
-            [0, 26, 5, 20],  # manual flag, 26.5 °C, default 200 W
-            [0, 26, 5, 80],  # 26.5 °C is remembered across the power write
+            [0, 26, 50, 20],  # manual flag, 26.5 °C, default 200 W
+            [0, 26, 50, 80],  # 26.5 °C is remembered across the power write
         ]
         # Every state write is preceded by switchToManual (mode 5, sub 11).
         manual_frames = [frame for frame in transport.writes if frame[5] == 5]
@@ -175,6 +182,8 @@ def test_scripted_heater_settings_commands(monkeypatch: pytest.MonkeyPatch) -> N
             await device.set_auto_heating(True)
             await device.set_auto_heating(False)
             await device.set_temperature_unit(celsius=False)
+            await device.set_backlight(False)
+            await device.set_backlight(True)
             await device.set_protector_temperature(37.0)
             await device.calibrate(25.5)
             await device.reset_work_time()
@@ -186,12 +195,15 @@ def test_scripted_heater_settings_commands(monkeypatch: pytest.MonkeyPatch) -> N
             (5, [46, 255, 255]),
             (5, [47, 255, 255]),
             (5, [45, 255, 255]),
+            (56, [200, 200, 200, 200, 127]),
+            (56, [100, 100, 100, 100, 127]),
             (47, [37, 0]),
-            (48, [25, 5]),
+            (48, [25, 50]),
             (5, [58, 255, 255]),
         ]
         assert device.auto_heating is False
         assert device.is_celsius is False
+        assert device.backlight is True
         assert device.protector_temperature_celsius == 37.0
 
     asyncio.run(run())
@@ -234,7 +246,7 @@ def test_scripted_heater_reported_setting_is_resent(monkeypatch: pytest.MonkeyPa
             await device.set_power(400)
 
         state_frame = next(frame for frame in transport.writes if frame[5] == 43)
-        assert list(state_frame[6:-1]) == [0, 28, 5, 40]
+        assert list(state_frame[6:-1]) == [0, 28, 50, 40]
 
     asyncio.run(run())
 
@@ -299,6 +311,7 @@ def test_heater_cli_commands_drive_heater(monkeypatch: pytest.MonkeyPatch) -> No
             "apply_scene",
             "set_auto_heating",
             "set_temperature_unit",
+            "set_backlight",
             "set_protector_temperature",
             "calibrate",
             "reset_work_time",
@@ -315,6 +328,7 @@ def test_heater_cli_commands_drive_heater(monkeypatch: pytest.MonkeyPatch) -> No
     assert RUNNER.invoke(cli.app, ["heater", "mode", TEST_ADDRESS, "scene"]).exit_code == 0
     assert RUNNER.invoke(cli.app, ["heater", "auto-heating", TEST_ADDRESS, "--disable"]).exit_code == 0
     assert RUNNER.invoke(cli.app, ["heater", "unit", TEST_ADDRESS, "f"]).exit_code == 0
+    assert RUNNER.invoke(cli.app, ["heater", "backlight", TEST_ADDRESS, "--disable"]).exit_code == 0
     assert RUNNER.invoke(cli.app, ["heater", "protector", TEST_ADDRESS, "37"]).exit_code == 0
     assert RUNNER.invoke(cli.app, ["heater", "calibrate", TEST_ADDRESS, "25.5"]).exit_code == 0
     assert RUNNER.invoke(cli.app, ["heater", "reset-work-time", TEST_ADDRESS]).exit_code == 0
@@ -326,9 +340,10 @@ def test_heater_cli_commands_drive_heater(monkeypatch: pytest.MonkeyPatch) -> No
     assert calls[4] == ("apply_scene", (), {})
     assert calls[5] == ("set_auto_heating", (False,), {})
     assert calls[6] == ("set_temperature_unit", (), {"celsius": False})
-    assert calls[7] == ("set_protector_temperature", (37.0,), {})
-    assert calls[8] == ("calibrate", (25.5,), {})
-    assert calls[9] == ("reset_work_time", (), {})
+    assert calls[7] == ("set_backlight", (False,), {})
+    assert calls[8] == ("set_protector_temperature", (37.0,), {})
+    assert calls[9] == ("calibrate", (25.5,), {})
+    assert calls[10] == ("reset_work_time", (), {})
 
 
 def test_heater_cli_commands_reject_other_devices(monkeypatch: pytest.MonkeyPatch) -> None:
