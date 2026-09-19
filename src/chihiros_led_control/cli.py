@@ -12,20 +12,30 @@ from rich import print
 from rich.table import Table
 from typing_extensions import Annotated
 
-from .client import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
-from .commands import DOSE_VOLUME_MAX_ML, DosingMode, DosingWorkPoint, stirrer_dosage_for_minutes
+from .client import ChihirosDevice, ChihirosDosingPump, ChihirosHeater, ChihirosMagStirrer
+from .commands import (
+    DOSE_VOLUME_MAX_ML,
+    HEATER_MAX_POWER_WATTS,
+    HEATER_MAX_TEMPERATURE_C,
+    DosingMode,
+    DosingWorkPoint,
+    stirrer_dosage_for_minutes,
+)
 from .factory import detect_model, get_device_from_address
 from .weekday_encoding import WeekdaySelect, encode_selected_weekdays
 
 app = typer.Typer()
 dosing_app = typer.Typer(help="Control a Chihiros dosing pump (DYDOSE).")
 stirrer_app = typer.Typer(help="Control a Chihiros magnetic stirrer (DYMIXR).")
+heater_app = typer.Typer(help="Control a Chihiros heater (DYHET).")
 app.add_typer(dosing_app, name="dosing", rich_help_panel="Dosing & stirring")
 app.add_typer(stirrer_app, name="stirrer", rich_help_panel="Dosing & stirring")
+app.add_typer(heater_app, name="heater", rich_help_panel="Heater")
 
 DeviceCommand = Callable[[ChihirosDevice], Awaitable[None]]
 DosingDeviceCommand = Callable[[ChihirosDosingPump], Awaitable[None]]
 StirrerDeviceCommand = Callable[[ChihirosMagStirrer], Awaitable[None]]
+HeaterDeviceCommand = Callable[[ChihirosHeater], Awaitable[None]]
 
 
 def _run_device_func(device_address: str, command: DeviceCommand) -> None:
@@ -55,6 +65,18 @@ def _run_stirrer_func(device_address: str, command: StirrerDeviceCommand) -> Non
         dev = await get_device_from_address(device_address)
         if not isinstance(dev, ChihirosMagStirrer):
             raise typer.BadParameter(f"{dev.name} is not a magnetic stirrer")
+        await command(dev)
+
+    asyncio.run(_async_func())
+
+
+def _run_heater_func(device_address: str, command: HeaterDeviceCommand) -> None:
+    """Run a heater-only command, rejecting every other device."""
+
+    async def _async_func() -> None:
+        dev = await get_device_from_address(device_address)
+        if not isinstance(dev, ChihirosHeater):
+            raise typer.BadParameter(f"{dev.name} is not a heater")
         await command(dev)
 
     asyncio.run(_async_func())
@@ -424,6 +446,117 @@ def stirrer_schedule(
         device_address,
         lambda dev: dev.set_stir_schedule(channel - 1, work_points, frequency=frequency, active=not disable),
     )
+
+
+def _parse_temperature_unit(value: str) -> bool:
+    """Parse a heater display unit as Celsius (``c``) or Fahrenheit (``f``)."""
+    unit = value.lower()
+    if unit in {"c", "celsius"}:
+        return True
+    if unit in {"f", "fahrenheit"}:
+        return False
+    raise typer.BadParameter(f"Invalid unit {value!r}, expected c or f")
+
+
+TemperatureArgument = Annotated[float, typer.Argument(min=0, max=HEATER_MAX_TEMPERATURE_C)]
+PowerArgument = Annotated[int, typer.Argument(min=0, max=HEATER_MAX_POWER_WATTS)]
+
+
+@heater_app.command("temp")
+def heater_temp(device_address: str, temperature: TemperatureArgument) -> None:
+    """Set a heater's target temperature in °C and switch it to manual mode."""
+    _run_heater_func(device_address, lambda dev: dev.set_temperature(temperature))
+
+
+@heater_app.command("power")
+def heater_power(device_address: str, watts: PowerArgument) -> None:
+    """Set a heater's manual power in watts and switch it to manual mode."""
+    _run_heater_func(device_address, lambda dev: dev.set_power(watts))
+
+
+@heater_app.command("auto-defaults")
+def heater_auto_defaults(
+    device_address: str,
+    temperature: TemperatureArgument,
+    watts: PowerArgument,
+) -> None:
+    """Set the temperature and power the heater's auto schedules heat towards."""
+    _run_heater_func(device_address, lambda dev: dev.set_auto_defaults(temperature, watts))
+
+
+@heater_app.command("mode")
+def heater_mode(
+    device_address: str,
+    mode: Annotated[str, typer.Argument(help="manual, auto or scene")],
+) -> None:
+    """Switch a heater to manual mode, auto mode, or apply its stored scene."""
+    heater_commands: dict[str, HeaterDeviceCommand] = {
+        "manual": lambda dev: dev.set_temperature(dev.setting_temperature_celsius),
+        "auto": lambda dev: dev.set_auto_mode(),
+        "scene": lambda dev: dev.apply_scene(),
+    }
+    command = heater_commands.get(mode.lower())
+    if command is None:
+        raise typer.BadParameter(f"Invalid mode {mode!r}, expected manual, auto or scene")
+    _run_heater_func(device_address, command)
+
+
+@heater_app.command("auto-heating")
+def heater_auto_heating(
+    device_address: str,
+    enable: Annotated[bool, typer.Option("--enable/--disable")] = True,
+) -> None:
+    """Enable or disable the heating element while the heater runs in auto mode."""
+    _run_heater_func(device_address, lambda dev: dev.set_auto_heating(enable))
+
+
+@heater_app.command("unit")
+def heater_unit(
+    device_address: str,
+    unit: Annotated[str, typer.Argument(help="c or f")],
+) -> None:
+    """Set the unit a heater displays (°C or °F)."""
+    celsius = _parse_temperature_unit(unit)
+    _run_heater_func(device_address, lambda dev: dev.set_temperature_unit(celsius=celsius))
+
+
+@heater_app.command("protector")
+def heater_protector(device_address: str, temperature: TemperatureArgument) -> None:
+    """Set a heater's overheat protection temperature in °C."""
+    _run_heater_func(device_address, lambda dev: dev.set_protector_temperature(temperature))
+
+
+@heater_app.command("calibrate")
+def heater_calibrate(device_address: str, temperature: TemperatureArgument) -> None:
+    """Calibrate a heater's sensor against the measured reference temperature."""
+    _run_heater_func(device_address, lambda dev: dev.calibrate(temperature))
+
+
+@heater_app.command("reset-work-time")
+def heater_reset_work_time(device_address: str) -> None:
+    """Zero a heater's runtime counter after cleaning the heating tube."""
+    _run_heater_func(device_address, lambda dev: dev.reset_work_time())
+
+
+@heater_app.command("status")
+def heater_status(device_address: str) -> None:
+    """Query and print a heater's temperatures, runtime and alarms."""
+
+    async def command(dev: ChihirosHeater) -> None:
+        await dev.query_status()
+        current = dev.current_temperature_celsius
+        work_time = dev.work_time_hours
+        table = Table("Field", "Value")
+        table.add_row("Setting temperature", f"{dev.setting_temperature_celsius:.1f} °C")
+        table.add_row("Current temperature", f"{current:.1f} °C" if current is not None else "unknown")
+        table.add_row("Power", f"{dev.power_watts} W")
+        table.add_row("Protection temperature", f"{dev.protector_temperature_celsius:.1f} °C")
+        table.add_row("Runtime", f"{work_time} h" if work_time is not None else "unknown")
+        table.add_row("Alarms", ", ".join(dev.heater_alarms) or "none")
+        print(f"Status for {dev.name}:")
+        print(table)
+
+    _run_heater_func(device_address, command)
 
 
 if __name__ == "__main__":

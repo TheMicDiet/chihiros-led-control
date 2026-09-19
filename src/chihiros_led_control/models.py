@@ -24,6 +24,9 @@ class DeviceModel:
     # SeaLed devices encode 0x5A/0x06 auto-curve points as [channel, hour, minute, level];
     # BleLed/NewBleLed devices use [channel, 30-min-slot, level] instead.
     sea_led_family: bool = False
+    # Heaters (DYHET/DYH1T) speak the plain 0x5A command set with their own
+    # mode bytes and 0x5B notification layouts (no color channels).
+    is_heater: bool = False
 
 
 WHITE_CHANNELS = MappingProxyType({"white": 0})
@@ -34,6 +37,7 @@ WRGB_CHANNELS = MappingProxyType({"white": 3, "red": 0, "green": 1, "blue": 2})
 COMMANDER_CHANNELS = MappingProxyType({"red": 0, "green": 1, "blue": 2, "white": 3})
 X300_CHANNELS = MappingProxyType({"white": 0, "warm": 1})
 DOSING_CHANNELS = MappingProxyType({})
+HEATER_CHANNELS = MappingProxyType({})
 TINY_TERRARIUM_EGG_CHANNELS = MappingProxyType({"red": 0, "green": 1})
 Z_LIGHT_TINY_CHANNELS = MappingProxyType({"white": 0, "warm": 1})
 
@@ -45,6 +49,9 @@ DOSING_PUMP = DeviceModel("Dosing Pump", ("DYDOSE", "DYDOSED", "DYTDOS", "DYNDOS
 # The magnetic stirrer (DYMIXR) speaks the dosing-pump protocol; per the app's
 # device registry it persists as device_type "MagStirrer" with 8 channels.
 MAG_STIRRER = DeviceModel("Mag Stirrer", ("DYMIXR",), DOSING_CHANNELS)
+# The heater (DYHET, DYH1T) is a plain-BLE accessory with its own command modes
+# and 0x5B notification frames (chihiros_xapk/HEATER_CONTROL.md).
+HEATER = DeviceModel("Heater", ("DYHET", "DYH1T"), HEATER_CHANNELS, is_heater=True)
 
 SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     DeviceModel("Z Light TINY", ("DYSSD", "DYZSD"), Z_LIGHT_TINY_CHANNELS),
@@ -144,6 +151,7 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     DeviceModel("Commander 4", ("DYNLED",), WRGB_CHANNELS, sea_led_family=True),
     DOSING_PUMP,
     MAG_STIRRER,
+    HEATER,
 )
 
 GENERIC_MODELS_BY_DEVICE_TYPE = MappingProxyType(

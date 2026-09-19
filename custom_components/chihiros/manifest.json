@@ -135,6 +135,14 @@
       "connectable": true
     },
     {
+      "local_name": "DYHET*",
+      "connectable": true
+    },
+    {
+      "local_name": "DYH1T*",
+      "connectable": true
+    },
+    {
       "service_data_uuid": "6e400001-b5a3-f393-e0a9-e50e24dcca9e",
       "connectable": true
     }
@@ -148,5 +156,5 @@
   "iot_class": "assumed_state",
   "issue_tracker": "https://github.com/TheMicDiet/chihiros-led-control/issues",
   "requirements": [],
-  "version": "0.16.4"
+  "version": "0.17.0"
 }

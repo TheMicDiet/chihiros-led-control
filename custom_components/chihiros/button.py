@@ -1,4 +1,4 @@
-"""Dosing pump button controls."""
+"""Dosing pump and heater button controls."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import async_trigger_dose_ml
 from .const import DOMAIN
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
+from .heater import ChihirosHeaterResetWorkTimeButton, is_heater_capable
 from .models import ChihirosData
 from .runtime import ChihirosClient
 
@@ -20,16 +21,19 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up dosing pump buttons."""
+    """Set up dosing pump and heater buttons."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
-    if not chihiros_data.dosing_totals:
-        return
-
-    async_add_entities(
-        ChihirosDosingButton(chihiros_data.device, chihiros_data, pump_idx)
-        for pump_idx in range(chihiros_data.dosing_totals.pump_count)
-    )
-    async_add_entities([ChihirosCalibrationButton(chihiros_data)])
+    entities: list[ButtonEntity] = []
+    if chihiros_data.dosing_totals:
+        entities.extend(
+            ChihirosDosingButton(chihiros_data.device, chihiros_data, pump_idx)
+            for pump_idx in range(chihiros_data.dosing_totals.pump_count)
+        )
+        entities.append(ChihirosCalibrationButton(chihiros_data))
+    if is_heater_capable(chihiros_data.device):
+        entities.append(ChihirosHeaterResetWorkTimeButton(chihiros_data.coordinator, chihiros_data.device))
+    if entities:
+        async_add_entities(entities)
 
 
 class ChihirosDosingButton(ButtonEntity):

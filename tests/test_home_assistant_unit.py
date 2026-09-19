@@ -358,6 +358,22 @@ async def test_every_fake_device_accepts_brightness_writes() -> None:
         assert device.address == info.address
 
 
+@pytest.mark.asyncio
+async def test_fake_heater_device_reports_its_state() -> None:
+    """The development roster covers the heater, whose states arrive as notifications."""
+    by_code = {code: info for info in FAKE_DEVICES for code in info.model.advertised_codes}
+    assert by_code["DYHET"].model.is_heater
+    device = create_fake_device(by_code["DYHET"].address)
+
+    await device.query_status()
+
+    assert device.current_temperature_celsius is not None
+    assert device.work_time_hours == 120
+    assert device.heater_alarms == ()
+    await device.reset_work_time()
+    assert device.work_time_hours == 0
+
+
 def test_discovery_helpers_for_fake_device() -> None:
     """Fake discovery metadata maps cleanly to config entry data and labels."""
     discovery = ChihirosDiscovery.from_fake(FAKE_DEVICES[0])

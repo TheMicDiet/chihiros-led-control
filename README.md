@@ -23,6 +23,7 @@ This repository contains a python **CLI** script as well as a **Home Assistant i
 - Chihiros Commander 4
 - Chihiros Commander X
 - Chihiros dosing pump (`DYDOSE*`, `DYNDOS`) with first Home Assistant support for manual dosing, per-channel calibration, daily dose totals, and lifetime pump cycle/ml counters
+- Chihiros heater (`DYHET*`, `DYH1T*`) with target temperature, power, overheat-protection and calibration numbers, an auto-heating switch, a display-unit select, and current-temperature/runtime/alarm sensors
 - Chihiros magnetic stirrer (`DYMIXR*`) with per-channel stir switches, speed and pre-run numbers, timer schedule programming, and master/slave mirroring of a linked dosing pump
 - [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
 - Chihiros New C
@@ -224,6 +225,53 @@ addition to the raw `entry_id`/`address` fields, so they can be picked from
 the UI device selector. The "first setting of the day" flag is derived from
 the integration's programming record and no longer needs to be passed.
 
+### Heater (DYHET / DYH1T)
+
+Heaters expose the controls of the vendor app as ordinary entities:
+
+- **Temperature** (number, °C) — the target temperature; writing it switches
+  the heater to manual mode. The device reports it back, so the number follows
+  the heater whenever it is changed outside Home Assistant.
+- **Power** (number, W, 10 W steps) — the heating power. The device never
+  reports this, so the value is optimistic and restored across restarts.
+- **Protection temperature** (number, °C, configuration) — the overheat
+  protection limit (`setHeaterProtectedTemp`).
+- **Calibration temperature** (number, °C, configuration) — tell the heater
+  which temperature its sensor should currently read (from a reference
+  thermometer).
+- **Auto heating** (switch) — enables the heating element while the heater
+  runs an automatic scene.
+- **Temperature unit** (select) — what the heater's own display shows. Home
+  Assistant always shows temperatures in the unit system configured for your
+  instance, so this only affects the device itself.
+- **Current temperature**, **Heating runtime** and **Alarms** (sensors) — the
+  values the heater pushes. The alarm sensor's state lists the active alarms
+  (`ok` when there are none) and its attributes carry the raw bitfield.
+- **Reset runtime** (button) — zeroes the runtime counter after cleaning the
+  heating tube (the app warns to clean past ~1944 h).
+
+```yaml
+# heat to 26.5 °C (each write switches the heater to manual mode)
+service: number.set_value
+target:
+  entity_id: number.chihiros_heater_temperature
+data:
+  value: 26.5
+
+# limit the heating element to 800 W
+service: number.set_value
+target:
+  entity_id: number.chihiros_heater_power
+data:
+  value: 800
+```
+
+The `Alarms` sensor is the automation hook for the device's fault flags — its
+state is `ok` while no alarm is active, and otherwise lists the triggered
+alarms (`insufficient_water`, `power_too_low`, `water_overheat`,
+`needs_cleaning`, `exceeds_protection_temperature`, `heating_failure`,
+`sensor_failure`).
+
 ### Master/slave mirroring (pump → stirrer)
 
 The vendor app mirrors a linked stirrer by broadcasting the pump's programming
@@ -346,6 +394,19 @@ uv run chihirosctl stirrer <device-address> on 1 --seconds 300
 uv run chihirosctl stirrer <device-address> off 1
 uv run chihirosctl stirrer <device-address> speed 1 60 --pre-seconds 30
 uv run chihirosctl stirrer <device-address> schedule 1 08:00:10 20:30:5 --weekdays monday
+
+# heater: target temperature/power, mode, protection and maintenance
+uv run chihirosctl heater <device-address> temp 26.5
+uv run chihirosctl heater <device-address> power 800
+uv run chihirosctl heater <device-address> auto-defaults 24 1000
+uv run chihirosctl heater <device-address> auto-heating --disable
+uv run chihirosctl heater <device-address> unit f
+uv run chihirosctl heater <device-address> protector 37
+uv run chihirosctl heater <device-address> calibrate 26.0
+uv run chihirosctl heater <device-address> reset-work-time
+
+# read the heater's temperatures, runtime and alarms back
+uv run chihirosctl heater <device-address> status
 
 ```
 

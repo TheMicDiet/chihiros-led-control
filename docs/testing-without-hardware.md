@@ -18,6 +18,9 @@ The roster currently covers:
 - `DYNW60` WRGB II, `DYWPRO60` WRGB II Pro, `DYNA2` A II
 - `DYMIXR` magnetic stirrer (per-channel stir switches, speed/pre-run numbers,
   timer schedules)
+- `DYHET` heater (target temperature/power/protection numbers, auto-heating
+  switch, display-unit select, temperature/runtime/alarm sensors, and the
+  reset-runtime button)
 - The 2.8.59-aligned families: `DYA` A Series, `DYC` New C, `DYARGB`
   RGB+APLUS, `DYREE` RGB VIVID, `DYRGBV` RGB VIVID II, `DYSEA` SEA_LED,
   `DYONE` Commander X, `DYTWO` X300, `DYNLED` Commander 4

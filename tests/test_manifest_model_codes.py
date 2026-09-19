@@ -34,9 +34,9 @@ def test_manifest_bluetooth_matchers_follow_app_prefix_discovery() -> None:
 
     Home Assistant rejects local name matchers shorter than three literal
     characters, and the vendor app scans by `DY*` prefix. To avoid surfacing
-    unsupported Chihiros families (heaters, CO2 controllers, fans, gateways,
-    stirrers, power outlets) in discovery, the manifest pins one matcher per
-    supported family instead of using broad `DY?*` buckets.
+    unsupported Chihiros families (CO2 controllers, chillers, fans, gateways,
+    power outlets) in discovery, the manifest pins one matcher per supported
+    family instead of using broad `DY?*` buckets.
     """
     prefixes = _manifest_local_name_prefixes()
     expected = [
@@ -73,6 +73,8 @@ def test_manifest_bluetooth_matchers_follow_app_prefix_discovery() -> None:
         "DYTDOS",
         "DYNDOS",
         "DYMIXR",
+        "DYHET",
+        "DYH1T",
     ]
     assert prefixes == expected
     missing = [
@@ -90,8 +92,8 @@ def test_manifest_bluetooth_matchers_exclude_unsupported_families() -> None:
     Three prefixes are unavoidably matched because the supported single-letter
     family codes `DYA` and `DYC` require the `DYA*` / `DYC*` matchers:
     ``DYAPRCO2`` (CO2), ``DYCHIL`` (chiller) and ``DYCO2``. Every other known
-    unsupported family (fans, heaters, gateways, outlets, doctors,
-    unsupported lights) must not be matched.
+    unsupported family (fans, gateways, outlets, doctors, unsupported lights)
+    must not be matched.
     """
     prefixes = _manifest_local_name_prefixes()
     unavoidable = {"DYAPRCO2", "DYCHIL", "DYCO2"}
@@ -102,7 +104,6 @@ def test_manifest_bluetooth_matchers_exclude_unsupported_families() -> None:
         "DYECO",  # eco device
         "DYFAN",  # cooling fan
         "DYGATE",  # gateway
-        "DYHET",  # heater
         "DYPWR",  # power outlet
         "DYPWSK",  # power socket
         "DYNDOC",  # doctor

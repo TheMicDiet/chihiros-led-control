@@ -613,6 +613,57 @@ notifications.
 The app changes the speed of a running channel by stopping it, re-sending
 `(0xA5, 42)`, and restarting — speed is never sent standalone.
 
+### Heater (DYHET / DYH1T)
+
+The heater (`DYHET...` / `DYH1T...` names) is a plain-BLE accessory: it uses
+the standard `0x5a` framing with heater-specific modes, and pushes two `0x5b`
+notification frames. The vendor app's model persists a setting temperature, a
+power, an auto-heating flag, a display unit and an overheat protection
+temperature; only the temperatures, the runtime, the firmware and the alarm
+bitfield are read back from the device.
+
+| Command ID | Mode | Parameters | Meaning |
+| ---: | ---: | --- | --- |
+| `90` | `43` / `0x2b` | `[flag, temp_whole, temp_tenths, power]` | `setHeaterCode`: target temperature and power. `flag` is `0` for the manual setting (sent right after `switchToManual`) and `1` for the auto-mode defaults (`initAutoDefault`). Temperatures split as `round(temp * 10)` into whole/tenths (25.5 °C = `[25, 5]`) and power rides as watts ÷ 10 (800 W = `80`) |
+| `90` | `47` / `0x2f` | `[temp_whole, temp_tenths]` | `setHeaterProtectedTemp`: overheat protection limit |
+| `90` | `48` / `0x30` | `[temp_whole, temp_tenths]` | `setHeaterCalibrate`: measured reference temperature the sensor should read |
+| `90` | `5` | `[3, 255, 255]` | `switchToAuto` |
+| `90` | `5` | `[11, 255, 255]` | `switchToManual` (shared with the LED family) |
+| `90` | `5` | `[18, 255, 255]` | `switchToScene`: apply the stored scene/schedule |
+| `90` | `5` | `[5, 255, 255]` | `resetAuto` (shared with the LED family's reset-settings frame) |
+| `90` | `5` | `[46\|47, 255, 255]` | `setHeaterAuto`: auto heating on (46) / off (47) |
+| `90` | `5` | `[44\|45, 255, 255]` | `setTemType`: display Celsius (44) / Fahrenheit (45) |
+| `90` | `5` | `[58, 255, 255]` | `heaterResetWorkTime`: zero the runtime counter after cleaning |
+
+`setTemperature` and `setPower` both send `switchToManual` immediately followed
+by the mode-43 state frame in one 30 ms-paced batch, so the heater also enters
+manual mode when only one of the two values changes.
+
+Heater notifications use the legacy `0x5b` header:
+
+| Mode | Length | Layout | Meaning |
+| ---: | ---: | --- | --- |
+| `0x25` / `37` | 13 | `data[6..7]` = setting, `data[10..11]` = current | Temperatures as big-endian 16-bit tenths of a degree |
+| `0x0a` / `10` | 16 | `data[7..8]` = runtime hours, `data[11..12]` = firmware, `data[14]` = alarms | Runtime/alarm status. The mode byte is shared with the LED runtime frame, so the fixed 16-byte length is what tells the two apart |
+
+The alarm bitfield sets one bit per fault; the app tests bits 0-6:
+
+| Bit | Value | Meaning |
+| ---: | ---: | --- |
+| 0 | `0x01` | No water flow detected |
+| 1 | `0x02` | Power setting too low |
+| 2 | `0x04` | Exceeds safe set temperature |
+| 3 | `0x08` | Heater needs cleaning |
+| 4 | `0x10` | Exceeds safe protection temperature |
+| 5 | `0x20` | Heating device malfunction |
+| 6 | `0x40` | Sensor malfunction |
+
+The cleaning reminder is driven by the runtime counter rather than a bit: the
+app warns once `runtime_hours / 2160 > 0.9` (~1944 h) and offers
+`heaterResetWorkTime` after cleaning. The device never reports the power,
+auto-heating, unit or protection settings, so an integration has to track them
+itself.
+
 ## Decompiler Notes
 
 The Flutter app's central frame builder appears as

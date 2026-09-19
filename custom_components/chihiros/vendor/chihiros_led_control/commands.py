@@ -13,6 +13,20 @@ AUTO_SETTING_PARAMETER_COUNT = 14
 AUTO_SETTING_METADATA_PARAMETER_COUNT = 6
 DOSE_VOLUME_BUCKET_TENTHS_ML = 256
 
+# Heater (DYHET/DYH1T) wire values, reverse-engineered from My Chihiros 2.8.59
+# (``chihiros_xapk/HEATER_CONTROL.md``). Temperatures ride as the
+# ``[whole, tenths]`` byte pair of ``round(temp * 10)`` and power as watts ÷ 10,
+# which keeps the wire byte inside one byte across the app's range.
+HEATER_MAX_POWER_WATTS = 2000
+HEATER_MAX_TEMPERATURE_C = 100.0
+# Vendor-app model defaults (``ChihirosHeater::init``): 25.0 °C setting
+# temperature, 200 W manual power and a 37.0 °C overheat protector. The
+# disassembly stores Dart smis, i.e. half the raw immediates quoted in
+# ``HEATER_CONTROL.md`` §2.
+HEATER_DEFAULT_TEMPERATURE_C = 25.0
+HEATER_DEFAULT_POWER_WATTS = 200
+HEATER_DEFAULT_PROTECTOR_TEMPERATURE_C = 37.0
+
 # Dosing-pump wire limits (reverse-engineered from My Chihiros 2.8.59):
 # volumes ride in two bytes as 0.1 mL buckets (0..6553.5 mL) and the stirrer
 # clamps run times to 999 seconds (see chihiros_xapk/DOSING_CONTROL.md).
@@ -551,3 +565,102 @@ def create_vivid3_bluetooth_led_command(msg_id: tuple[int, int], enabled: bool) 
     payload byte 0 is 50 (on) or 49 (off).
     """
     return create_command_encoding(90, 5, msg_id, [0x32 if enabled else 0x31, 0xFF, 0xFF])
+
+
+def split_heater_temperature(temperature_c: float) -> tuple[int, int]:
+    """Encode a heater temperature as the wire ``[whole, tenths]`` byte pair.
+
+    The app's ``setHeaterCode``/``setHeaterProtectedTemp``/``setHeaterCalibrate``
+    payloads carry ``CommonTool.getInt``/``getDec`` of the model temperature,
+    i.e. ``round(temp * 10)`` split into its two decimal digits: 25.5 °C is
+    ``[25, 5]``.
+    """
+    if not 0 <= temperature_c <= HEATER_MAX_TEMPERATURE_C:
+        raise ValueError(f"Heater temperature must be between 0 and {HEATER_MAX_TEMPERATURE_C} °C")
+    return divmod(round(temperature_c * 10), 10)
+
+
+def encode_heater_power_watts(power_watts: int) -> int:
+    """Encode a heater power in watts as the wire byte (watts ÷ 10)."""
+    if not 0 <= power_watts <= HEATER_MAX_POWER_WATTS:
+        raise ValueError(f"Heater power must be between 0 and {HEATER_MAX_POWER_WATTS} watts")
+    return power_watts // 10
+
+
+def create_heater_set_command(
+    msg_id: tuple[int, int],
+    *,
+    auto: bool,
+    temperature_c: float,
+    power_watts: int,
+) -> bytearray:
+    """Create the app's ``setHeaterCode`` frame ``(0x5A, 43)``.
+
+    Payload ``[flag, temp_whole, temp_tenths, power]``; ``flag`` is 1 for the
+    auto-mode defaults (``initAutoDefault``) and 0 for the manual setting
+    (``initManual``, which the app sends right after ``switchToManual``).
+    """
+    whole, tenths = split_heater_temperature(temperature_c)
+    parameters = [1 if auto else 0, whole, tenths, encode_heater_power_watts(power_watts)]
+    return create_command_encoding(90, 43, msg_id, parameters, avoid_reserved_byte=False)
+
+
+def create_heater_auto_mode_command(msg_id: tuple[int, int]) -> bytearray:
+    """Create the heater's ``switchToAuto()`` frame ``(0x5A, 5, [3, 255, 255])``."""
+    return create_command_encoding(90, 5, msg_id, [3, 255, 255], avoid_reserved_byte=False)
+
+
+def create_heater_scene_command(msg_id: tuple[int, int]) -> bytearray:
+    """Create the heater's ``switchToScene()`` frame ``(0x5A, 5, [18, 255, 255])``.
+
+    Applies the stored scene/auto schedule; the app sends it 300 ms after
+    ``resetLedQuick`` when a scene is edited.
+    """
+    return create_command_encoding(90, 5, msg_id, [18, 255, 255], avoid_reserved_byte=False)
+
+
+def create_heater_auto_heating_command(msg_id: tuple[int, int], enabled: bool) -> bytearray:
+    """Create the app's ``setHeaterAuto`` frame ``(0x5A, 5, [46|47, 255, 255])``.
+
+    The boolean is passed through unchanged: auto heating on is sub-command 46
+    and off is 47.
+    """
+    return create_command_encoding(90, 5, msg_id, [46 if enabled else 47, 255, 255], avoid_reserved_byte=False)
+
+
+def create_heater_temperature_unit_command(msg_id: tuple[int, int], *, celsius: bool) -> bytearray:
+    """Create the app's ``setTemType`` frame ``(0x5A, 5, [44|45, 255, 255])``.
+
+    The boolean is passed through unchanged: Celsius is sub-command 44 and
+    Fahrenheit is 45.
+    """
+    return create_command_encoding(90, 5, msg_id, [44 if celsius else 45, 255, 255], avoid_reserved_byte=False)
+
+
+def create_heater_protector_temperature_command(msg_id: tuple[int, int], temperature_c: float) -> bytearray:
+    """Create the app's ``setHeaterProtectedTemp`` frame ``(0x5A, 47)``.
+
+    Payload is the ``[whole, tenths]`` temperature pair of the overheat
+    protection limit.
+    """
+    whole, tenths = split_heater_temperature(temperature_c)
+    return create_command_encoding(90, 47, msg_id, [whole, tenths], avoid_reserved_byte=False)
+
+
+def create_heater_calibrate_command(msg_id: tuple[int, int], measured_temperature_c: float) -> bytearray:
+    """Create the app's ``setHeaterCalibrate`` frame ``(0x5A, 48)``.
+
+    Payload is the ``[whole, tenths]`` pair of the measured reference
+    temperature the device should treat as current.
+    """
+    whole, tenths = split_heater_temperature(measured_temperature_c)
+    return create_command_encoding(90, 48, msg_id, [whole, tenths], avoid_reserved_byte=False)
+
+
+def create_heater_reset_work_time_command(msg_id: tuple[int, int]) -> bytearray:
+    """Create the app's ``heaterResetWorkTime`` frame ``(0x5A, 5, [58, 255, 255])``.
+
+    Sent after the user cleans the heating tube; it zeroes the runtime counter
+    that drives the cleaning warning.
+    """
+    return create_command_encoding(90, 5, msg_id, [58, 255, 255], avoid_reserved_byte=False)

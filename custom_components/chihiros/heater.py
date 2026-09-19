@@ -1,0 +1,373 @@
+"""Heater support: capability check and Home Assistant entities.
+
+The heater (``DYHET``/``DYH1T``) is a plain-BLE accessory that speaks the
+standard ``0x5A`` framing with its own mode bytes, and pushes two ``0x5B``
+notification frames (temperatures, runtime/alarms). It only reports its
+temperatures, runtime, firmware and alarms, so the power, auto-heating state,
+display unit and protection temperature are tracked optimistically and
+restored across Home Assistant restarts — the same way the vendor app
+persists them (``chihiros_xapk/HEATER_CONTROL.md``).
+"""
+
+from __future__ import annotations
+
+from typing import Any, cast
+
+from homeassistant.components.bluetooth.passive_update_coordinator import (
+    PassiveBluetoothCoordinatorEntity,
+)
+from homeassistant.components.button import ButtonEntity
+from homeassistant.components.number import NumberEntity, NumberMode
+from homeassistant.components.select import SelectEntity
+from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.switch import SwitchEntity
+from homeassistant.const import UnitOfTemperature
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.entity import EntityCategory
+from homeassistant.helpers.restore_state import RestoreEntity
+
+from .coordinator import (
+    ATTR_HEATER_ALARM_BITS,
+    ATTR_HEATER_ALARMS,
+    ATTR_HEATER_SETTING_TEMPERATURE_CELSIUS,
+    ChihirosDataUpdateCoordinator,
+)
+from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
+from .runtime import ChihirosClient, HeaterChihirosClient
+from .vendor.chihiros_led_control.commands import (
+    HEATER_MAX_POWER_WATTS,
+    HEATER_MAX_TEMPERATURE_C,
+)
+
+# The wire carries power as watts ÷ 10, so 10 W is the finest settable step.
+HEATER_POWER_STEP_WATTS = 10
+# Temperatures ride as [whole, tenths]; the app's picker moves in 0.5 °C steps.
+HEATER_TEMPERATURE_STEP_C = 0.5
+
+
+def is_heater_capable(device: object) -> bool:
+    """Return whether a runtime client or model is a Chihiros heater."""
+    model = getattr(device, "model", device)
+    return bool(getattr(model, "is_heater", False))
+
+
+def heater_client(device: object) -> HeaterChihirosClient:
+    """Return the device as a heater client, raising if it is not one."""
+    if not is_heater_capable(device):
+        raise HomeAssistantError(f"{getattr(device, 'name', device)} is not a heater")
+    return cast(HeaterChihirosClient, device)
+
+
+class ChihirosHeaterEntity(PassiveBluetoothCoordinatorEntity[ChihirosDataUpdateCoordinator]):
+    """Shared availability and naming for heater entities."""
+
+    _attr_should_poll = False
+
+    def __init__(
+        self,
+        coordinator: ChihirosDataUpdateCoordinator,
+        device: ChihirosClient,
+        unique_id_suffix: str,
+        name_suffix: str,
+    ) -> None:
+        """Initialize the heater entity."""
+        super().__init__(coordinator)
+        self._device = device
+        self._client = heater_client(device)
+        self._attr_name = chihiros_entity_name(device, name_suffix)
+        self._attr_unique_id = chihiros_unique_id(coordinator.address, unique_id_suffix)
+        self._attr_device_info = chihiros_device_info(device, coordinator.address)
+
+    @property
+    def available(self) -> bool:
+        """Return whether the device is reachable (or faked)."""
+        if self.coordinator.always_available:
+            return True
+        return super().available
+
+
+class ChihirosHeaterNumber(ChihirosHeaterEntity, NumberEntity, RestoreEntity):
+    """Base for the heater's setpoint numbers.
+
+    Numbers the device never reports (power, protection temperature,
+    calibration) show the last value written through Home Assistant, or the
+    value restored from the previous run. The target temperature prefers what
+    the device reports back, which outranks a value written through Home
+    Assistant as soon as it arrives.
+    """
+
+    _attr_mode = NumberMode.BOX
+    _attr_native_min_value = 0
+    _attr_native_max_value = HEATER_MAX_TEMPERATURE_C
+    _attr_native_step = HEATER_TEMPERATURE_STEP_C
+
+    def __init__(
+        self,
+        coordinator: ChihirosDataUpdateCoordinator,
+        device: ChihirosClient,
+        unique_id_suffix: str,
+        name_suffix: str,
+    ) -> None:
+        """Initialize the heater number."""
+        super().__init__(coordinator, device, unique_id_suffix, name_suffix)
+        self._restored_value: float | None = None
+        self._pending_value: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last value written through Home Assistant, without re-sending it."""
+        await super().async_added_to_hass()
+        if last_state := await self.async_get_last_state():
+            try:
+                value = float(last_state.state)
+            except ValueError:
+                return
+            if self.native_min_value <= value <= self.native_max_value:
+                self._restored_value = value
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the value written through Home Assistant or the device state."""
+        if self._pending_value is not None:
+            return self._pending_value
+        return self._fallback_value()
+
+    def _fallback_value(self) -> float | None:
+        """Return the value to show when Home Assistant has not written one."""
+        return self._restored_value
+
+    def _handle_coordinator_update(self) -> None:
+        """Prefer the device's own state over the value written through Home Assistant."""
+        self._pending_value = None
+        super()._handle_coordinator_update()
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Write the value to the device."""
+        try:
+            await self._async_write_value(value)
+        except Exception as ex:
+            raise HomeAssistantError(f"Failed to set {self._attr_name}") from ex
+        # Remember what was written: the device never reports the power,
+        # protection temperature or calibration, so this is their last known
+        # value, and it keeps a restored value from overriding a fresh write.
+        self._restored_value = value
+        self._pending_value = value
+        self.async_write_ha_state()
+
+    async def _async_write_value(self, value: float) -> None:
+        """Send one value to the device."""
+        raise NotImplementedError
+
+
+class ChihirosHeaterTemperatureNumber(ChihirosHeaterNumber):
+    """Target temperature the heater holds in manual mode."""
+
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+        """Initialize the target temperature number."""
+        super().__init__(coordinator, device, "heater_temperature", "Temperature")
+
+    def _fallback_value(self) -> float | None:
+        """Return the setting temperature the device reported, if any."""
+        return self.coordinator.data.get(ATTR_HEATER_SETTING_TEMPERATURE_CELSIUS)
+
+    async def _async_write_value(self, value: float) -> None:
+        """Set the target temperature (the client switches to manual mode)."""
+        await self._client.set_temperature(value)
+
+
+class ChihirosHeaterPowerNumber(ChihirosHeaterNumber):
+    """Manual power of the heating element."""
+
+    _attr_native_min_value = 0
+    _attr_native_max_value = HEATER_MAX_POWER_WATTS
+    _attr_native_step = HEATER_POWER_STEP_WATTS
+    _attr_native_unit_of_measurement = "W"
+
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+        """Initialize the power number."""
+        super().__init__(coordinator, device, "heater_power", "Power")
+
+    def _fallback_value(self) -> float | None:
+        """Return the restored power, or the client's tracked power."""
+        if self._restored_value is not None:
+            return self._restored_value
+        return float(self._client.power_watts)
+
+    async def _async_write_value(self, value: float) -> None:
+        """Set the manual power (the client switches to manual mode)."""
+        await self._client.set_power(int(value))
+
+
+class ChihirosHeaterProtectorNumber(ChihirosHeaterNumber):
+    """Overheat protection temperature."""
+
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+        """Initialize the protection temperature number."""
+        super().__init__(coordinator, device, "heater_protector_temperature", "Protection temperature")
+
+    def _fallback_value(self) -> float | None:
+        """Return the restored protection temperature, or the client's tracked value."""
+        if self._restored_value is not None:
+            return self._restored_value
+        return self._client.protector_temperature_celsius
+
+    async def _async_write_value(self, value: float) -> None:
+        """Set the overheat protection temperature."""
+        await self._client.set_protector_temperature(value)
+
+
+class ChihirosHeaterCalibrationNumber(ChihirosHeaterNumber):
+    """Reference temperature used to calibrate the heater's sensor.
+
+    Writing a value tells the device that its sensor should currently read
+    exactly that temperature; the value is therefore a record of the last
+    calibration, not a device state that is read back.
+    """
+
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:thermometer-check"
+
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+        """Initialize the calibration number."""
+        super().__init__(coordinator, device, "heater_calibration_temperature", "Calibration temperature")
+
+    async def _async_write_value(self, value: float) -> None:
+        """Calibrate the sensor against the measured reference temperature."""
+        await self._client.calibrate(value)
+
+
+class ChihirosHeaterAutoHeatingSwitch(ChihirosHeaterEntity, SwitchEntity, RestoreEntity):
+    """Switch the heater's automatic heating on or off.
+
+    The device does not report this setting, so its state is optimistic and
+    restored across restarts without being re-sent.
+    """
+
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+        """Initialize the auto-heating switch."""
+        super().__init__(coordinator, device, "heater_auto_heating", "Auto heating")
+        self._restored_state: bool | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last known auto-heating state."""
+        await super().async_added_to_hass()
+        if last_state := await self.async_get_last_state():
+            self._restored_state = last_state.state == "on"
+
+    @property
+    def is_on(self) -> bool:
+        """Return the auto-heating state."""
+        if self._restored_state is not None:
+            return self._restored_state
+        return self._client.auto_heating
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable automatic heating."""
+        await self._async_apply(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable automatic heating."""
+        await self._async_apply(False)
+
+    async def _async_apply(self, enabled: bool) -> None:
+        """Send the auto-heating state and update the optimistic state."""
+        try:
+            await self._client.set_auto_heating(enabled)
+        except Exception as ex:
+            raise HomeAssistantError(f"Failed to set {self._attr_name}") from ex
+        self._restored_state = enabled
+        self.async_write_ha_state()
+
+
+class ChihirosHeaterTemperatureUnitSelect(ChihirosHeaterEntity, SelectEntity, RestoreEntity):
+    """Unit the heater's own display shows.
+
+    Home Assistant converts temperatures to the unit system configured for the
+    instance, so this setting only changes what the device itself displays.
+    """
+
+    _attr_options = [UnitOfTemperature.CELSIUS, UnitOfTemperature.FAHRENHEIT]
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+        """Initialize the temperature unit select."""
+        super().__init__(coordinator, device, "heater_temperature_unit", "Temperature unit")
+        self._restored_option: str | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last known display unit."""
+        await super().async_added_to_hass()
+        if last_state := await self.async_get_last_state():
+            if last_state.state in self._attr_options:
+                self._restored_option = last_state.state
+
+    @property
+    def current_option(self) -> str:
+        """Return the unit the device displays."""
+        if self._restored_option is not None:
+            return self._restored_option
+        if self._client.is_celsius:
+            return UnitOfTemperature.CELSIUS
+        return UnitOfTemperature.FAHRENHEIT
+
+    async def async_select_option(self, option: str) -> None:
+        """Set the display unit."""
+        try:
+            await self._client.set_temperature_unit(celsius=option == UnitOfTemperature.CELSIUS)
+        except Exception as ex:
+            raise HomeAssistantError(f"Failed to set {self._attr_name}") from ex
+        self._restored_option = option
+        self.async_write_ha_state()
+
+
+class ChihirosHeaterResetWorkTimeButton(ChihirosHeaterEntity, ButtonEntity):
+    """Zero the heater's runtime counter after the heating tube is cleaned."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+        """Initialize the runtime reset button."""
+        super().__init__(coordinator, device, "heater_reset_work_time", "Reset runtime")
+
+    async def async_press(self) -> None:
+        """Reset the runtime counter."""
+        try:
+            await self._client.reset_work_time()
+        except Exception as ex:
+            raise HomeAssistantError(f"Failed to reset {self._attr_name}") from ex
+
+
+class ChihirosHeaterAlarmSensor(ChihirosHeaterEntity, SensorEntity):
+    """Active alarms reported by the heater's status frame.
+
+    The state lists the active alarm names; the raw bitfield and its labels
+    are exposed as attributes so automations can react to individual bits.
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:alert-outline"
+
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+        """Initialize the alarm sensor."""
+        super().__init__(coordinator, device, "heater_alarms", "Alarms")
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the active alarm names, or ``ok`` when the device reported none."""
+        alarms = self.coordinator.data.get(ATTR_HEATER_ALARMS)
+        if alarms is None:
+            return None
+        return ", ".join(alarms) if alarms else "ok"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return the raw alarm bitfield and the bit labels."""
+        alarm_bits = self.coordinator.data.get(ATTR_HEATER_ALARM_BITS)
+        if alarm_bits is None:
+            return None
+        return {"alarm_bits": alarm_bits, "alarms": list(self.coordinator.data.get(ATTR_HEATER_ALARMS, ()))}

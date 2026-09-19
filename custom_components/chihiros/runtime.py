@@ -76,6 +76,51 @@ class StirrerChihirosClient(Protocol):
         """Set the dose-delay flag mirrored from the master."""
 
 
+class HeaterChihirosClient(Protocol):
+    """Home Assistant-facing Chihiros heater client surface."""
+
+    @property
+    def setting_temperature_celsius(self) -> float:
+        """Return the last known target temperature."""
+
+    @property
+    def power_watts(self) -> int:
+        """Return the tracked manual power in watts."""
+
+    @property
+    def protector_temperature_celsius(self) -> float:
+        """Return the tracked overheat protection temperature."""
+
+    @property
+    def auto_heating(self) -> bool:
+        """Return whether auto heating is enabled."""
+
+    @property
+    def is_celsius(self) -> bool:
+        """Return whether the device displays Celsius (as opposed to Fahrenheit)."""
+
+    async def set_temperature(self, temperature_c: float) -> None:
+        """Set the target temperature and switch to manual mode."""
+
+    async def set_power(self, power_watts: int) -> None:
+        """Set the manual power in watts and switch to manual mode."""
+
+    async def set_auto_heating(self, enabled: bool) -> None:
+        """Enable or disable the heating element in auto mode."""
+
+    async def set_temperature_unit(self, *, celsius: bool) -> None:
+        """Set the device's display unit."""
+
+    async def set_protector_temperature(self, temperature_c: float) -> None:
+        """Set the overheat protection temperature."""
+
+    async def calibrate(self, measured_temperature_c: float) -> None:
+        """Calibrate the sensor against a measured reference temperature."""
+
+    async def reset_work_time(self) -> None:
+        """Zero the runtime counter that drives the cleaning warning."""
+
+
 class ChihirosClient(Protocol):
     """Home Assistant-facing device client surface."""
 

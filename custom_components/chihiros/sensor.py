@@ -16,7 +16,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import REVOLUTIONS_PER_MINUTE, UnitOfTemperature, UnitOfVolume
+from homeassistant.const import REVOLUTIONS_PER_MINUTE, UnitOfTemperature, UnitOfTime, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -30,12 +30,15 @@ from .coordinator import (
     ATTR_FAN_RPM,
     ATTR_FAN_TEMPERATURE_CELSIUS,
     ATTR_FIRMWARE_VERSION,
+    ATTR_HEATER_CURRENT_TEMPERATURE_CELSIUS,
+    ATTR_HEATER_WORK_TIME_HOURS,
     ATTR_LAST_NOTIFICATION,
     ATTR_SCHEDULE_POINTS,
     ChihirosDataUpdateCoordinator,
 )
 from .dosing import DosingCalibrationTracker, DosingDailyTotals
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
+from .heater import ChihirosHeaterAlarmSensor, is_heater_capable
 from .models import ChihirosData
 from .runtime import ChihirosClient
 
@@ -71,6 +74,24 @@ FAN_SENSOR_DESCRIPTIONS = (
         name="Temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
+    ),
+)
+
+HEATER_SENSOR_DESCRIPTIONS = (
+    SensorEntityDescription(
+        key=ATTR_HEATER_CURRENT_TEMPERATURE_CELSIUS,
+        name="Current temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SensorEntityDescription(
+        key=ATTR_HEATER_WORK_TIME_HOURS,
+        name="Heating runtime",
+        native_unit_of_measurement=UnitOfTime.HOURS,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=0,
     ),
@@ -119,17 +140,26 @@ async def async_setup_entry(
         )
         for description in SENSOR_DESCRIPTIONS
     )
+    async_add_entities(_accessory_sensors(chihiros_data))
+    hass.async_create_task(_async_request_initial_status(chihiros_data.coordinator))
+
+
+def _accessory_sensors(chihiros_data: ChihirosData) -> list[SensorEntity]:
+    """Build the fan and heater sensors of a device."""
+    coordinator = chihiros_data.coordinator
+    entities: list[SensorEntity] = []
     if chihiros_data.device.model.has_fan:
-        async_add_entities(
-            ChihirosNotificationSensor(
-                chihiros_data.coordinator,
-                chihiros_data.device,
-                description,
-                entity_category=None,
-            )
+        entities.extend(
+            ChihirosNotificationSensor(coordinator, chihiros_data.device, description, entity_category=None)
             for description in FAN_SENSOR_DESCRIPTIONS
         )
-    hass.async_create_task(_async_request_initial_status(chihiros_data.coordinator))
+    if is_heater_capable(chihiros_data.device):
+        entities.extend(
+            ChihirosNotificationSensor(coordinator, chihiros_data.device, description, entity_category=None)
+            for description in HEATER_SENSOR_DESCRIPTIONS
+        )
+        entities.append(ChihirosHeaterAlarmSensor(coordinator, chihiros_data.device))
+    return entities
 
 
 async def _async_request_initial_status(coordinator: ChihirosDataUpdateCoordinator) -> None:

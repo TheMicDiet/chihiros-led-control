@@ -30,14 +30,17 @@ from .const import (
     UART_TX_CHAR_UUID,
 )
 from .exceptions import CharacteristicMissingError
-from .models import FALLBACK, DeviceModel
+from .models import FALLBACK, HEATER, DeviceModel
 from .protocol import (
     DosingDailyNotification,
     DosingTotalsNotification,
     FanStatusNotification,
+    HeaterStatusNotification,
+    HeaterTemperatureNotification,
     ParsedNotification,
     RuntimeNotification,
     ScheduleSnapshotNotification,
+    heater_alarm_names,
     next_message_id,
     parse_notification,
 )
@@ -78,6 +81,16 @@ _LAST_NOTIFICATION_FIELDS: dict[type, tuple[str, str, tuple[str, ...]]] = {
         "last_dosing_daily_notification",
         "Dosing daily notification received; dose_use_in_day_ul=%s",
         ("dose_use_in_day_ul",),
+    ),
+    HeaterTemperatureNotification: (
+        "last_heater_temperature_notification",
+        "Heater temperature notification received; setting=%s current=%s",
+        ("setting_temperature_celsius", "current_temperature_celsius"),
+    ),
+    HeaterStatusNotification: (
+        "last_heater_status_notification",
+        "Heater status notification received; firmware=%s work_time_hours=%s alarms=0x%02x",
+        ("firmware_version", "work_time_hours", "alarms"),
     ),
 }
 
@@ -573,7 +586,7 @@ class ChihirosDevice:
 
     def _notification_handler(self, _sender: BleakGATTCharacteristic, data: bytearray) -> None:
         """Handle notification responses."""
-        parsed = parse_notification(data, self.model.color_channels)
+        parsed = parse_notification(data, self.model.color_channels, heater=self.model.is_heater)
         if parsed is None:
             self._logger.debug("%s: Notification received: %s", self.name, data.hex())
             return
@@ -1026,3 +1039,187 @@ class ChihirosMagStirrer(ChihirosDosingPump):
                 )
             )
         await self._send_command(commands_to_send, 3)
+
+
+class ChihirosHeater(ChihirosDevice):
+    """Concrete BLE client for a Chihiros heater (``DYHET``/``DYH1T``).
+
+    The heater reuses the plain-BLE framing (``0x5A``) with its own mode bytes:
+    mode 43 carries the manual or auto-default temperature and power, mode 5
+    sub-commands switch modes/unit and reset the runtime counter, and modes 47
+    and 48 configure the overheat protector and the temperature calibration.
+    Two ``0x5B`` notifications push the setting/current temperature and the
+    runtime/alarm status (``chihiros_xapk/HEATER_CONTROL.md``).
+
+    The device only reports the temperatures, its runtime and its alarms; the
+    power, auto-heating, unit and protector settings are write-only over BLE,
+    so they are tracked optimistically like the app's persisted model.
+    """
+
+    def __init__(
+        self,
+        ble_device: BLEDevice,
+        model: DeviceModel = HEATER,
+        advertisement_data: AdvertisementData | None = None,
+    ) -> None:
+        """Create a heater client."""
+        super().__init__(ble_device, model, advertisement_data)
+        self._setting_temperature = commands.HEATER_DEFAULT_TEMPERATURE_C
+        self._power_watts = commands.HEATER_DEFAULT_POWER_WATTS
+        self._protector_temperature = commands.HEATER_DEFAULT_PROTECTOR_TEMPERATURE_C
+        self._auto_heating = False
+        self._celsius = True
+        self.last_heater_temperature_notification: HeaterTemperatureNotification | None = None
+        self.last_heater_status_notification: HeaterStatusNotification | None = None
+
+    def _record_notification(self, parsed: ParsedNotification) -> None:
+        """Record a notification, folding the reported setting temperature in.
+
+        The device is authoritative for the target temperature the next
+        ``set_power`` has to resend, so a temperature frame updates the tracked
+        setting as well as the last-seen notification.
+        """
+        super()._record_notification(parsed)
+        if isinstance(parsed, HeaterTemperatureNotification):
+            self._setting_temperature = parsed.setting_temperature_celsius
+
+    @property
+    def setting_temperature_celsius(self) -> float:
+        """Return the last known target temperature."""
+        return self._setting_temperature
+
+    @property
+    def current_temperature_celsius(self) -> float | None:
+        """Return the measured temperature of the last temperature frame, if any."""
+        notification = self.last_heater_temperature_notification
+        return notification.current_temperature_celsius if notification else None
+
+    @property
+    def power_watts(self) -> int:
+        """Return the tracked manual power in watts."""
+        return self._power_watts
+
+    @property
+    def protector_temperature_celsius(self) -> float:
+        """Return the tracked overheat protection temperature."""
+        return self._protector_temperature
+
+    @property
+    def auto_heating(self) -> bool:
+        """Return whether auto heating is enabled."""
+        return self._auto_heating
+
+    @property
+    def is_celsius(self) -> bool:
+        """Return whether the device displays Celsius (as opposed to Fahrenheit)."""
+        return self._celsius
+
+    @property
+    def work_time_hours(self) -> int | None:
+        """Return the heating runtime since the last cleaning reset, if reported."""
+        notification = self.last_heater_status_notification
+        return notification.work_time_hours if notification else None
+
+    @property
+    def heater_alarms(self) -> tuple[str, ...]:
+        """Return the names of the alarms in the last status frame."""
+        notification = self.last_heater_status_notification
+        return heater_alarm_names(notification.alarms) if notification else ()
+
+    @property
+    def firmware_version(self) -> int | None:
+        """Return the firmware version of the last status frame, if any."""
+        notification = self.last_heater_status_notification
+        return notification.firmware_version if notification else None
+
+    async def set_temperature(self, temperature_c: float) -> None:
+        """Switch to manual mode and set the target temperature.
+
+        Mirrors the app's ``setTemperature`` → ``initManual`` sequence: one
+        paced batch with ``switchToManual`` followed by the state frame
+        carrying the currently tracked power.
+        """
+        await self._send_manual_state(temperature_c, self._power_watts)
+
+    async def set_power(self, power_watts: int) -> None:
+        """Switch to manual mode and set the power in watts.
+
+        Power is not part of the device's notifications, so the value is
+        tracked locally after a successful write.
+        """
+        await self._send_manual_state(self._setting_temperature, power_watts)
+
+    async def set_auto_defaults(self, temperature_c: float, power_watts: int) -> None:
+        """Set the auto-mode defaults the scene schedules heat towards.
+
+        Mirrors the app's ``initAutoDefault``, which sends ``setHeaterCode``
+        with flag 1 and no mode switch.
+        """
+        cmd = commands.create_heater_set_command(
+            self.get_next_msg_id(),
+            auto=True,
+            temperature_c=temperature_c,
+            power_watts=power_watts,
+        )
+        await self._send_command(cmd, 3)
+
+    async def set_auto_mode(self) -> None:
+        """Switch the heater to auto mode (app's ``switchToAuto``)."""
+        cmd = commands.create_heater_auto_mode_command(self.get_next_msg_id())
+        await self._send_command(cmd, 3)
+
+    async def apply_scene(self) -> None:
+        """Apply the stored scene/auto schedule (app's ``switchToScene``)."""
+        cmd = commands.create_heater_scene_command(self.get_next_msg_id())
+        await self._send_command(cmd, 3)
+
+    async def set_auto_heating(self, enabled: bool) -> None:
+        """Enable or disable the heating element in auto mode (app's ``setHeaterAuto``)."""
+        cmd = commands.create_heater_auto_heating_command(self.get_next_msg_id(), enabled)
+        await self._send_command(cmd, 3)
+        self._auto_heating = enabled
+
+    async def set_temperature_unit(self, *, celsius: bool) -> None:
+        """Set the device's display unit (app's ``switchTemperatureType``)."""
+        cmd = commands.create_heater_temperature_unit_command(self.get_next_msg_id(), celsius=celsius)
+        await self._send_command(cmd, 3)
+        self._celsius = celsius
+
+    async def set_protector_temperature(self, temperature_c: float) -> None:
+        """Set the overheat protection temperature (app's ``setProtectorTemperature``)."""
+        cmd = commands.create_heater_protector_temperature_command(self.get_next_msg_id(), temperature_c)
+        await self._send_command(cmd, 3)
+        self._protector_temperature = temperature_c
+
+    async def calibrate(self, measured_temperature_c: float) -> None:
+        """Calibrate the sensor against a measured reference temperature.
+
+        Mirrors the app's ``calibrate``: the measured value is sent as the
+        temperature the device should currently read.
+        """
+        cmd = commands.create_heater_calibrate_command(self.get_next_msg_id(), measured_temperature_c)
+        await self._send_command(cmd, 3)
+
+    async def reset_work_time(self) -> None:
+        """Zero the runtime counter that drives the cleaning warning.
+
+        Mirrors the app's ``resetWorkTime``, which is sent after the user
+        cleans the heating tube; the new status arrives as a notification.
+        """
+        cmd = commands.create_heater_reset_work_time_command(self.get_next_msg_id())
+        await self._send_command(cmd, 3)
+
+    async def _send_manual_state(self, temperature_c: float, power_watts: int) -> None:
+        """Send ``switchToManual`` plus the manual state frame in one batch."""
+        commands_to_send = [
+            commands.create_switch_to_manual_mode_command(self.get_next_msg_id()),
+            commands.create_heater_set_command(
+                self.get_next_msg_id(),
+                auto=False,
+                temperature_c=temperature_c,
+                power_watts=power_watts,
+            ),
+        ]
+        await self._send_command(commands_to_send, 3)
+        self._setting_temperature = temperature_c
+        self._power_watts = power_watts
