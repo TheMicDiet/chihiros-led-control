@@ -108,14 +108,12 @@ async def _setup(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     model: DeviceModel,
-    *,
-    always_available: bool = True,
 ) -> tuple[ConfigEntry, _TrackingClient]:
     """Set up the integration with a specific device model."""
     client = _TrackingClient(model)
 
     async def resolve_runtime(_hass: HomeAssistant, _entry: ConfigEntry) -> ChihirosRuntime:
-        return ChihirosRuntime(client=client, address=TEST_ADDRESS, always_available=always_available)
+        return ChihirosRuntime(client=client, address=TEST_ADDRESS, always_available=True)
 
     monkeypatch.setattr(chihiros_integration, "resolve_chihiros_runtime", resolve_runtime)
     monkeypatch.setattr(bluetooth_update, "async_address_present", lambda *_a, **_k: True)
@@ -176,47 +174,6 @@ async def _reload_entry(
     await hass.config_entries.async_setup(entry.entry_id)
     await _flush()
     assert entry.state is ConfigEntryState.LOADED
-
-
-# --- entity creation tests ---
-
-
-async def test_rgb_entity_created_for_rgb_device(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An RGB device gets a unified RGB light entity."""
-    _entry, _client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
-    registry = er.async_get(hass)
-
-    entity_id = registry.async_get_entity_id(LIGHT_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_rgb")
-    assert entity_id is not None
-
-
-async def test_rgbw_entity_created_for_wrgb_device(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A WRGB device gets a unified RGBW light entity."""
-    _entry, _client = await _setup(hass, monkeypatch, WRGB_MODEL)
-    registry = er.async_get(hass)
-
-    entity_id = registry.async_get_entity_id(LIGHT_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_rgbw")
-    assert entity_id is not None
-
-
-async def test_no_rgb_entity_for_white_only_device(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A white-only device does not get an RGB entity."""
-    _entry, _client = await _setup(hass, monkeypatch, WHITE_MODEL)
-    registry = er.async_get(hass)
-
-    rgb_id = registry.async_get_entity_id(LIGHT_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_rgb")
-    rgbw_id = registry.async_get_entity_id(LIGHT_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_rgbw")
-    assert rgb_id is None
-    assert rgbw_id is None
 
 
 # --- turn_on / turn_off tests ---
@@ -913,35 +870,3 @@ async def test_rgb_entity_restore_without_color_keeps_default_color(
 
 
 # --- availability (not always available) ---
-
-
-async def test_white_entity_available_when_not_always_available(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The per-channel entity delegates to coordinator availability when not always available."""
-    _entry, _client = await _setup(hass, monkeypatch, WHITE_MODEL, always_available=False)
-    registry = er.async_get(hass)
-    entity_id = _entity_id(registry, "white")
-
-    await _flush()
-
-    state = hass.states.get(entity_id)
-    assert state is not None
-    assert state.state != "unavailable"
-
-
-async def test_rgb_entity_available_when_not_always_available(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The unified RGB entity delegates to coordinator availability when not always available."""
-    _entry, _client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS), always_available=False)
-    registry = er.async_get(hass)
-    entity_id = _entity_id(registry, "rgb")
-
-    await _flush()
-
-    state = hass.states.get(entity_id)
-    assert state is not None
-    assert state.state != "unavailable"

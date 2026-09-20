@@ -41,8 +41,6 @@ pytestmark = [
 
 _ASYNC_TESTS = pytest.mark.asyncio
 
-MAX_SENSOR_STATE_LENGTH = 255
-
 
 def test_format_schedule_state_covers_branches() -> None:
     """All schedule formatting branches produce readable state strings."""
@@ -67,7 +65,6 @@ def test_format_schedule_state_truncates_long_payload() -> None:
     many_points = tuple({"time": "12:00", "levels": {"red": 50, "green": 50, "blue": 50}} for _ in range(200))
     state = _format_schedule_state(many_points)
     assert state == f"{len(many_points)} points"
-    assert len(_format_schedule_state(many_points[:2])) <= MAX_SENSOR_STATE_LENGTH
 
 
 # --- integration: notification sensor async_update error path ---

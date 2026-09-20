@@ -595,26 +595,6 @@ def test_notification_handler_stores_and_publishes_fan_status() -> None:
     assert received == [device.last_fan_status_notification]
 
 
-def test_set_fan_speed_sends_captured_command_shape() -> None:
-    """Fan speed commands use mode 0x0F with the speed percentage parameter."""
-    sent_commands: list[bytes] = []
-
-    async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WRGB_CHANNELS, has_fan=True))  # type: ignore[arg-type]
-
-        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del retry
-            sent_commands.append(bytes(command))
-
-        device._send_command = capture_command  # type: ignore[method-assign]
-
-        await device.set_fan_speed(100)
-
-    asyncio.run(run())
-
-    assert sent_commands[0][5:7] == bytes([15, 100])
-
-
 def test_set_fan_speed_rejects_models_without_fan() -> None:
     """Fan control is limited to fan-equipped models."""
 

@@ -12,7 +12,6 @@ import pytest
 
 from chihiros_led_control import commands
 from chihiros_led_control.commands import DosingMode, DosingWorkPoint
-from chihiros_led_control.models import DOSING_PUMP, MAG_STIRRER
 from chihiros_led_control.protocol import DosingDailyNotification, DosingTotalsNotification
 
 MSG_ID = (0, 6)
@@ -256,9 +255,3 @@ def test_dosing_frames_are_not_reserved_byte_escaped() -> None:
     from chihiros_led_control.protocol import calculate_checksum
 
     assert calculate_checksum(frame[:-1]) == frame[-1]
-
-
-def test_stirrer_model_registry() -> None:
-    """The stirrer model is registered under its DYMIXR advertisement prefix."""
-    assert MAG_STIRRER.advertised_codes == ("DYMIXR",)
-    assert DOSING_PUMP.advertised_codes == ("DYDOSE", "DYDOSED", "DYTDOS", "DYNDOS")

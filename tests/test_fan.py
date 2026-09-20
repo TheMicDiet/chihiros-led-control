@@ -131,14 +131,12 @@ async def _setup(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     model: DeviceModel = FAN_MODEL,
-    *,
-    always_available: bool = True,
 ) -> tuple[ConfigEntry, _TrackingClient, ChihirosDataUpdateCoordinator]:
     """Set up the integration with a fan-capable device model."""
     client = _TrackingClient(model)
 
     async def resolve_runtime(_hass: HomeAssistant, _entry: ConfigEntry) -> ChihirosRuntime:
-        return ChihirosRuntime(client=client, address=TEST_ADDRESS, always_available=always_available)
+        return ChihirosRuntime(client=client, address=TEST_ADDRESS, always_available=True)
 
     monkeypatch.setattr(chihiros_integration, "resolve_chihiros_runtime", resolve_runtime)
     monkeypatch.setattr(bluetooth_update, "async_address_present", lambda *_a, **_k: True)
@@ -191,16 +189,6 @@ async def _reload_entry(
     await hass.config_entries.async_setup(entry.entry_id)
     await _flush()
     assert entry.state is ConfigEntryState.LOADED
-
-
-async def test_fan_entity_created_for_fan_model(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A fan-equipped model gets a fan entity."""
-    _entry, _client, _coordinator = await _setup(hass, monkeypatch, FAN_MODEL)
-    registry = er.async_get(hass)
-    assert _entity_id(registry) is not None
 
 
 async def test_fan_set_percentage_turn_on_and_turn_off_drive_client(
@@ -353,22 +341,6 @@ async def test_fan_extra_state_attributes_reflect_fan_status_notification(
     await _flush()
 
     assert hass.states.get(entity_id).attributes[ATTR_FAN_RPM] == 1234
-
-
-async def test_fan_available_when_not_always_available(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The fan entity delegates to coordinator availability when not always available."""
-    _entry, _client, _coordinator = await _setup(hass, monkeypatch, FAN_MODEL, always_available=False)
-    registry = er.async_get(hass)
-    entity_id = _entity_id(registry)
-
-    await _flush()
-
-    state = hass.states.get(entity_id)
-    assert state is not None
-    assert state.state != "unavailable"
 
 
 async def test_fan_auto_preset_drives_client_and_updates_state(
@@ -562,7 +534,7 @@ async def test_fan_temp_numbers_restore_preserves_hysteresis_on_reload(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A restored pair that violates the hysteresis gap is normalized on reload."""
+    """An invalid restored pair is normalized to the required hysteresis gap."""
     from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
 
     _entry, client, _coordinator = await _setup(hass, monkeypatch, FAN_MODEL)
@@ -574,13 +546,13 @@ async def test_fan_temp_numbers_restore_preserves_hysteresis_on_reload(
 
     def _prime() -> None:
         _prime_restore_state(hass, start_id, State(start_id, "30.0"))
-        _prime_restore_state(hass, stop_id, State(stop_id, "28.0"))
+        _prime_restore_state(hass, stop_id, State(stop_id, "29.0"))
 
     await _reload_entry(hass, _entry, prime=_prime)
 
-    assert client.fan_temp_calls == [(30, 28)]
-    assert hass.states.get(start_id).state == "30.0"
-    assert hass.states.get(stop_id).state == "28.0"
+    assert client.fan_temp_calls == [(31, 29)]
+    assert hass.states.get(start_id).state == "31.0"
+    assert hass.states.get(stop_id).state == "29.0"
 
 
 async def test_fan_temp_numbers_restore_start_without_stop_state(

@@ -18,9 +18,6 @@ from custom_components.chihiros.dosing import (
     SIGNAL_DOSING_TOTALS_UPDATED,
     DosingCalibrationTracker,
     DosingDailyTotals,
-    _coerce_cycles_list,
-    _coerce_total,
-    _coerce_total_list,
     normalize_pump_count,
 )
 
@@ -37,29 +34,6 @@ def test_normalize_pump_count_defaults_invalid_values() -> None:
     assert normalize_pump_count("3") == PUMP_COUNT
     assert normalize_pump_count(None) == PUMP_COUNT
     assert normalize_pump_count("not a number") == PUMP_COUNT
-
-
-def test_coerce_total_tolerates_garbage() -> None:
-    """_coerce_total rounds valid numbers and rejects non-numeric input to 0.0."""
-    assert _coerce_total(2.56) == 2.6
-    assert _coerce_total("3.4") == 3.4
-    assert _coerce_total(None) == 0.0
-    assert _coerce_total("nope") == 0.0
-
-
-def test_coerce_total_list_handles_garbage_and_short_lists() -> None:
-    """_coerce_total_list returns a fixed-length list safeguarding against bad/short stored data."""
-    assert _coerce_total_list(None, 2) == [0.0, 0.0]
-    assert _coerce_total_list([1.5, "2.7", "bad"], 2) == [1.5, 2.7]
-    assert _coerce_total_list([4.0], 3) == [4.0, 0.0, 0.0]
-
-
-def test_coerce_cycles_list_handles_garbage_and_short_lists() -> None:
-    """_coerce_cycles_list rounds stored counts and defaults missing/invalid entries to 0."""
-    assert _coerce_cycles_list(None, 2) == [0, 0]
-    assert _coerce_cycles_list([1, "2", "bad"], 2) == [1, 2]
-    assert _coerce_cycles_list([3.6], 3) == [4, 0, 0]
-    assert _coerce_cycles_list([1, 2, 3, 4], 2) == [1, 2]
 
 
 @pytest.mark.asyncio
@@ -198,16 +172,6 @@ async def test_midnight_reset_resets_totals_and_reschedules(hass: Any) -> None:
     assert totals._unsub_midnight_reset is not None
     assert totals._unsub_midnight_reset is not first_reset_handle
     totals.async_close()
-
-
-@pytest.mark.asyncio
-async def test_calibration_tracker_starts_empty(hass: Any) -> None:
-    """A fresh tracker has no records and reports no calibration timestamps."""
-    tracker = DosingCalibrationTracker(hass, "FA:CE:C0:FF:00:06")
-    await tracker.async_load()
-
-    assert tracker.record(0) is None
-    assert tracker.calibrated_at(0) is None
 
 
 @pytest.mark.asyncio

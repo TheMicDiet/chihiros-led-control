@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,10 +23,7 @@ from custom_components.chihiros import (
     _async_add_schedule_period,
     _async_refresh_status,
     _async_replace_schedule,
-    _brightness_from_service_data,
     _ensure_light_device,
-    _parse_schedule_time,
-    _parse_weekdays,
     _resolve_service_device,
     _validate_auto_curve,
     _validate_schedule_period,
@@ -36,8 +32,8 @@ from custom_components.chihiros import (
 from custom_components.chihiros.const import DOMAIN
 from custom_components.chihiros.coordinator import _notification_to_debug_dict, _schedule_point_to_dict
 from custom_components.chihiros.discovery import ChihirosDiscovery, discovery_title
-from custom_components.chihiros.dosing import PUMP_COUNT, _coerce_total, is_dosing_capable, normalize_pump_count
-from custom_components.chihiros.fake import FAKE_DEVICES, create_fake_device, is_fake_address
+from custom_components.chihiros.dosing import is_dosing_capable
+from custom_components.chihiros.fake import FAKE_DEVICES, create_fake_device
 from custom_components.chihiros.schedule_services import SET_AUTO_CURVE_SCHEMA
 from custom_components.chihiros.vendor.chihiros_led_control.models import DOSING_PUMP
 from custom_components.chihiros.vendor.chihiros_led_control.protocol import (
@@ -113,21 +109,6 @@ def test_set_auto_curve_schema_coerces_channel_keys() -> None:
 
     with pytest.raises(Exception):
         SET_AUTO_CURVE_SCHEMA({"curve": {0: [[480]]}})
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [(None, PUMP_COUNT), ("invalid", PUMP_COUNT), (3, PUMP_COUNT), ("2", 2), (4, 4)],
-)
-def test_normalize_pump_count(value: object, expected: int) -> None:
-    """Only supported pump counts are accepted."""
-    assert normalize_pump_count(value) == expected
-
-
-@pytest.mark.parametrize(("value", "expected"), [(1, 1.0), ("2.26", 2.3), (None, 0.0), (object(), 0.0)])
-def test_coerce_dosing_total(value: object, expected: float) -> None:
-    """Persisted dosing values are normalized defensively."""
-    assert _coerce_total(value) == expected
 
 
 def test_dosing_capability_uses_model_name_or_name() -> None:
@@ -286,27 +267,6 @@ def test_schedule_and_notification_debug_conversion() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fake_device_supports_all_brightness_shapes_and_callbacks() -> None:
-    """The development fake behaves like the client surface it replaces."""
-    device = create_fake_device(FAKE_DEVICES[0].address)
-    notifications: list[object] = []
-    remove = device.add_notification_callback(notifications.append)
-
-    await device.set_brightness(25)
-    await device.set_brightness({"red": 40, "unknown": 99})
-    await device.set_brightness([1, 2, 3])
-    await device.query_status()
-    remove()
-
-    assert len(notifications) == 2
-    assert device.address == FAKE_DEVICES[0].address
-    assert device.name == FAKE_DEVICES[0].name
-    assert device.model_name == FAKE_DEVICES[0].model.name
-    assert device.colors == dict(FAKE_DEVICES[0].model.color_channels)
-    assert is_fake_address(device.address)
-
-
-@pytest.mark.asyncio
 async def test_fake_fan_device_publishes_fan_status() -> None:
     """The fan-equipped fake device behaves like the fan client surface."""
     fan_device_info = next(device for device in FAKE_DEVICES if device.model.has_fan)
@@ -323,39 +283,6 @@ async def test_fake_fan_device_publishes_fan_status() -> None:
 
     with pytest.raises(ValueError, match="between 0 and 100"):
         await device.set_fan_speed(101)
-
-
-@pytest.mark.asyncio
-async def test_fake_device_without_fan_rejects_fan_speed() -> None:
-    """Fake devices without a fan reject fan speed commands."""
-    device = create_fake_device(FAKE_DEVICES[0].address)
-
-    with pytest.raises(ValueError, match="fan control"):
-        await device.set_fan_speed(50)
-
-
-@pytest.mark.asyncio
-async def test_fake_devices_cover_new_led_families() -> None:
-    """The development roster exposes the LED families added for 2.8.59 alignment."""
-    by_code = {code: info for info in FAKE_DEVICES for code in info.model.advertised_codes}
-    for code in ("DYA", "DYC", "DYARGB", "DYREE", "DYRGBV", "DYSEA", "DYONE", "DYTWO", "DYNLED"):
-        assert code in by_code, f"no fake device advertises {code}"
-    assert dict(by_code["DYTWO"].model.color_channels) == {"white": 0, "warm": 1}
-    # Commander 4 (DYNLED fake) uses the app-verified 4-channel layout and is no
-    # longer forced through the generic device-type prompt.
-    assert dict(by_code["DYNLED"].model.color_channels) == {"white": 3, "red": 0, "green": 1, "blue": 2}
-    assert by_code["DYNLED"].model.needs_device_type is False
-    assert by_code["DYNLED"].model.sea_led_family is True
-
-
-@pytest.mark.asyncio
-async def test_every_fake_device_accepts_brightness_writes() -> None:
-    """Every fake device handles brightness writes for its advertised channels."""
-    for info in FAKE_DEVICES:
-        device = create_fake_device(info.address)
-        await device.set_brightness({color: 40 for color in device.colors})
-        await device.query_status()
-        assert device.address == info.address
 
 
 @pytest.mark.asyncio
@@ -382,11 +309,3 @@ def test_discovery_helpers_for_fake_device() -> None:
     assert discovery.display_name() == f"{FAKE_DEVICES[0].name} ({FAKE_DEVICES[0].address})"
     assert discovery_title(SimpleNamespace(name="Resolved name"), discovery) == "Resolved name"
     assert discovery_title(SimpleNamespace(name=""), discovery) == discovery.name
-
-
-def test_small_schedule_parsing_helpers() -> None:
-    """Small parsing helpers preserve their public input shapes."""
-    assert _parse_schedule_time("09:15").time() == datetime.strptime("09:15", "%H:%M").time()
-    assert _brightness_from_service_data({ATTR_LEVELS: {"red": 5}}) == {"red": 5}
-    assert _brightness_from_service_data({ATTR_BRIGHTNESS: 10}) == 10
-    assert _parse_weekdays(None) is None

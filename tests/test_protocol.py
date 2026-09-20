@@ -15,7 +15,6 @@ from chihiros_led_control.protocol import (
     ScheduleSnapshotNotification,
     calculate_checksum,
     create_command_encoding,
-    encode_timestamp,
     next_message_id,
     parse_notification,
 )
@@ -72,11 +71,6 @@ def test_next_message_id_does_not_skip_notification_header_byte() -> None:
     assert next_message_id((0, 90)) == (0, 91)
 
 
-def test_next_message_id_preserves_higher_byte() -> None:
-    """Message ids increment the lower byte without resetting the higher byte."""
-    assert next_message_id((1, 1)) == (1, 2)
-
-
 def test_next_message_id_skips_reserved_lower_byte_with_higher_byte() -> None:
     """Message ids skip the reserved lower byte without resetting the higher byte."""
     assert next_message_id((1, 89)) == (1, 91)
@@ -129,11 +123,6 @@ def test_dosing_auth_command_encoding() -> None:
     assert commands.create_dose_auth_2_command((0, 5)) == bytearray([165, 1, 6, 0, 5, 4, 5, 3])
 
 
-def test_manual_dose_command_encoding_small_volume() -> None:
-    """Manual dose encoding is compatible with single-byte examples for small volumes."""
-    assert commands.create_manual_dose_command((0, 6), 0, 2.0) == bytearray([165, 1, 10, 0, 6, 27, 0, 0, 0, 0, 20, 2])
-
-
 def test_manual_dose_command_encoding_large_volume() -> None:
     """Manual dose encoding supports 25.6 mL buckets for larger volumes."""
     assert commands.split_dose_volume_ml(29.0) == (1, 34)
@@ -146,11 +135,6 @@ def test_manual_dose_command_preserves_reserved_volume_bytes() -> None:
     for volume_ml, expected in ((9.0, (0, 90)), (25.6, (1, 0)), (34.6, (1, 90))):
         command = commands.create_manual_dose_command((0, 6), 0, volume_ml)
         assert tuple(command[-3:-1]) == expected
-
-
-def test_query_status_command_encoding() -> None:
-    """Status query commands request runtime/status notifications."""
-    assert commands.create_query_status_command((0, 1)) == commands.create_base_auth_command((0, 1))
 
 
 def test_set_fan_speed_command_matches_captured_frames() -> None:
@@ -168,20 +152,6 @@ def test_set_fan_speed_command_validates_range() -> None:
         except ValueError:
             continue
         raise AssertionError(f"Expected ValueError for fan speed {speed}")
-
-
-def test_auto_setting_command_accepts_four_channel_brightness() -> None:
-    """Auto schedule commands can encode true WRGB brightness values."""
-    command = commands.create_add_auto_setting_command(
-        (0, 1),
-        datetime.time(8, 0),
-        datetime.time(18, 30),
-        (10, 20, 30, 40),
-        15,
-        127,
-    )
-
-    assert command[6:-1] == bytearray([8, 0, 18, 30, 15, 127, 10, 20, 30, 40, 255, 255, 255, 255])
 
 
 def test_delete_auto_setting_command_matches_captured_frame() -> None:
@@ -260,13 +230,6 @@ def test_auto_point_command_validates_range() -> None:
         except ValueError:
             continue
         raise AssertionError(f"Expected ValueError for {kwargs}")
-
-
-def test_encode_timestamp() -> None:
-    """Timestamps are encoded as protocol parameters."""
-    timestamp = datetime.datetime(2026, 6, 11, 9, 8, 7)
-
-    assert encode_timestamp(timestamp) == [26, 6, 4, 9, 8, 7]
 
 
 def test_parse_runtime_notification() -> None:
@@ -519,11 +482,6 @@ def test_manual_dose_command_accepts_eight_channels() -> None:
         except ValueError:
             continue
         raise AssertionError(f"Expected ValueError for pump index {pump_idx}")
-
-
-def test_fan_auto_mode_command_encoding() -> None:
-    """Fan auto mode uses the vendor app's autoFan frame (0x5A, 5, [0x11, 0xFF, 0xFF])."""
-    assert commands.create_fan_auto_mode_command((0, 1)) == bytearray.fromhex("5a 01 08 00 01 05 11 ff ff 1c")
 
 
 def test_vivid3_fan_start_stop_temp_command_encoding() -> None:

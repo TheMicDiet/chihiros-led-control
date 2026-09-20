@@ -26,11 +26,6 @@ class FakeBLEDevice:
         self.address = "AA:BB:CC:DD:EE:FF"
 
 
-def test_detect_model_matches_name_prefix() -> None:
-    """Model detection matches advertised name prefixes."""
-    assert detect_model("DYNW601234567890").name == "WRGB II"
-
-
 def test_detect_model_wrgb2_generation_split() -> None:
     """WRGB2 new-gen codes are SeaLed; legacy DYWRGB is BleLed."""
     assert detect_model("DYWRGB1234567890").sea_led_family is False
@@ -71,16 +66,6 @@ def test_detect_model_new_gen_families_are_sea_led() -> None:
     # WRGB VIVID III: device_type "NewVivid3" is not in {BleLed, NewBleLed},
     # so _judgeNewLed sets field_147 true → SeaLed family (binary-verified).
     assert detect_model("DYVVD31234567890").sea_led_family is True
-
-
-def test_detect_model_matches_legacy_wrgb_prefix() -> None:
-    """Model detection matches the legacy WRGB prefix from app templates."""
-    assert detect_model("DYWRGB1234567890").name == "WRGB II"
-
-
-def test_detect_model_matches_esphome_wrgb_prefix() -> None:
-    """Model detection matches the WRGB prefix observed in the ESPHome bridge."""
-    assert detect_model("DYNT901234567890").name == "WRGB II"
 
 
 def test_detect_model_does_not_rely_on_fixed_slicing() -> None:

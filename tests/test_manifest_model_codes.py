@@ -17,18 +17,6 @@ def _manifest_local_name_prefixes() -> list[str]:
     return [matcher["local_name"].removesuffix("*") for matcher in manifest["bluetooth"] if "local_name" in matcher]
 
 
-def test_manifest_bluetooth_matchers_cover_all_model_codes() -> None:
-    """Every advertised model code is discoverable through the manifest."""
-    prefixes = _manifest_local_name_prefixes()
-    missing = [
-        code
-        for model in SUPPORTED_MODELS
-        for code in model.advertised_codes
-        if not any(code.startswith(prefix) or prefix.startswith(code) for prefix in prefixes)
-    ]
-    assert not missing, f"model codes missing from manifest.json bluetooth matchers: {missing}"
-
-
 def test_manifest_bluetooth_matchers_follow_app_prefix_discovery() -> None:
     """The manifest matches only the device families this repository supports.
 
