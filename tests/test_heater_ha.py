@@ -60,6 +60,9 @@ class _TrackingHeater:
         self.protector_calls: list[float] = []
         self.calibration_calls: list[float] = []
         self.auto_heating_calls: list[bool] = []
+        self.auto_default_calls: list[tuple[float, int]] = []
+        self.manual_mode_calls = 0
+        self.scene_calls = 0
         self.unit_calls: list[bool] = []
         self.backlight_calls: list[bool] = []
         self.reset_work_time_calls = 0
@@ -67,6 +70,8 @@ class _TrackingHeater:
         self._setting_temperature = 25.0
         self._power_watts = 200
         self._protector_temperature = 37.0
+        self._auto_default_temperature = 20.0
+        self._auto_default_power_watts = 500
         self._auto_heating = False
         self._celsius = True
         self._backlight = True
@@ -99,6 +104,14 @@ class _TrackingHeater:
     @property
     def protector_temperature_celsius(self) -> float:
         return self._protector_temperature
+
+    @property
+    def auto_default_temperature_celsius(self) -> float:
+        return self._auto_default_temperature
+
+    @property
+    def auto_default_power_watts(self) -> int:
+        return self._auto_default_power_watts
 
     @property
     def auto_heating(self) -> bool:
@@ -182,6 +195,31 @@ class _TrackingHeater:
         await self._write()
         self._auto_heating = enabled
         self.auto_heating_calls.append(enabled)
+
+    async def set_manual_mode(self) -> None:
+        """Record a switch to manual mode."""
+        await self._write()
+        self.manual_mode_calls += 1
+
+    async def apply_scene(self) -> None:
+        """Record an apply of the stored auto schedule."""
+        await self._write()
+        self.scene_calls += 1
+
+    async def set_auto_defaults(self, temperature_c: float, power_watts: int) -> None:
+        """Record an auto-mode default pair."""
+        await self._write()
+        self._auto_default_temperature = temperature_c
+        self._auto_default_power_watts = power_watts
+        self.auto_default_calls.append((temperature_c, power_watts))
+
+    async def set_auto_default_temperature(self, temperature_c: float) -> None:
+        """Record an auto default temperature write with the tracked power."""
+        await self.set_auto_defaults(temperature_c, self._auto_default_power_watts)
+
+    async def set_auto_default_power(self, power_watts: int) -> None:
+        """Record an auto default power write with the tracked temperature."""
+        await self.set_auto_defaults(self._auto_default_temperature, power_watts)
 
     async def set_temperature_unit(self, *, celsius: bool) -> None:
         """Record a display-unit write."""
@@ -277,11 +315,13 @@ async def test_heater_setup_creates_all_entities(hass: HomeAssistant, monkeypatc
     assert {
         "heater_temperature",
         "heater_power",
+        "heater_auto_temperature",
+        "heater_auto_power",
         "heater_protector_temperature",
         "heater_calibration_temperature",
     } <= registered[NUMBER_DOMAIN]
     assert {"heater_auto_heating", "heater_backlight"} <= registered[SWITCH_DOMAIN]
-    assert "heater_temperature_unit" in registered[SELECT_DOMAIN]
+    assert {"heater_mode", "heater_temperature_unit"} <= registered[SELECT_DOMAIN]
     assert {
         "heater_current_temperature_celsius",
         "heater_work_time_hours",
@@ -457,6 +497,105 @@ async def test_heater_unit_select_writes_client(hass: HomeAssistant, monkeypatch
     assert hass.states.get(entity_id).state == UnitOfTemperature.FAHRENHEIT
 
 
+async def test_heater_mode_select_writes_and_restores(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The mode select drives the mode frames and restores without rewriting."""
+    entry, client = await _setup_heater(hass, monkeypatch)
+    entity_id = _entity_id(hass, SELECT_DOMAIN, "heater_mode")
+    assert hass.states.get(entity_id).state == "manual"
+
+    await hass.services.async_call(
+        SELECT_DOMAIN,
+        "select_option",
+        {ATTR_ENTITY_ID: entity_id, "option": "auto"},
+        blocking=True,
+    )
+    await _flush()
+    assert client.scene_calls == 1
+    assert hass.states.get(entity_id).state == "auto"
+
+    await _reload_entry(
+        hass,
+        entry,
+        prime=lambda: _prime_restore_state(hass, entity_id, State(entity_id, "auto")),
+    )
+    assert hass.states.get(entity_id).state == "auto"
+    # Restoring must not silently rewrite the device.
+    assert client.scene_calls == 1
+
+    await hass.services.async_call(
+        SELECT_DOMAIN,
+        "select_option",
+        {ATTR_ENTITY_ID: entity_id, "option": "manual"},
+        blocking=True,
+    )
+    await _flush()
+    assert client.manual_mode_calls == 1
+    assert hass.states.get(entity_id).state == "manual"
+
+
+async def test_heater_manual_setpoint_returns_mode_to_manual(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Writing a manual setpoint leaves auto mode, because the state frame says so."""
+    _entry, client = await _setup_heater(hass, monkeypatch)
+    mode_id = _entity_id(hass, SELECT_DOMAIN, "heater_mode")
+
+    await hass.services.async_call(
+        SELECT_DOMAIN,
+        "select_option",
+        {ATTR_ENTITY_ID: mode_id, "option": "auto"},
+        blocking=True,
+    )
+    await _flush()
+    assert hass.states.get(mode_id).state == "auto"
+
+    await hass.services.async_call(
+        NUMBER_DOMAIN,
+        "set_value",
+        {ATTR_ENTITY_ID: _entity_id(hass, NUMBER_DOMAIN, "heater_power"), "value": 800},
+        blocking=True,
+    )
+    await _flush()
+
+    # The manual flag rides in the state frame, so no extra mode command is sent.
+    assert client.power_calls == [800]
+    assert client.manual_mode_calls == 0
+    assert hass.states.get(mode_id).state == "manual"
+
+
+async def test_heater_auto_default_numbers_write_the_pair(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each auto default number resends the sibling value the frame carries."""
+    _entry, client = await _setup_heater(hass, monkeypatch)
+    temperature_id = _entity_id(hass, NUMBER_DOMAIN, "heater_auto_temperature")
+    power_id = _entity_id(hass, NUMBER_DOMAIN, "heater_auto_power")
+
+    # The device never reports the pair, so the numbers show the app's defaults.
+    assert float(hass.states.get(temperature_id).state) == pytest.approx(20.0)
+    assert float(hass.states.get(power_id).state) == pytest.approx(500)
+
+    await hass.services.async_call(
+        NUMBER_DOMAIN,
+        "set_value",
+        {ATTR_ENTITY_ID: temperature_id, "value": 22.5},
+        blocking=True,
+    )
+    await hass.services.async_call(
+        NUMBER_DOMAIN,
+        "set_value",
+        {ATTR_ENTITY_ID: power_id, "value": 800},
+        blocking=True,
+    )
+    await _flush()
+
+    assert client.auto_default_calls == [(22.5, 500), (22.5, 800)]
+    assert float(hass.states.get(temperature_id).state) == pytest.approx(22.5)
+    assert float(hass.states.get(power_id).state) == pytest.approx(800)
+
+
 async def test_heater_calibration_and_protection_numbers(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
     """The protection and calibration numbers write their configured temperatures."""
     _entry, client = await _setup_heater(hass, monkeypatch)
@@ -573,3 +712,21 @@ async def test_fake_heater_device_exposes_working_entities(
     )
     await _flush()
     assert float(hass.states.get(runtime_id).state) == 0
+
+    # The mode select and the auto defaults drive a real client surface too.
+    await hass.services.async_call(
+        SELECT_DOMAIN,
+        "select_option",
+        {ATTR_ENTITY_ID: _entity_id(hass, SELECT_DOMAIN, "heater_mode"), "option": "auto"},
+        blocking=True,
+    )
+    await hass.services.async_call(
+        NUMBER_DOMAIN,
+        "set_value",
+        {ATTR_ENTITY_ID: _entity_id(hass, NUMBER_DOMAIN, "heater_auto_temperature"), "value": 21.0},
+        blocking=True,
+    )
+    await _flush()
+
+    assert hass.states.get(_entity_id(hass, SELECT_DOMAIN, "heater_mode")).state == "auto"
+    assert fake.auto_default_temperature_celsius == pytest.approx(21.0)

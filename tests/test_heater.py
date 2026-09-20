@@ -177,6 +177,7 @@ def test_scripted_heater_settings_commands(monkeypatch: pytest.MonkeyPatch) -> N
         device = _make_heater(transport)
         with transport.patch_establish_connection():
             await device.set_auto_defaults(24.0, 1000)
+            await device.set_manual_mode()
             await device.set_auto_mode()
             await device.apply_scene()
             await device.set_auto_heating(True)
@@ -190,6 +191,7 @@ def test_scripted_heater_settings_commands(monkeypatch: pytest.MonkeyPatch) -> N
 
         assert _sent_frames(transport) == [
             (43, [1, 24, 0, 100]),
+            (5, [11, 255, 255]),
             (5, [3, 255, 255]),
             (5, [18, 255, 255]),
             (5, [46, 255, 255]),
@@ -205,6 +207,27 @@ def test_scripted_heater_settings_commands(monkeypatch: pytest.MonkeyPatch) -> N
         assert device.is_celsius is False
         assert device.backlight is True
         assert device.protector_temperature_celsius == 37.0
+
+    asyncio.run(run())
+
+
+def test_scripted_heater_auto_defaults_track_the_pair(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-value auto-default writes resend the sibling from the app's defaults."""
+    transport = ScriptedTransport(name="DYHET-test")
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = _make_heater(transport)
+        with transport.patch_establish_connection():
+            await device.set_auto_default_temperature(22.5)
+            await device.set_auto_default_power(800)
+
+        assert _sent_frames(transport) == [
+            (43, [1, 22, 50, 50]),  # 22.5 °C at the app's 500 W default
+            (43, [1, 22, 50, 80]),  # the temperature is resent with the new power
+        ]
+        assert device.auto_default_temperature_celsius == pytest.approx(22.5)
+        assert device.auto_default_power_watts == 800
 
     asyncio.run(run())
 

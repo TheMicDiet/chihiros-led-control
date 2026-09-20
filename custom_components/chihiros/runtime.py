@@ -92,6 +92,14 @@ class HeaterChihirosClient(Protocol):
         """Return the tracked overheat protection temperature."""
 
     @property
+    def auto_default_temperature_celsius(self) -> float:
+        """Return the tracked auto-mode default temperature."""
+
+    @property
+    def auto_default_power_watts(self) -> int:
+        """Return the tracked auto-mode default power in watts."""
+
+    @property
     def auto_heating(self) -> bool:
         """Return whether auto heating is enabled."""
 
@@ -108,6 +116,18 @@ class HeaterChihirosClient(Protocol):
 
     async def set_power(self, power_watts: int) -> None:
         """Set the manual power in watts and switch to manual mode."""
+
+    async def set_manual_mode(self) -> None:
+        """Switch to manual mode without writing a setpoint."""
+
+    async def apply_scene(self) -> None:
+        """Apply the stored auto schedule."""
+
+    async def set_auto_default_temperature(self, temperature_c: float) -> None:
+        """Set the auto-mode default temperature, resending the tracked power."""
+
+    async def set_auto_default_power(self, power_watts: int) -> None:
+        """Set the auto-mode default power, resending the tracked temperature."""
 
     async def set_auto_heating(self, enabled: bool) -> None:
         """Enable or disable the heating element in auto mode."""

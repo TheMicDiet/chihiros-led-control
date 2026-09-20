@@ -10,6 +10,8 @@ from datetime import datetime
 
 from .dosing import normalize_pump_count
 from .vendor.chihiros_led_control.commands import (
+    HEATER_DEFAULT_AUTO_POWER_WATTS,
+    HEATER_DEFAULT_AUTO_TEMPERATURE_C,
     HEATER_DEFAULT_POWER_WATTS,
     HEATER_DEFAULT_PROTECTOR_TEMPERATURE_C,
     HEATER_DEFAULT_TEMPERATURE_C,
@@ -196,6 +198,8 @@ class FakeChihirosDevice:
         self._heater_current_c = HEATER_DEFAULT_TEMPERATURE_C - 1.0
         self._heater_power_watts = HEATER_DEFAULT_POWER_WATTS
         self._heater_protector_c = HEATER_DEFAULT_PROTECTOR_TEMPERATURE_C
+        self._heater_auto_temperature_c = HEATER_DEFAULT_AUTO_TEMPERATURE_C
+        self._heater_auto_power_watts = HEATER_DEFAULT_AUTO_POWER_WATTS
         self._heater_auto_heating = False
         self._heater_celsius = True
         self._heater_backlight = True
@@ -558,6 +562,25 @@ class FakeChihirosDevice:
         await asyncio.sleep(0)
         self._heater_power_watts = power_watts
 
+    async def apply_scene(self) -> None:
+        """Mark the fake device as running its stored auto schedule."""
+        await asyncio.sleep(0)
+        self._auto_mode = True
+
+    async def set_auto_defaults(self, temperature_c: float, power_watts: int) -> None:
+        """Store the fake auto-mode defaults (the device does not report them)."""
+        await asyncio.sleep(0)
+        self._heater_auto_temperature_c = temperature_c
+        self._heater_auto_power_watts = power_watts
+
+    async def set_auto_default_temperature(self, temperature_c: float) -> None:
+        """Store the fake auto default temperature, resending the tracked power."""
+        await self.set_auto_defaults(temperature_c, self._heater_auto_power_watts)
+
+    async def set_auto_default_power(self, power_watts: int) -> None:
+        """Store the fake auto default power, resending the tracked temperature."""
+        await self.set_auto_defaults(self._heater_auto_temperature_c, power_watts)
+
     async def set_auto_heating(self, enabled: bool) -> None:
         """Track the fake auto-heating state."""
         await asyncio.sleep(0)
@@ -609,6 +632,16 @@ class FakeChihirosDevice:
     def protector_temperature_celsius(self) -> float:
         """Return the fake overheat protection temperature."""
         return self._heater_protector_c
+
+    @property
+    def auto_default_temperature_celsius(self) -> float:
+        """Return the fake auto-mode default temperature."""
+        return self._heater_auto_temperature_c
+
+    @property
+    def auto_default_power_watts(self) -> int:
+        """Return the fake auto-mode default power."""
+        return self._heater_auto_power_watts
 
     @property
     def auto_heating(self) -> bool:

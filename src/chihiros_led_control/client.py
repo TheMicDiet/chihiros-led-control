@@ -1067,6 +1067,8 @@ class ChihirosHeater(ChihirosDevice):
         self._setting_temperature = commands.HEATER_DEFAULT_TEMPERATURE_C
         self._power_watts = commands.HEATER_DEFAULT_POWER_WATTS
         self._protector_temperature = commands.HEATER_DEFAULT_PROTECTOR_TEMPERATURE_C
+        self._auto_default_temperature = commands.HEATER_DEFAULT_AUTO_TEMPERATURE_C
+        self._auto_default_power_watts = commands.HEATER_DEFAULT_AUTO_POWER_WATTS
         self._auto_heating = False
         self._celsius = True
         self._backlight = True
@@ -1104,6 +1106,16 @@ class ChihirosHeater(ChihirosDevice):
     def protector_temperature_celsius(self) -> float:
         """Return the tracked overheat protection temperature."""
         return self._protector_temperature
+
+    @property
+    def auto_default_temperature_celsius(self) -> float:
+        """Return the tracked auto-mode default temperature."""
+        return self._auto_default_temperature
+
+    @property
+    def auto_default_power_watts(self) -> int:
+        """Return the tracked auto-mode default power in watts."""
+        return self._auto_default_power_watts
 
     @property
     def auto_heating(self) -> bool:
@@ -1159,7 +1171,9 @@ class ChihirosHeater(ChihirosDevice):
         """Set the auto-mode defaults the scene schedules heat towards.
 
         Mirrors the app's ``initAutoDefault``, which sends ``setHeaterCode``
-        with flag 1 and no mode switch.
+        with flag 1 and no mode switch. Both values are tracked after a
+        successful write, because the frame always carries the pair and the
+        device never reports it back.
         """
         cmd = commands.create_heater_set_command(
             self.get_next_msg_id(),
@@ -1168,6 +1182,16 @@ class ChihirosHeater(ChihirosDevice):
             power_watts=power_watts,
         )
         await self._send_command(cmd, 3)
+        self._auto_default_temperature = temperature_c
+        self._auto_default_power_watts = power_watts
+
+    async def set_auto_default_temperature(self, temperature_c: float) -> None:
+        """Set the auto-mode default temperature, resending the tracked power."""
+        await self.set_auto_defaults(temperature_c, self._auto_default_power_watts)
+
+    async def set_auto_default_power(self, power_watts: int) -> None:
+        """Set the auto-mode default power, resending the tracked temperature."""
+        await self.set_auto_defaults(self._auto_default_temperature, power_watts)
 
     async def set_auto_mode(self) -> None:
         """Switch the heater to auto mode (app's ``switchToAuto``)."""

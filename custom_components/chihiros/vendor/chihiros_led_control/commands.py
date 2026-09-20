@@ -26,6 +26,11 @@ HEATER_MAX_TEMPERATURE_C = 100.0
 HEATER_DEFAULT_TEMPERATURE_C = 25.0
 HEATER_DEFAULT_POWER_WATTS = 200
 HEATER_DEFAULT_PROTECTOR_TEMPERATURE_C = 37.0
+# The same model keeps the auto-mode defaults that ride in the mode-43 frame
+# with flag 1: the halved 40/1000 smis of §2, i.e. 20.0 °C at 500 W, matching
+# the captured ``initAutoDefault`` frame.
+HEATER_DEFAULT_AUTO_TEMPERATURE_C = 20.0
+HEATER_DEFAULT_AUTO_POWER_WATTS = 500
 # The display backlight toggle sends a uniform four-byte level plus a fixed
 # trailer; the app's own literals (and captured frames) use 100 for on and
 # 200 for off.

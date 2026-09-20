@@ -7,6 +7,13 @@ temperatures, runtime, firmware and alarms, so the power, auto-heating state,
 display unit and protection temperature are tracked optimistically and
 restored across Home Assistant restarts — the same way the vendor app
 persists them (``chihiros_xapk/HEATER_CONTROL.md``).
+
+The vendor app has two separate "auto" controls and so does this module: the
+mode switch (``switchToManual``/``switchToScene``) picks between the manual
+setpoints and the stored auto schedule, while the auto-heating switch
+(``setHeaterAuto``) only arms the heating element while the device runs in
+auto mode. Auto mode heats towards its own defaults (``initAutoDefault``), so
+the auto temperature and power numbers are separate from the manual ones.
 """
 
 from __future__ import annotations
@@ -30,6 +37,9 @@ from .coordinator import (
     ATTR_HEATER_ALARM_BITS,
     ATTR_HEATER_ALARMS,
     ATTR_HEATER_SETTING_TEMPERATURE_CELSIUS,
+    HEATER_MODE_AUTO,
+    HEATER_MODE_MANUAL,
+    HEATER_MODES,
     ChihirosDataUpdateCoordinator,
 )
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
@@ -174,6 +184,7 @@ class ChihirosHeaterTemperatureNumber(ChihirosHeaterNumber):
     async def _async_write_value(self, value: float) -> None:
         """Set the target temperature (the client switches to manual mode)."""
         await self._client.set_temperature(value)
+        self.coordinator.async_set_heater_mode(HEATER_MODE_MANUAL)
 
 
 class ChihirosHeaterPowerNumber(ChihirosHeaterNumber):
@@ -197,6 +208,57 @@ class ChihirosHeaterPowerNumber(ChihirosHeaterNumber):
     async def _async_write_value(self, value: float) -> None:
         """Set the manual power (the client switches to manual mode)."""
         await self._client.set_power(int(value))
+        self.coordinator.async_set_heater_mode(HEATER_MODE_MANUAL)
+
+
+class ChihirosHeaterAutoDefaultNumber(ChihirosHeaterNumber):
+    """Base for the setpoints the heater's auto schedules heat towards.
+
+    Auto mode ignores the manual temperature and power and uses this pair
+    instead, so the two are configured separately. The device never reports
+    them, and both always travel in one frame, which is why each number shows
+    the client's tracked pair and resends its sibling when written.
+    """
+
+    _attr_entity_category = EntityCategory.CONFIG
+
+
+class ChihirosHeaterAutoTemperatureNumber(ChihirosHeaterAutoDefaultNumber):
+    """Temperature auto mode heats towards."""
+
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+        """Initialize the auto default temperature number."""
+        super().__init__(coordinator, device, "heater_auto_temperature", "Auto temperature")
+
+    def _fallback_value(self) -> float | None:
+        """Return the client's tracked auto temperature."""
+        return self._client.auto_default_temperature_celsius
+
+    async def _async_write_value(self, value: float) -> None:
+        """Set the auto-mode default temperature."""
+        await self._client.set_auto_default_temperature(value)
+
+
+class ChihirosHeaterAutoPowerNumber(ChihirosHeaterAutoDefaultNumber):
+    """Power auto mode heats with."""
+
+    _attr_native_max_value = HEATER_MAX_POWER_WATTS
+    _attr_native_step = HEATER_POWER_STEP_WATTS
+    _attr_native_unit_of_measurement = "W"
+
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+        """Initialize the auto default power number."""
+        super().__init__(coordinator, device, "heater_auto_power", "Auto power")
+
+    def _fallback_value(self) -> float | None:
+        """Return the client's tracked auto power."""
+        return float(self._client.auto_default_power_watts)
+
+    async def _async_write_value(self, value: float) -> None:
+        """Set the auto-mode default power."""
+        await self._client.set_auto_default_power(int(value))
 
 
 class ChihirosHeaterProtectorNumber(ChihirosHeaterNumber):
@@ -315,6 +377,46 @@ class ChihirosHeaterBacklightSwitch(ChihirosHeaterOptimisticSwitch):
     async def _async_write(self, enabled: bool) -> None:
         """Turn the display backlight on or off."""
         await self._client.set_backlight(enabled)
+
+
+class ChihirosHeaterModeSelect(ChihirosHeaterEntity, SelectEntity, RestoreEntity):
+    """Mode the heater runs in: its manual setpoints or the stored schedule.
+
+    The mode frames carry no setpoint — switching modes never changes the
+    manual or auto temperature/power, which the four numbers own. The device
+    never reports its mode, so the selection is optimistic, restored across
+    restarts, and put back to manual whenever a manual setpoint is written
+    (the client sends ``switchToManual`` before every manual state frame).
+    """
+
+    _attr_options = list(HEATER_MODES)
+
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+        """Initialize the mode select."""
+        super().__init__(coordinator, device, "heater_mode", "Mode")
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last mode, which the device never reports back."""
+        await super().async_added_to_hass()
+        if last_state := await self.async_get_last_state():
+            if last_state.state in HEATER_MODES:
+                self.coordinator.async_set_heater_mode(last_state.state)
+
+    @property
+    def current_option(self) -> str:
+        """Return the mode the integration last drove or restored."""
+        return self.coordinator.heater_mode
+
+    async def async_select_option(self, option: str) -> None:
+        """Switch the heater to manual mode or apply its stored auto schedule."""
+        try:
+            if option == HEATER_MODE_AUTO:
+                await self._client.apply_scene()
+            else:
+                await self._client.set_manual_mode()
+        except Exception as ex:
+            raise HomeAssistantError(f"Failed to set {self._attr_name}") from ex
+        self.coordinator.async_set_heater_mode(option)
 
 
 class ChihirosHeaterTemperatureUnitSelect(ChihirosHeaterEntity, SelectEntity, RestoreEntity):

@@ -640,6 +640,16 @@ bitfield are read back from the device.
 by the mode-43 state frame in one 30 ms-paced batch, so the heater also enters
 manual mode when only one of the two values changes.
 
+Those three are separate controls rather than variants of one: `switchToAuto`
+and `switchToScene` choose the mode, while `setHeaterAuto` (`46`/`47`) only arms
+the heating element inside auto mode. No recorded app flow emits `switchToAuto`
+for a heater — scene edits and the state page use `switchToScene` followed by
+the flag-1 auto defaults — so the integration exposes `[18]` as its mode select
+and leaves `[3]` to the CLI (`heater mode auto`). The heater reports neither its
+mode nor its auto-heating state, so an integration tracks both itself and treats
+every manual state frame (mode-43 flag `0`, always preceded by
+`switchToManual`) as leaving auto mode.
+
 Heater notifications use the legacy `0x5b` header:
 
 | Mode | Length | Layout | Meaning |

@@ -18,6 +18,8 @@ from homeassistant.helpers.restore_state import async_get as async_get_restore_d
 from .const import DOMAIN
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .heater import (
+    ChihirosHeaterAutoPowerNumber,
+    ChihirosHeaterAutoTemperatureNumber,
     ChihirosHeaterCalibrationNumber,
     ChihirosHeaterPowerNumber,
     ChihirosHeaterProtectorNumber,
@@ -71,12 +73,14 @@ async def async_setup_entry(
 
 
 def _heater_numbers(chihiros_data: ChihirosData) -> list[NumberEntity]:
-    """Build the temperature, power, protection and calibration numbers for a heater."""
+    """Build the manual, auto and configuration numbers for a heater."""
     if not is_heater_capable(chihiros_data.device):
         return []
     return [
         ChihirosHeaterTemperatureNumber(chihiros_data.coordinator, chihiros_data.device),
         ChihirosHeaterPowerNumber(chihiros_data.coordinator, chihiros_data.device),
+        ChihirosHeaterAutoTemperatureNumber(chihiros_data.coordinator, chihiros_data.device),
+        ChihirosHeaterAutoPowerNumber(chihiros_data.coordinator, chihiros_data.device),
         ChihirosHeaterProtectorNumber(chihiros_data.coordinator, chihiros_data.device),
         ChihirosHeaterCalibrationNumber(chihiros_data.coordinator, chihiros_data.device),
     ]

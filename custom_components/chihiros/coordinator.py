@@ -43,6 +43,14 @@ ATTR_HEATER_WORK_TIME_HOURS = "heater_work_time_hours"
 ATTR_HEATER_ALARMS = "heater_alarms"
 ATTR_HEATER_ALARM_BITS = "heater_alarm_bits"
 
+# The heater's mode is write-only — the device never reports whether it runs
+# its manual setpoints or the stored auto schedule — so the integration tracks
+# it and the entities restore it across restarts. ``manual`` matches the mode
+# a fresh client assumes: its tracked temperature and power are the manual ones.
+HEATER_MODE_MANUAL = "manual"
+HEATER_MODE_AUTO = "auto"
+HEATER_MODES: tuple[str, ...] = (HEATER_MODE_MANUAL, HEATER_MODE_AUTO)
+
 
 class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
     """Coordinator that tracks passive Bluetooth availability events."""
@@ -59,6 +67,7 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         self.data: dict[str, Any] = {}
         self._device_address = address
         self._auto_mode = False
+        self._heater_mode = HEATER_MODE_MANUAL
         self._closed = False
         self.always_available = always_available
         self._remove_notification_callback = client.add_notification_callback(self._queue_notification)
@@ -81,6 +90,21 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         if self._auto_mode == enabled:
             return
         self._auto_mode = enabled
+        self.async_update_listeners()
+
+    @property
+    def heater_mode(self) -> str:
+        """Return the heater mode the integration last wrote or restored."""
+        return self._heater_mode
+
+    @callback
+    def async_set_heater_mode(self, heater_mode: str) -> None:
+        """Update the tracked heater mode and notify entities."""
+        if heater_mode not in HEATER_MODES:
+            raise ValueError(f"Unknown heater mode: {heater_mode}")
+        if self._heater_mode == heater_mode:
+            return
+        self._heater_mode = heater_mode
         self.async_update_listeners()
 
     async def async_request_status(self) -> None:

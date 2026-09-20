@@ -229,18 +229,23 @@ the integration's programming record and no longer needs to be passed.
 
 Heaters expose the controls of the vendor app as ordinary entities:
 
-- **Temperature** (number, °C) — the target temperature; writing it switches
-  the heater to manual mode. The device reports it back, so the number follows
-  the heater whenever it is changed outside Home Assistant.
-- **Power** (number, W, 10 W steps) — the heating power. The device never
+- **Temperature** (number, °C) — the manual target temperature; writing it
+  switches the heater to manual mode. The device reports it back, so the number
+  follows the heater whenever it is changed outside Home Assistant.
+- **Power** (number, W, 10 W steps) — the manual heating power. The device never
   reports this, so the value is optimistic and restored across restarts.
+- **Auto temperature** / **Auto power** (numbers, °C/W, configuration) — the
+  setpoints auto mode heats towards (`initAutoDefault`). Auto mode ignores the
+  manual temperature and power above, so the pair is configured separately.
+- **Mode** (select: `manual`/`auto`) — `manual` runs the manual temperature and
+  power, `auto` applies the schedule stored on the device (`switchToScene`).
+- **Auto heating** (switch) — arms the heating element while the heater runs in
+  auto mode. This is *not* the mode switch; **Mode** is.
 - **Protection temperature** (number, °C, configuration) — the overheat
   protection limit (`setHeaterProtectedTemp`).
 - **Calibration temperature** (number, °C, configuration) — tell the heater
   which temperature its sensor should currently read (from a reference
   thermometer).
-- **Auto heating** (switch) — enables the heating element while the heater
-  runs an automatic scene.
 - **Backlight** (switch, configuration) — turns the heater's own display
   backlight on or off (the app's `deviceBacklight` toggle).
 - **Temperature unit** (select) — what the heater's own display shows. Home
@@ -251,6 +256,20 @@ Heaters expose the controls of the vendor app as ordinary entities:
   (`ok` when there are none) and its attributes carry the raw bitfield.
 - **Reset runtime** (button) — zeroes the runtime counter after cleaning the
   heating tube (the app warns to clean past ~1944 h).
+
+The app has two separate "auto" controls, and so does the integration. The
+**Mode** select is the mode switch (`switchToScene`/`switchToManual`); the
+**Auto heating** switch (`setHeaterAuto`) only decides whether the element is
+allowed to heat while auto mode runs. **Mode** uses the `switchToScene` frame
+the app itself sends for heaters; the app's other auto frame (`switchToAuto`) is
+available as `chihirosctl heater <address> mode auto`. The device reports
+neither mode nor auto-heating state, so both are optimistic and restored across
+restarts.
+
+Every manual write — the **Temperature** and **Power** numbers — sends
+`switchToManual` plus the manual state frame, exactly like the vendor app, so
+setting a manual value leaves auto mode and moves the **Mode** select back to
+`manual`.
 
 ```yaml
 # heat to 26.5 °C (each write switches the heater to manual mode)
@@ -266,6 +285,13 @@ target:
   entity_id: number.chihiros_heater_power
 data:
   value: 800
+
+# run the heater on the schedule stored on the device
+service: select.select_option
+target:
+  entity_id: select.chihiros_heater_mode
+data:
+  option: auto
 ```
 
 The `Alarms` sensor is the automation hook for the device's fault flags — its
@@ -401,6 +427,7 @@ uv run chihirosctl stirrer <device-address> schedule 1 08:00:10 20:30:5 --weekda
 uv run chihirosctl heater <device-address> temp 26.5
 uv run chihirosctl heater <device-address> power 800
 uv run chihirosctl heater <device-address> auto-defaults 24 1000
+uv run chihirosctl heater <device-address> mode auto
 uv run chihirosctl heater <device-address> auto-heating --disable
 uv run chihirosctl heater <device-address> backlight --disable
 uv run chihirosctl heater <device-address> unit f
