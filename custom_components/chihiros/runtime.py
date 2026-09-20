@@ -117,6 +117,9 @@ class HeaterChihirosClient(Protocol):
     async def set_power(self, power_watts: int) -> None:
         """Set the manual power in watts and switch to manual mode."""
 
+    async def set_manual_state(self, temperature_c: float, power_watts: int) -> None:
+        """Atomically set both manual values and switch to manual mode."""
+
     async def set_manual_mode(self) -> None:
         """Switch to manual mode without writing a setpoint."""
 
@@ -128,6 +131,18 @@ class HeaterChihirosClient(Protocol):
 
     async def set_auto_default_power(self, power_watts: int) -> None:
         """Set the auto-mode default power, resending the tracked temperature."""
+
+    def restore_setting_temperature(self, temperature_c: float) -> None:
+        """Restore tracked manual target temperature without writing to the device."""
+
+    def restore_manual_power(self, power_watts: int) -> None:
+        """Restore tracked manual power without writing to the device."""
+
+    def restore_auto_default_temperature(self, temperature_c: float) -> None:
+        """Restore tracked auto temperature without writing to the device."""
+
+    def restore_auto_default_power(self, power_watts: int) -> None:
+        """Restore tracked auto power without writing to the device."""
 
     async def set_auto_heating(self, enabled: bool) -> None:
         """Enable or disable the heating element in auto mode."""

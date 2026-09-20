@@ -68,6 +68,7 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         self._device_address = address
         self._auto_mode = False
         self._heater_mode = HEATER_MODE_MANUAL
+        self._heater_temperature_update_id = 0
         self._closed = False
         self.always_available = always_available
         self._remove_notification_callback = client.add_notification_callback(self._queue_notification)
@@ -96,6 +97,11 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
     def heater_mode(self) -> str:
         """Return the heater mode the integration last wrote or restored."""
         return self._heater_mode
+
+    @property
+    def heater_temperature_update_id(self) -> int:
+        """Return the sequence number of the latest heater temperature notification."""
+        return self._heater_temperature_update_id
 
     @callback
     def async_set_heater_mode(self, heater_mode: str) -> None:
@@ -228,6 +234,7 @@ def _apply_heater_temperature_notification(
     coordinator: ChihirosDataUpdateCoordinator, notification: HeaterTemperatureNotification
 ) -> None:
     """Store heater temperature notification data."""
+    coordinator._heater_temperature_update_id += 1
     coordinator.data[ATTR_HEATER_SETTING_TEMPERATURE_CELSIUS] = notification.setting_temperature_celsius
     coordinator.data[ATTR_HEATER_CURRENT_TEMPERATURE_CELSIUS] = notification.current_temperature_celsius
     coordinator.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "heater_temperature")

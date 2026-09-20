@@ -19,6 +19,7 @@ from .commands import (
     HEATER_MAX_TEMPERATURE_C,
     DosingMode,
     DosingWorkPoint,
+    encode_heater_power_watts,
     stirrer_dosage_for_minutes,
 )
 from .factory import detect_model, get_device_from_address
@@ -462,16 +463,24 @@ TemperatureArgument = Annotated[float, typer.Argument(min=0, max=HEATER_MAX_TEMP
 PowerArgument = Annotated[int, typer.Argument(min=0, max=HEATER_MAX_POWER_WATTS)]
 
 
-@heater_app.command("temp")
-def heater_temp(device_address: str, temperature: TemperatureArgument) -> None:
-    """Set a heater's target temperature in °C and switch it to manual mode."""
-    _run_heater_func(device_address, lambda dev: dev.set_temperature(temperature))
+def _validate_heater_power(watts: int) -> int:
+    """Validate that heater power can be represented exactly on the wire."""
+    try:
+        encode_heater_power_watts(watts)
+    except ValueError as ex:
+        raise typer.BadParameter(str(ex)) from ex
+    return watts
 
 
-@heater_app.command("power")
-def heater_power(device_address: str, watts: PowerArgument) -> None:
-    """Set a heater's manual power in watts and switch it to manual mode."""
-    _run_heater_func(device_address, lambda dev: dev.set_power(watts))
+@heater_app.command("manual-set")
+def heater_manual_set(
+    device_address: str,
+    temperature: TemperatureArgument,
+    watts: PowerArgument,
+) -> None:
+    """Atomically set a heater's manual temperature and power."""
+    _validate_heater_power(watts)
+    _run_heater_func(device_address, lambda dev: dev.set_manual_state(temperature, watts))
 
 
 @heater_app.command("auto-defaults")
@@ -481,6 +490,7 @@ def heater_auto_defaults(
     watts: PowerArgument,
 ) -> None:
     """Set the temperature and power the heater's auto schedules heat towards."""
+    _validate_heater_power(watts)
     _run_heater_func(device_address, lambda dev: dev.set_auto_defaults(temperature, watts))
 
 
@@ -491,7 +501,7 @@ def heater_mode(
 ) -> None:
     """Switch a heater to manual mode, auto mode, or apply its stored scene."""
     heater_commands: dict[str, HeaterDeviceCommand] = {
-        "manual": lambda dev: dev.set_temperature(dev.setting_temperature_celsius),
+        "manual": lambda dev: dev.set_manual_mode(),
         "auto": lambda dev: dev.set_auto_mode(),
         "scene": lambda dev: dev.apply_scene(),
     }
@@ -553,15 +563,20 @@ def heater_status(device_address: str) -> None:
 
     async def command(dev: ChihirosHeater) -> None:
         await dev.query_status()
-        current = dev.current_temperature_celsius
-        work_time = dev.work_time_hours
+        temperature = dev.last_heater_temperature_notification
+        status = dev.last_heater_status_notification
         table = Table("Field", "Value")
-        table.add_row("Setting temperature", f"{dev.setting_temperature_celsius:.1f} °C")
-        table.add_row("Current temperature", f"{current:.1f} °C" if current is not None else "unknown")
-        table.add_row("Power", f"{dev.power_watts} W")
-        table.add_row("Protection temperature", f"{dev.protector_temperature_celsius:.1f} °C")
-        table.add_row("Runtime", f"{work_time} h" if work_time is not None else "unknown")
-        table.add_row("Alarms", ", ".join(dev.heater_alarms) or "none")
+        table.add_row(
+            "Setting temperature",
+            f"{temperature.setting_temperature_celsius:.1f} °C" if temperature is not None else "unknown",
+        )
+        table.add_row(
+            "Current temperature",
+            f"{temperature.current_temperature_celsius:.1f} °C" if temperature is not None else "unknown",
+        )
+        table.add_row("Runtime", f"{status.work_time_hours} h" if status is not None else "unknown")
+        alarms = dev.heater_alarms
+        table.add_row("Alarms", ", ".join(alarms) if alarms else ("none" if status is not None else "unknown"))
         print(f"Status for {dev.name}:")
         print(table)
 

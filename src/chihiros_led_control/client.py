@@ -1157,7 +1157,7 @@ class ChihirosHeater(ChihirosDevice):
         paced batch with ``switchToManual`` followed by the state frame
         carrying the currently tracked power.
         """
-        await self._send_manual_state(temperature_c, self._power_watts)
+        await self.set_manual_state(temperature_c, self._power_watts)
 
     async def set_power(self, power_watts: int) -> None:
         """Switch to manual mode and set the power in watts.
@@ -1165,7 +1165,7 @@ class ChihirosHeater(ChihirosDevice):
         Power is not part of the device's notifications, so the value is
         tracked locally after a successful write.
         """
-        await self._send_manual_state(self._setting_temperature, power_watts)
+        await self.set_manual_state(self._setting_temperature, power_watts)
 
     async def set_auto_defaults(self, temperature_c: float, power_watts: int) -> None:
         """Set the auto-mode defaults the scene schedules heat towards.
@@ -1192,6 +1192,26 @@ class ChihirosHeater(ChihirosDevice):
     async def set_auto_default_power(self, power_watts: int) -> None:
         """Set the auto-mode default power, resending the tracked temperature."""
         await self.set_auto_defaults(self._auto_default_temperature, power_watts)
+
+    def restore_setting_temperature(self, temperature_c: float) -> None:
+        """Restore the tracked manual target temperature without writing to the device."""
+        commands.split_heater_temperature(temperature_c)
+        self._setting_temperature = temperature_c
+
+    def restore_manual_power(self, power_watts: int) -> None:
+        """Restore tracked manual power without writing to the device."""
+        commands.encode_heater_power_watts(power_watts)
+        self._power_watts = power_watts
+
+    def restore_auto_default_temperature(self, temperature_c: float) -> None:
+        """Restore the tracked auto temperature without writing to the device."""
+        commands.split_heater_temperature(temperature_c)
+        self._auto_default_temperature = temperature_c
+
+    def restore_auto_default_power(self, power_watts: int) -> None:
+        """Restore tracked auto power without writing to the device."""
+        commands.encode_heater_power_watts(power_watts)
+        self._auto_default_power_watts = power_watts
 
     async def set_auto_mode(self) -> None:
         """Switch the heater to auto mode (app's ``switchToAuto``)."""
@@ -1249,8 +1269,8 @@ class ChihirosHeater(ChihirosDevice):
         await self._send_command(cmd, 3)
         self._backlight = enabled
 
-    async def _send_manual_state(self, temperature_c: float, power_watts: int) -> None:
-        """Send ``switchToManual`` plus the manual state frame in one batch."""
+    async def set_manual_state(self, temperature_c: float, power_watts: int) -> None:
+        """Atomically set both manual values and switch the heater to manual mode."""
         commands_to_send = [
             commands.create_switch_to_manual_mode_command(self.get_next_msg_id()),
             commands.create_heater_set_command(

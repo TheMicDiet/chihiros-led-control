@@ -132,6 +132,10 @@ class ChihirosHeaterNumber(ChihirosHeaterEntity, NumberEntity, RestoreEntity):
             except ValueError:
                 return
             if self.native_min_value <= value <= self.native_max_value:
+                try:
+                    self._restore_client_value(value)
+                except ValueError:
+                    return
                 self._restored_value = value
 
     @property
@@ -145,22 +149,35 @@ class ChihirosHeaterNumber(ChihirosHeaterEntity, NumberEntity, RestoreEntity):
         """Return the value to show when Home Assistant has not written one."""
         return self._restored_value
 
+    def _restore_client_value(self, value: float) -> None:
+        """Restore a paired client value without writing to the device."""
+
     def _handle_coordinator_update(self) -> None:
-        """Prefer the device's own state over the value written through Home Assistant."""
-        self._pending_value = None
+        """Clear a pending value when this coordinator update supersedes it."""
+        if self._clear_pending_on_coordinator_update():
+            self._pending_value = None
         super()._handle_coordinator_update()
+
+    def _clear_pending_on_coordinator_update(self) -> bool:
+        """Return whether a coordinator update supersedes the pending value."""
+        return True
 
     async def async_set_native_value(self, value: float) -> None:
         """Write the value to the device."""
+        previous_pending_value = self._pending_value
+        self._pending_value = value
         try:
             await self._async_write_value(value)
         except Exception as ex:
+            if self._pending_value == value:
+                self._pending_value = previous_pending_value
             raise HomeAssistantError(f"Failed to set {self._attr_name}") from ex
         # Remember what was written: the device never reports the power,
         # protection temperature or calibration, so this is their last known
         # value, and it keeps a restored value from overriding a fresh write.
+        # Do not re-assert the pending value here: an authoritative notification
+        # may already have cleared it while the BLE write was in progress.
         self._restored_value = value
-        self._pending_value = value
         self.async_write_ha_state()
 
     async def _async_write_value(self, value: float) -> None:
@@ -176,10 +193,23 @@ class ChihirosHeaterTemperatureNumber(ChihirosHeaterNumber):
     def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
         """Initialize the target temperature number."""
         super().__init__(coordinator, device, "heater_temperature", "Temperature")
+        self._last_temperature_update_id = coordinator.heater_temperature_update_id
 
     def _fallback_value(self) -> float | None:
         """Return the setting temperature the device reported, if any."""
         return self.coordinator.data.get(ATTR_HEATER_SETTING_TEMPERATURE_CELSIUS)
+
+    def _restore_client_value(self, value: float) -> None:
+        """Restore the manual target temperature for future paired writes."""
+        self._client.restore_setting_temperature(value)
+
+    def _clear_pending_on_coordinator_update(self) -> bool:
+        """Clear only when a temperature notification reports authoritative state."""
+        update_id = self.coordinator.heater_temperature_update_id
+        if update_id == self._last_temperature_update_id:
+            return False
+        self._last_temperature_update_id = update_id
+        return True
 
     async def _async_write_value(self, value: float) -> None:
         """Set the target temperature (the client switches to manual mode)."""
@@ -204,6 +234,10 @@ class ChihirosHeaterPowerNumber(ChihirosHeaterNumber):
         if self._restored_value is not None:
             return self._restored_value
         return float(self._client.power_watts)
+
+    def _restore_client_value(self, value: float) -> None:
+        """Restore manual power for future paired writes."""
+        self._client.restore_manual_power(int(value))
 
     async def _async_write_value(self, value: float) -> None:
         """Set the manual power (the client switches to manual mode)."""
@@ -236,6 +270,10 @@ class ChihirosHeaterAutoTemperatureNumber(ChihirosHeaterAutoDefaultNumber):
         """Return the client's tracked auto temperature."""
         return self._client.auto_default_temperature_celsius
 
+    def _restore_client_value(self, value: float) -> None:
+        """Restore auto temperature for future paired writes."""
+        self._client.restore_auto_default_temperature(value)
+
     async def _async_write_value(self, value: float) -> None:
         """Set the auto-mode default temperature."""
         await self._client.set_auto_default_temperature(value)
@@ -255,6 +293,10 @@ class ChihirosHeaterAutoPowerNumber(ChihirosHeaterAutoDefaultNumber):
     def _fallback_value(self) -> float | None:
         """Return the client's tracked auto power."""
         return float(self._client.auto_default_power_watts)
+
+    def _restore_client_value(self, value: float) -> None:
+        """Restore auto power for future paired writes."""
+        self._client.restore_auto_default_power(int(value))
 
     async def _async_write_value(self, value: float) -> None:
         """Set the auto-mode default power."""

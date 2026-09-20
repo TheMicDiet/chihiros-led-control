@@ -95,6 +95,8 @@ def test_heater_temperature_and_power_encoding() -> None:
     assert split_heater_temperature(24.0) == (24, 0)
     assert split_heater_temperature(25.999) == (26, 0)
     assert encode_heater_power_watts(800) == 80
+    with pytest.raises(ValueError, match="divisible by 10"):
+        encode_heater_power_watts(805)
     with pytest.raises(ValueError, match="temperature"):
         split_heater_temperature(-1.0)
     with pytest.raises(ValueError, match="power"):
@@ -232,6 +234,36 @@ def test_scripted_heater_auto_defaults_track_the_pair(monkeypatch: pytest.Monkey
     asyncio.run(run())
 
 
+def test_restored_heater_pairs_drive_real_client_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restored write-only values replace fresh defaults without touching BLE."""
+    transport = ScriptedTransport(name="DYHET-test")
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = _make_heater(transport)
+        with transport.patch_establish_connection():
+            device.restore_setting_temperature(27.5)
+            device.restore_manual_power(800)
+            device.restore_auto_default_temperature(22.5)
+            device.restore_auto_default_power(900)
+            assert transport.connections == 0
+            assert transport.writes == []
+
+            await device.set_power(600)
+            await device.set_temperature(26.5)
+            await device.set_auto_default_temperature(23.0)
+
+        assert _sent_frames(transport) == [
+            (5, [11, 255, 255]),
+            (43, [0, 27, 50, 60]),
+            (5, [11, 255, 255]),
+            (43, [0, 26, 50, 60]),
+            (43, [1, 23, 0, 90]),
+        ]
+
+    asyncio.run(run())
+
+
 def test_scripted_heater_notifications_track_device_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """The two 0x5B heater frames populate the client's reported state."""
     transport = ScriptedTransport(name="DYHET-test")
@@ -296,7 +328,7 @@ def test_heater_notification_parsing_is_family_specific() -> None:
 
 
 def test_heater_validates_before_touching_the_device() -> None:
-    """Out-of-range settings are rejected before any frame reaches the transport."""
+    """Invalid settings are rejected before the client opens a BLE connection."""
     transport = ScriptedTransport(name="DYHET-test")
 
     async def run() -> None:
@@ -306,8 +338,13 @@ def test_heater_validates_before_touching_the_device() -> None:
                 await device.set_temperature(-5.0)
             with pytest.raises(ValueError, match="power"):
                 await device.set_power(3000)
+            with pytest.raises(ValueError, match="divisible by 10"):
+                await device.set_power(805)
+            with pytest.raises(ValueError, match="divisible by 10"):
+                await device.set_auto_defaults(20.0, 805)
             with pytest.raises(ValueError, match="temperature"):
                 await device.set_protector_temperature(200.0)
+        assert transport.connections == 0
         assert transport.writes == []
 
     asyncio.run(run())
@@ -327,8 +364,8 @@ def test_heater_cli_commands_drive_heater(monkeypatch: pytest.MonkeyPatch) -> No
         assert address == TEST_ADDRESS
         device = ChihirosHeater(FakeBLEDevice(), HEATER)  # type: ignore[arg-type]
         for name in (
-            "set_temperature",
-            "set_power",
+            "set_manual_state",
+            "set_manual_mode",
             "set_auto_defaults",
             "set_auto_mode",
             "apply_scene",
@@ -344,9 +381,9 @@ def test_heater_cli_commands_drive_heater(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
 
-    assert RUNNER.invoke(cli.app, ["heater", "temp", TEST_ADDRESS, "26.5"]).exit_code == 0
-    assert RUNNER.invoke(cli.app, ["heater", "power", TEST_ADDRESS, "800"]).exit_code == 0
+    assert RUNNER.invoke(cli.app, ["heater", "manual-set", TEST_ADDRESS, "26.5", "800"]).exit_code == 0
     assert RUNNER.invoke(cli.app, ["heater", "auto-defaults", TEST_ADDRESS, "24", "1000"]).exit_code == 0
+    assert RUNNER.invoke(cli.app, ["heater", "mode", TEST_ADDRESS, "manual"]).exit_code == 0
     assert RUNNER.invoke(cli.app, ["heater", "mode", TEST_ADDRESS, "auto"]).exit_code == 0
     assert RUNNER.invoke(cli.app, ["heater", "mode", TEST_ADDRESS, "scene"]).exit_code == 0
     assert RUNNER.invoke(cli.app, ["heater", "auto-heating", TEST_ADDRESS, "--disable"]).exit_code == 0
@@ -356,17 +393,67 @@ def test_heater_cli_commands_drive_heater(monkeypatch: pytest.MonkeyPatch) -> No
     assert RUNNER.invoke(cli.app, ["heater", "calibrate", TEST_ADDRESS, "25.5"]).exit_code == 0
     assert RUNNER.invoke(cli.app, ["heater", "reset-work-time", TEST_ADDRESS]).exit_code == 0
 
-    assert calls[0] == ("set_temperature", (26.5,), {})
-    assert calls[1] == ("set_power", (800,), {})
-    assert calls[2] == ("set_auto_defaults", (24.0, 1000), {})
-    assert calls[3] == ("set_auto_mode", (), {})
-    assert calls[4] == ("apply_scene", (), {})
-    assert calls[5] == ("set_auto_heating", (False,), {})
-    assert calls[6] == ("set_temperature_unit", (), {"celsius": False})
-    assert calls[7] == ("set_backlight", (False,), {})
-    assert calls[8] == ("set_protector_temperature", (37.0,), {})
-    assert calls[9] == ("calibrate", (25.5,), {})
-    assert calls[10] == ("reset_work_time", (), {})
+    assert calls == [
+        ("set_manual_state", (26.5, 800), {}),
+        ("set_auto_defaults", (24.0, 1000), {}),
+        ("set_manual_mode", (), {}),
+        ("set_auto_mode", (), {}),
+        ("apply_scene", (), {}),
+        ("set_auto_heating", (False,), {}),
+        ("set_temperature_unit", (), {"celsius": False}),
+        ("set_backlight", (False,), {}),
+        ("set_protector_temperature", (37.0,), {}),
+        ("calibrate", (25.5,), {}),
+        ("reset_work_time", (), {}),
+    ]
+
+
+def test_heater_cli_rejects_unrepresentable_power_before_device_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CLI power arguments that cannot reach the wire never start BLE resolution."""
+    resolutions = 0
+
+    async def get_device_from_address(_address: str) -> ChihirosDevice:
+        nonlocal resolutions
+        resolutions += 1
+        raise AssertionError("device resolution must not run")
+
+    monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
+
+    manual = RUNNER.invoke(cli.app, ["heater", "manual-set", TEST_ADDRESS, "26.5", "805"])
+    auto = RUNNER.invoke(cli.app, ["heater", "auto-defaults", TEST_ADDRESS, "20", "805"])
+
+    assert manual.exit_code != 0
+    assert auto.exit_code != 0
+    assert "divisible by 10" in manual.output
+    assert "divisible by 10" in auto.output
+    assert resolutions == 0
+
+
+def test_heater_cli_status_does_not_present_write_only_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Status omits power and protection values because the heater cannot report them."""
+
+    async def get_device_from_address(_address: str) -> ChihirosDevice:
+        device = ChihirosHeater(FakeBLEDevice(), HEATER)  # type: ignore[arg-type]
+
+        async def query_status() -> None:
+            return None
+
+        device.query_status = query_status  # type: ignore[method-assign]
+        return device
+
+    monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
+
+    result = RUNNER.invoke(cli.app, ["heater", "status", TEST_ADDRESS])
+
+    assert result.exit_code == 0
+    assert "Power" not in result.output
+    assert "Protection temperature" not in result.output
+    assert "Setting temperature" in result.output
+    assert "unknown" in result.output
 
 
 def test_heater_cli_commands_reject_other_devices(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -378,7 +465,7 @@ def test_heater_cli_commands_reject_other_devices(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
 
-    result = RUNNER.invoke(cli.app, ["heater", "temp", TEST_ADDRESS, "25"])
+    result = RUNNER.invoke(cli.app, ["heater", "manual-set", TEST_ADDRESS, "25", "200"])
 
     assert result.exit_code != 0
     assert "not a heater" in result.output

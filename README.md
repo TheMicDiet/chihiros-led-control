@@ -236,7 +236,8 @@ Heaters expose the controls of the vendor app as ordinary entities:
   reports this, so the value is optimistic and restored across restarts.
 - **Auto temperature** / **Auto power** (numbers, °C/W, configuration) — the
   setpoints auto mode heats towards (`initAutoDefault`). Auto mode ignores the
-  manual temperature and power above, so the pair is configured separately.
+  manual temperature and power above, so the pair is configured and restored
+  separately.
 - **Mode** (select: `manual`/`auto`) — `manual` runs the manual temperature and
   power, `auto` applies the schedule stored on the device (`switchToScene`).
 - **Auto heating** (switch) — arms the heating element while the heater runs in
@@ -262,7 +263,7 @@ The app has two separate "auto" controls, and so does the integration. The
 **Auto heating** switch (`setHeaterAuto`) only decides whether the element is
 allowed to heat while auto mode runs. **Mode** uses the `switchToScene` frame
 the app itself sends for heaters; the app's other auto frame (`switchToAuto`) is
-available as `chihirosctl heater <address> mode auto`. The device reports
+available as `chihirosctl heater mode <address> auto`. The device reports
 neither mode nor auto-heating state, so both are optimistic and restored across
 restarts.
 
@@ -423,20 +424,20 @@ uv run chihirosctl stirrer <device-address> off 1
 uv run chihirosctl stirrer <device-address> speed 1 60 --pre-seconds 30
 uv run chihirosctl stirrer <device-address> schedule 1 08:00:10 20:30:5 --weekdays monday
 
-# heater: target temperature/power, mode, protection and maintenance
-uv run chihirosctl heater <device-address> temp 26.5
-uv run chihirosctl heater <device-address> power 800
-uv run chihirosctl heater <device-address> auto-defaults 24 1000
-uv run chihirosctl heater <device-address> mode auto
-uv run chihirosctl heater <device-address> auto-heating --disable
-uv run chihirosctl heater <device-address> backlight --disable
-uv run chihirosctl heater <device-address> unit f
-uv run chihirosctl heater <device-address> protector 37
-uv run chihirosctl heater <device-address> calibrate 26.0
-uv run chihirosctl heater <device-address> reset-work-time
+# heater: set both manual values atomically because power cannot be read back
+uv run chihirosctl heater manual-set <device-address> 26.5 800
+uv run chihirosctl heater auto-defaults <device-address> 24 1000
+uv run chihirosctl heater mode <device-address> manual
+uv run chihirosctl heater mode <device-address> auto
+uv run chihirosctl heater auto-heating <device-address> --disable
+uv run chihirosctl heater backlight <device-address> --disable
+uv run chihirosctl heater unit <device-address> f
+uv run chihirosctl heater protector <device-address> 37
+uv run chihirosctl heater calibrate <device-address> 26.0
+uv run chihirosctl heater reset-work-time <device-address>
 
 # read the heater's temperatures, runtime and alarms back
-uv run chihirosctl heater <device-address> status
+uv run chihirosctl heater status <device-address>
 
 ```
 

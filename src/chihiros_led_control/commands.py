@@ -596,6 +596,8 @@ def encode_heater_power_watts(power_watts: int) -> int:
     """Encode a heater power in watts as the wire byte (watts ÷ 10)."""
     if not 0 <= power_watts <= HEATER_MAX_POWER_WATTS:
         raise ValueError(f"Heater power must be between 0 and {HEATER_MAX_POWER_WATTS} watts")
+    if power_watts % 10:
+        raise ValueError("Heater power must be divisible by 10 watts")
     return power_watts // 10
 
 

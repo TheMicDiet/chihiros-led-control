@@ -624,7 +624,7 @@ bitfield are read back from the device.
 
 | Command ID | Mode | Parameters | Meaning |
 | ---: | ---: | --- | --- |
-| `90` | `43` / `0x2b` | `[flag, temp_whole, temp_hundredths, power]` | `setHeaterCode`: target temperature and power. `flag` is `0` for the manual setting (sent right after `switchToManual`) and `1` for the auto-mode defaults (`initAutoDefault`). Temperatures split into whole degrees plus the fraction in **hundredths** (`CommonTool.getDec`, the same 2-digit convention as the dosing calibration volume: 36.9 °C = `[36, 90]`), and power rides as watts ÷ 10 (800 W = `80`) |
+| `90` | `43` / `0x2b` | `[flag, temp_whole, temp_hundredths, power]` | `setHeaterCode`: target temperature and power. `flag` is `0` for the manual setting (sent right after `switchToManual`) and `1` for the auto-mode defaults (`initAutoDefault`). Temperatures split into whole degrees plus the fraction in **hundredths** (`CommonTool.getDec`, the same 2-digit convention as the dosing calibration volume: 36.9 °C = `[36, 90]`), and power rides as exact 10 W increments (800 W = `80`); values not divisible by 10 cannot be represented |
 | `90` | `47` / `0x2f` | `[temp_whole, temp_hundredths]` | `setHeaterProtectedTemp`: overheat protection limit |
 | `90` | `48` / `0x30` | `[temp_whole, temp_hundredths]` | `setHeaterCalibrate`: measured reference temperature the sensor should read |
 | `165` | `56` / `0x38` | `[level, level, level, level, 127]` | `deviceBacklight`: display backlight on (`100`) / off (`200`); the app's backlight widget also writes the schedule (start/end hour and weekday mask) through this mode |

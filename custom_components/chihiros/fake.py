@@ -553,14 +553,18 @@ class FakeChihirosDevice:
 
     async def set_temperature(self, temperature_c: float) -> None:
         """Store the fake target temperature and echo it back as a notification."""
-        await asyncio.sleep(0)
-        self._heater_setting_c = temperature_c
-        self._push_heater_temperature()
+        await self.set_manual_state(temperature_c, self._heater_power_watts)
 
     async def set_power(self, power_watts: int) -> None:
         """Store the fake manual power (the device does not report it back)."""
+        await self.set_manual_state(self._heater_setting_c, power_watts)
+
+    async def set_manual_state(self, temperature_c: float, power_watts: int) -> None:
+        """Store both fake manual values and echo the reported temperature."""
         await asyncio.sleep(0)
+        self._heater_setting_c = temperature_c
         self._heater_power_watts = power_watts
+        self._push_heater_temperature()
 
     async def apply_scene(self) -> None:
         """Mark the fake device as running its stored auto schedule."""
@@ -580,6 +584,22 @@ class FakeChihirosDevice:
     async def set_auto_default_power(self, power_watts: int) -> None:
         """Store the fake auto default power, resending the tracked temperature."""
         await self.set_auto_defaults(self._heater_auto_temperature_c, power_watts)
+
+    def restore_setting_temperature(self, temperature_c: float) -> None:
+        """Restore fake manual target temperature without publishing a notification."""
+        self._heater_setting_c = temperature_c
+
+    def restore_manual_power(self, power_watts: int) -> None:
+        """Restore fake manual power without publishing a notification."""
+        self._heater_power_watts = power_watts
+
+    def restore_auto_default_temperature(self, temperature_c: float) -> None:
+        """Restore the fake auto temperature without publishing a notification."""
+        self._heater_auto_temperature_c = temperature_c
+
+    def restore_auto_default_power(self, power_watts: int) -> None:
+        """Restore fake auto power without publishing a notification."""
+        self._heater_auto_power_watts = power_watts
 
     async def set_auto_heating(self, enabled: bool) -> None:
         """Track the fake auto-heating state."""
