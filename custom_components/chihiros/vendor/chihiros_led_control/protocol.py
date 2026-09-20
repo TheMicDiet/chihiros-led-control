@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
 RESERVED_BYTE = 0x5A
 # Sequence bytes skip only 0x5A (the app's dataMaker.dart); 0x5B is the legacy
@@ -75,12 +76,68 @@ class DosingDailyNotification:
     raw: bytes = field(default=b"", compare=False)
 
 
+@dataclass(frozen=True)
+class HeaterTemperatureNotification:
+    """Temperatures pushed by a Chihiros heater.
+
+    Heaters notify with header 0x5B and mode 0x25. Both temperatures are
+    big-endian 16-bit tenths of a degree: the setting temperature at bytes
+    6..7 and the measured (current) temperature at bytes 10..11
+    (``chihiros_xapk/HEATER_CONTROL.md`` §4.1).
+    """
+
+    setting_temperature_celsius: float
+    current_temperature_celsius: float
+    raw: bytes = field(default=b"", compare=False)
+
+
+@dataclass(frozen=True)
+class HeaterStatusNotification:
+    """Runtime/alarm status pushed by a Chihiros heater.
+
+    Heaters notify with header 0x5B, mode 0x0A and a fixed 16-byte frame —
+    the mode byte is shared with the LED runtime frame, so the length is what
+    tells them apart. ``work_time_hours`` counts heating runtime since the last
+    cleaning reset (the app warns to clean past 2160 h) and ``alarms`` is the
+    raw ``data[14]`` bitfield (see :data:`HEATER_ALARM_BITS`)
+    (``chihiros_xapk/HEATER_CONTROL.md`` §4.2/§4.3).
+    """
+
+    firmware_version: int
+    work_time_hours: int
+    alarms: int
+    raw: bytes = field(default=b"", compare=False)
+
+
+# Heater alarm flags in status-frame byte 14, mapped to stable names. The app
+# tests bits 0-6 one by one; the mapping is live-verified against the vendor
+# app (``chihiros_xapk/HEATER_CONTROL.md`` §4.3).
+HEATER_ALARM_BITS: Mapping[str, int] = MappingProxyType(
+    {
+        "insufficient_water": 0x01,
+        "power_too_low": 0x02,
+        "water_overheat": 0x04,
+        "needs_cleaning": 0x08,
+        "exceeds_protection_temperature": 0x10,
+        "heating_failure": 0x20,
+        "sensor_failure": 0x40,
+    }
+)
+
+
+def heater_alarm_names(alarms: int) -> tuple[str, ...]:
+    """Return the names of the alarm flags set in a heater status bitfield."""
+    return tuple(name for name, bit in HEATER_ALARM_BITS.items() if alarms & bit)
+
+
 ParsedNotification = (
     RuntimeNotification
     | FanStatusNotification
     | ScheduleSnapshotNotification
     | DosingTotalsNotification
     | DosingDailyNotification
+    | HeaterTemperatureNotification
+    | HeaterStatusNotification
 )
 
 
@@ -172,8 +229,15 @@ def _parse_dosing_channel_values(data: bytes | bytearray) -> tuple[int, ...]:
 def parse_notification(
     data: bytes | bytearray,
     color_channels: Mapping[str, int] | None = None,
+    *,
+    heater: bool = False,
 ) -> ParsedNotification | None:
-    """Parse known Chihiros notification payloads."""
+    """Parse known Chihiros notification payloads.
+
+    ``heater`` selects the heater frame layouts: its status frame reuses the
+    LED runtime mode byte (``0x0A``) with different fields, so the device
+    family must be known to decode it.
+    """
     # Notification framing differs between device generations. Some devices do
     # not provide a reliable declared length or trailing checksum, so parse the
     # known header and mode fields defensively instead of rejecting the entire
@@ -183,7 +247,30 @@ def parse_notification(
 
     mode = data[5]
     if data[0] == 0x5B:
+        if heater:
+            return _parse_heater_notification(data, mode)
         return _parse_legacy_notification(data, mode, color_channels)
+    return None
+
+
+def _parse_heater_notification(
+    data: bytes | bytearray,
+    mode: int,
+) -> ParsedNotification | None:
+    """Parse 0x5B heater temperature (0x25) and status (0x0A) frames."""
+    if mode == 0x25 and len(data) >= 12:
+        return HeaterTemperatureNotification(
+            setting_temperature_celsius=((data[6] << 8) | data[7]) / 10,
+            current_temperature_celsius=((data[10] << 8) | data[11]) / 10,
+            raw=bytes(data),
+        )
+    if mode == 0x0A and len(data) == 16:
+        return HeaterStatusNotification(
+            firmware_version=(data[11] << 8) | data[12],
+            work_time_hours=(data[7] << 8) | data[8],
+            alarms=data[14],
+            raw=bytes(data),
+        )
     return None
 
 

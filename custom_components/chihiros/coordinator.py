@@ -17,10 +17,13 @@ from .vendor.chihiros_led_control.protocol import (
     DosingDailyNotification,
     DosingTotalsNotification,
     FanStatusNotification,
+    HeaterStatusNotification,
+    HeaterTemperatureNotification,
     ParsedNotification,
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
+    heater_alarm_names,
 )
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
@@ -34,6 +37,19 @@ ATTR_FAN_RPM = "fan_rpm"
 ATTR_FAN_TEMPERATURE_CELSIUS = "fan_temperature_celsius"
 ATTR_DOSING_LIFETIME_UL = "dosing_lifetime_ul"
 ATTR_DOSING_DAILY_UL = "dosing_daily_ul"
+ATTR_HEATER_SETTING_TEMPERATURE_CELSIUS = "heater_setting_temperature_celsius"
+ATTR_HEATER_CURRENT_TEMPERATURE_CELSIUS = "heater_current_temperature_celsius"
+ATTR_HEATER_WORK_TIME_HOURS = "heater_work_time_hours"
+ATTR_HEATER_ALARMS = "heater_alarms"
+ATTR_HEATER_ALARM_BITS = "heater_alarm_bits"
+
+# The heater's mode is write-only — the device never reports whether it runs
+# its manual setpoints or the stored auto schedule — so the integration tracks
+# it and the entities restore it across restarts. ``manual`` matches the mode
+# a fresh client assumes: its tracked temperature and power are the manual ones.
+HEATER_MODE_MANUAL = "manual"
+HEATER_MODE_AUTO = "auto"
+HEATER_MODES: tuple[str, ...] = (HEATER_MODE_MANUAL, HEATER_MODE_AUTO)
 
 
 class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
@@ -51,6 +67,8 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         self.data: dict[str, Any] = {}
         self._device_address = address
         self._auto_mode = False
+        self._heater_mode = HEATER_MODE_MANUAL
+        self._heater_temperature_update_id = 0
         self._closed = False
         self.always_available = always_available
         self._remove_notification_callback = client.add_notification_callback(self._queue_notification)
@@ -73,6 +91,26 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         if self._auto_mode == enabled:
             return
         self._auto_mode = enabled
+        self.async_update_listeners()
+
+    @property
+    def heater_mode(self) -> str:
+        """Return the heater mode the integration last wrote or restored."""
+        return self._heater_mode
+
+    @property
+    def heater_temperature_update_id(self) -> int:
+        """Return the sequence number of the latest heater temperature notification."""
+        return self._heater_temperature_update_id
+
+    @callback
+    def async_set_heater_mode(self, heater_mode: str) -> None:
+        """Update the tracked heater mode and notify entities."""
+        if heater_mode not in HEATER_MODES:
+            raise ValueError(f"Unknown heater mode: {heater_mode}")
+        if self._heater_mode == heater_mode:
+            return
+        self._heater_mode = heater_mode
         self.async_update_listeners()
 
     async def async_request_status(self) -> None:
@@ -192,10 +230,33 @@ def _apply_dosing_daily_notification(
     coordinator.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "dosing_daily")
 
 
+def _apply_heater_temperature_notification(
+    coordinator: ChihirosDataUpdateCoordinator, notification: HeaterTemperatureNotification
+) -> None:
+    """Store heater temperature notification data."""
+    coordinator._heater_temperature_update_id += 1
+    coordinator.data[ATTR_HEATER_SETTING_TEMPERATURE_CELSIUS] = notification.setting_temperature_celsius
+    coordinator.data[ATTR_HEATER_CURRENT_TEMPERATURE_CELSIUS] = notification.current_temperature_celsius
+    coordinator.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "heater_temperature")
+
+
+def _apply_heater_status_notification(
+    coordinator: ChihirosDataUpdateCoordinator, notification: HeaterStatusNotification
+) -> None:
+    """Store heater runtime/alarm notification data."""
+    coordinator.data[ATTR_FIRMWARE_VERSION] = notification.firmware_version
+    coordinator.data[ATTR_HEATER_WORK_TIME_HOURS] = notification.work_time_hours
+    coordinator.data[ATTR_HEATER_ALARMS] = heater_alarm_names(notification.alarms)
+    coordinator.data[ATTR_HEATER_ALARM_BITS] = notification.alarms
+    coordinator.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "heater_status")
+
+
 _NOTIFICATION_APPLIERS: dict[type, Callable[[ChihirosDataUpdateCoordinator, ParsedNotification], None]] = {
     RuntimeNotification: _apply_runtime_notification,
     FanStatusNotification: _apply_fan_status_notification,
     ScheduleSnapshotNotification: _apply_schedule_snapshot_notification,
     DosingTotalsNotification: _apply_dosing_totals_notification,
     DosingDailyNotification: _apply_dosing_daily_notification,
+    HeaterTemperatureNotification: _apply_heater_temperature_notification,
+    HeaterStatusNotification: _apply_heater_status_notification,
 }

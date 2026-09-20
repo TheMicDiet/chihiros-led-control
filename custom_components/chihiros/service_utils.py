@@ -80,19 +80,27 @@ def resolve_service_device(hass: HomeAssistant, data: dict[str, Any]) -> Chihiro
     return _resolve_sole_device(entries)
 
 
-def parse_start_minutes(value: str | datetime.time) -> int:
-    """Parse an ``HH:MM``/``HH:MM:SS`` string or time into minutes since midnight."""
-    if isinstance(value, datetime.time):
-        return value.hour * 60 + value.minute
-    parts = str(value).strip().split(":")
+def _parse_start_time_parts(value: str) -> tuple[int, int, int]:
+    """Parse string time components and reject malformed precision."""
+    parts = value.strip().split(":")
     if len(parts) not in (2, 3):
         raise vol.Invalid(f"Invalid start time {value!r}, expected HH:MM")
     try:
-        hour, minute = int(parts[0]), int(parts[1])
+        hour, minute, second = (int(part) for part in (*parts, "0")[:3])
     except ValueError as ex:
         raise vol.Invalid(f"Invalid start time {value!r}, expected HH:MM") from ex
-    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
-        raise vol.Invalid(f"Invalid start time {value!r}")
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and second == 0):
+        raise vol.Invalid(f"Invalid start time {value!r}, expected HH:MM")
+    return hour, minute, second
+
+
+def parse_start_minutes(value: str | datetime.time) -> int:
+    """Parse a minute-precision ``HH:MM`` or ``HH:MM:00`` time."""
+    if isinstance(value, datetime.time):
+        if value.second or value.microsecond:
+            raise vol.Invalid(f"Invalid start time {value!r}, expected HH:MM")
+        return value.hour * 60 + value.minute
+    hour, minute, _ = _parse_start_time_parts(str(value))
     return hour * 60 + minute
 
 

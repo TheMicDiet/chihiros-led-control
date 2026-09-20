@@ -100,8 +100,10 @@ class DosingDailyTotals:
         self._totals[pump_idx] = round(self._totals[pump_idx] + volume_ml, 1)
         self._lifetime_ml[pump_idx] = round(self._lifetime_ml[pump_idx] + volume_ml, 1)
         self._lifetime_cycles[pump_idx] += 1
-        await self.async_save()
-        async_dispatcher_send(self.hass, self.address_signal)
+        try:
+            await self.async_save()
+        finally:
+            async_dispatcher_send(self.hass, self.address_signal)
 
     async def async_reset(self) -> None:
         """Reset totals for the current day."""

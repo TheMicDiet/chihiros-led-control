@@ -6,12 +6,13 @@ from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
-from .client import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
+from .client import ChihirosDevice, ChihirosDosingPump, ChihirosHeater, ChihirosMagStirrer
 from .exceptions import DeviceNotFound, UnsupportedDeviceError
 from .models import (
     DOSING_PUMP,
     FALLBACK,
     GENERIC_MODELS_BY_DEVICE_TYPE,
+    HEATER,
     MAG_STIRRER,
     DeviceModel,
     iter_model_codes_by_specificity,
@@ -72,6 +73,8 @@ def create_device(
     if is_known_unsupported_device(ble_device.name):
         raise UnsupportedDeviceError(f"Unsupported Chihiros device: {ble_device.name}")
     resolved_model = resolve_model(ble_device.name, model, device_type)
+    if resolved_model == HEATER:
+        return ChihirosHeater(ble_device, resolved_model, advertisement_data)
     if resolved_model == MAG_STIRRER:
         return ChihirosMagStirrer(ble_device, resolved_model, advertisement_data)
     if resolved_model == DOSING_PUMP:

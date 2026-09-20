@@ -166,6 +166,7 @@ class ChihirosStirNumberBase(
     _attr_native_step = 1
 
     _unique_id_suffix = ""
+    _restart_when_running = False
 
     def __init__(self, device: object, chihiros_data: ChihirosData, channel: int) -> None:
         """Initialize the number for one stir channel."""
@@ -227,7 +228,15 @@ class ChihirosStirNumberBase(
             self._write_state(clamped)
             client = stirrer_client(self._device)
             try:
-                await client.set_pre_second(self._channel, self._state.pre_seconds, self._state.speed)
+                if self._state.running and self._restart_when_running:
+                    await client.set_pre_second(
+                        self._channel,
+                        self._state.pre_seconds,
+                        self._state.speed,
+                        restart=True,
+                    )
+                else:
+                    await client.set_pre_second(self._channel, self._state.pre_seconds, self._state.speed)
             except Exception as ex:
                 self._write_state(previous)
                 raise HomeAssistantError(f"Failed to set {self._attr_name}") from ex
@@ -238,6 +247,7 @@ class ChihirosStirSpeedNumber(ChihirosStirNumberBase):
     """Number entity for one channel's stir speed (app default 40)."""
 
     _attr_native_max_value = 100
+    _restart_when_running = True
     _attr_native_unit_of_measurement = "%"
     _unique_id_suffix = "speed"
     _label = "speed"

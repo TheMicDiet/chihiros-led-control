@@ -17,9 +17,19 @@ from homeassistant.helpers.restore_state import async_get as async_get_restore_d
 
 from .const import DOMAIN
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
+from .heater import (
+    ChihirosHeaterAutoPowerNumber,
+    ChihirosHeaterAutoTemperatureNumber,
+    ChihirosHeaterCalibrationNumber,
+    ChihirosHeaterPowerNumber,
+    ChihirosHeaterProtectorNumber,
+    ChihirosHeaterTemperatureNumber,
+    is_heater_capable,
+)
 from .models import ChihirosData
 from .runtime import ChihirosClient
 from .stirrer import ChihirosStirPreRunNumber, ChihirosStirSpeedNumber, is_stirrer_capable
+from .vendor.chihiros_led_control.commands import MANUAL_DOSE_VOLUME_MAX_ML, MANUAL_DOSE_VOLUME_MIN_ML
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,9 +67,24 @@ async def async_setup_entry(
         )
 
     entities.extend(_stirrer_numbers(chihiros_data))
+    entities.extend(_heater_numbers(chihiros_data))
 
     if entities:
         async_add_entities(entities)
+
+
+def _heater_numbers(chihiros_data: ChihirosData) -> list[NumberEntity]:
+    """Build the manual, auto and configuration numbers for a heater."""
+    if not is_heater_capable(chihiros_data.device):
+        return []
+    return [
+        ChihirosHeaterTemperatureNumber(chihiros_data.coordinator, chihiros_data.device),
+        ChihirosHeaterPowerNumber(chihiros_data.coordinator, chihiros_data.device),
+        ChihirosHeaterAutoTemperatureNumber(chihiros_data.coordinator, chihiros_data.device),
+        ChihirosHeaterAutoPowerNumber(chihiros_data.coordinator, chihiros_data.device),
+        ChihirosHeaterProtectorNumber(chihiros_data.coordinator, chihiros_data.device),
+        ChihirosHeaterCalibrationNumber(chihiros_data.coordinator, chihiros_data.device),
+    ]
 
 
 def _stirrer_numbers(chihiros_data: ChihirosData) -> list[NumberEntity]:
@@ -79,9 +104,8 @@ def _stirrer_numbers(chihiros_data: ChihirosData) -> list[NumberEntity]:
 class ChihirosDosingVolumeNumber(NumberEntity, RestoreEntity):
     """Number entity for a pump's manual dose volume."""
 
-    _attr_should_poll = False
-    _attr_native_min_value = 0.2
-    _attr_native_max_value = 999.9
+    _attr_native_min_value = MANUAL_DOSE_VOLUME_MIN_ML
+    _attr_native_max_value = MANUAL_DOSE_VOLUME_MAX_ML
     _attr_native_step = 0.1
     _attr_native_unit_of_measurement = UnitOfVolume.MILLILITERS
     _attr_mode = NumberMode.BOX

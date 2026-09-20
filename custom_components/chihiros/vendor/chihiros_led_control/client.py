@@ -30,14 +30,17 @@ from .const import (
     UART_TX_CHAR_UUID,
 )
 from .exceptions import CharacteristicMissingError
-from .models import FALLBACK, DeviceModel
+from .models import FALLBACK, HEATER, DeviceModel
 from .protocol import (
     DosingDailyNotification,
     DosingTotalsNotification,
     FanStatusNotification,
+    HeaterStatusNotification,
+    HeaterTemperatureNotification,
     ParsedNotification,
     RuntimeNotification,
     ScheduleSnapshotNotification,
+    heater_alarm_names,
     next_message_id,
     parse_notification,
 )
@@ -45,6 +48,7 @@ from .weekday_encoding import WeekdaySelect, encode_selected_weekdays
 
 DEFAULT_ATTEMPTS = 3
 BLEAK_BACKOFF_TIME = 0.25
+DISCONNECT_DELAY = 120
 COMMAND_NOTIFICATION_WAIT = 0.5
 STATUS_NOTIFICATION_WAIT = 1.0
 # Vendor app paces frames inside one command batch 30 ms apart.
@@ -78,6 +82,16 @@ _LAST_NOTIFICATION_FIELDS: dict[type, tuple[str, str, tuple[str, ...]]] = {
         "last_dosing_daily_notification",
         "Dosing daily notification received; dose_use_in_day_ul=%s",
         ("dose_use_in_day_ul",),
+    ),
+    HeaterTemperatureNotification: (
+        "last_heater_temperature_notification",
+        "Heater temperature notification received; setting=%s current=%s",
+        ("setting_temperature_celsius", "current_temperature_celsius"),
+    ),
+    HeaterStatusNotification: (
+        "last_heater_status_notification",
+        "Heater status notification received; firmware=%s work_time_hours=%s alarms=0x%02x",
+        ("firmware_version", "work_time_hours", "alarms"),
     ),
 }
 
@@ -121,12 +135,13 @@ class ChihirosDevice:
         self._advertisement_data = advertisement_data
         self._client: BleakClientWithServiceCache | None = None
         self._disconnect_timer: asyncio.TimerHandle | None = None
+        self._disconnect_timer_generation = 0
         self._operation_lock: asyncio.Lock = asyncio.Lock()
         self._read_char: BleakGATTCharacteristic | None = None
         self._write_char: BleakGATTCharacteristic | None = None
         self._connect_lock: asyncio.Lock = asyncio.Lock()
-        self._expected_disconnect = False
         self._unexpected_disconnect = asyncio.Event()
+        self._expected_disconnect = False
         self._msg_id = next_message_id()
         self._fan_auto = False
         self._fan_start_temp = 38
@@ -522,21 +537,26 @@ class ChihirosDevice:
     async def _send_command_locked(
         self, commands_to_send: list[bytes], attempts: int, notification_wait: float
     ) -> None:
-        """Run complete connection transactions, reconnecting for each retry."""
+        """Send a transaction, retaining successful connections until idle."""
         for attempt in range(1, attempts + 1):
             try:
-                await self._ensure_connected()
-                await self._execute_command_locked(commands_to_send)
-                if notification_wait:
-                    await asyncio.sleep(notification_wait)
-                return
-            except CharacteristicMissingError:
-                self._logger.debug("%s: characteristic missing; RSSI: %s", self.name, self.rssi, exc_info=True)
+                await self._send_command_transaction(commands_to_send, notification_wait)
+            except (CharacteristicMissingError, asyncio.CancelledError):
+                await self._execute_disconnect()
                 raise
             except BLEAK_EXCEPTIONS as ex:
-                await self._handle_send_failure(ex, attempt, attempts)
-            finally:
                 await self._execute_disconnect()
+                await self._handle_send_failure(ex, attempt, attempts)
+            else:
+                self._schedule_disconnect_timer()
+                return
+
+    async def _send_command_transaction(self, commands_to_send: list[bytes], notification_wait: float) -> None:
+        """Send one command transaction over the current connection."""
+        await self._ensure_connected()
+        await self._execute_command_locked(commands_to_send)
+        if notification_wait:
+            await asyncio.sleep(notification_wait)
 
     async def _handle_send_failure(self, ex: Exception, attempt: int, attempts: int) -> None:
         """Log a failed communication attempt and retry or give up."""
@@ -562,10 +582,13 @@ class ChihirosDevice:
 
     async def _execute_command_locked(self, commands_to_send: list[bytes]) -> None:
         """Write commands to the BLE characteristic."""
-        assert self._client is not None  # nosec
+        client = self._client
+        assert client is not None  # nosec
         write_char = self._require_write_characteristics()
         for index, command in enumerate(commands_to_send):
-            await self._client.write_gatt_char(write_char, command, False)
+            if self._unexpected_disconnect.is_set():
+                raise BleakError("Device unexpectedly disconnected during command batch")
+            await client.write_gatt_char(write_char, command, False)
             if self._unexpected_disconnect.is_set():
                 raise BleakError("Device unexpectedly disconnected during command batch")
             if index < len(commands_to_send) - 1:
@@ -573,7 +596,7 @@ class ChihirosDevice:
 
     def _notification_handler(self, _sender: BleakGATTCharacteristic, data: bytearray) -> None:
         """Handle notification responses."""
-        parsed = parse_notification(data, self.model.color_channels)
+        parsed = parse_notification(data, self.model.color_channels, heater=self.model.is_heater)
         if parsed is None:
             self._logger.debug("%s: Notification received: %s", self.name, data.hex())
             return
@@ -604,6 +627,13 @@ class ChihirosDevice:
 
     def _disconnected(self, client: BleakClientWithServiceCache) -> None:
         """Handle disconnected callback."""
+        if client is not self._client:
+            self._logger.debug("%s: Disconnected from device; RSSI: %s", self.name, self.rssi)
+            return
+        self._cancel_disconnect_timer()
+        self._client = None
+        self._read_char = None
+        self._write_char = None
         if self._expected_disconnect:
             self._logger.debug("%s: Disconnected from device; RSSI: %s", self.name, self.rssi)
             return
@@ -649,6 +679,7 @@ class ChihirosDevice:
 
     async def _ensure_connected(self) -> None:
         """Ensure a BLE connection exists."""
+        self._cancel_disconnect_timer()
         if self._connect_lock.locked():
             self._logger.debug(
                 "%s: Connection already in progress, waiting; RSSI: %s",
@@ -656,17 +687,16 @@ class ChihirosDevice:
                 self.rssi,
             )
         if self._is_connected():
-            self._reset_disconnect_timer()
             return
         async with self._connect_lock:
             if self._is_connected():
-                self._reset_disconnect_timer()
                 return
             await self._establish_connection()
 
     async def _establish_connection(self) -> None:
         """Establish the BLE connection and configure it, cleaning up on failure."""
         self._logger.debug("%s: Connecting; RSSI: %s", self.name, self.rssi)
+        self._expected_disconnect = False
         self._unexpected_disconnect.clear()
         client = await establish_connection(
             BleakClientWithServiceCache,
@@ -692,7 +722,6 @@ class ChihirosDevice:
             raise CharacteristicMissingError("Write characteristic missing")
 
         self._client = client
-        self._reset_disconnect_timer()
 
         if self._read_char is not None:
             self._logger.debug("%s: Subscribe to notifications; RSSI: %s", self.name, self.rssi)
@@ -714,10 +743,7 @@ class ChihirosDevice:
         self._client = None
         self._read_char = None
         self._write_char = None
-        if self._disconnect_timer:
-            self._disconnect_timer.cancel()
-            self._disconnect_timer = None
-        self._expected_disconnect = True
+        self._cancel_disconnect_timer()
         await self._disconnect_client(client, read_char)
 
     async def _send_connection_prelude(self, client: BleakClientWithServiceCache) -> None:
@@ -739,27 +765,54 @@ class ChihirosDevice:
             if index < len(prelude) - 1:
                 await asyncio.sleep(BATCH_WRITE_DELAY)
 
-    def _reset_disconnect_timer(self) -> None:
-        """Reset connection state without scheduling a delayed keepalive."""
+    def _cancel_disconnect_timer(self) -> None:
+        """Cancel any pending idle disconnect and invalidate its callback."""
+        self._disconnect_timer_generation += 1
         if self._disconnect_timer:
             self._disconnect_timer.cancel()
             self._disconnect_timer = None
-        self._expected_disconnect = False
+
+    def _schedule_disconnect_timer(self) -> None:
+        """Disconnect the current client after a bounded idle period."""
+        self._cancel_disconnect_timer()
+        client = self._client
+        if not client or not client.is_connected:
+            return
+        generation = self._disconnect_timer_generation
+        self._disconnect_timer = self.loop.call_later(
+            DISCONNECT_DELAY,
+            self._disconnect_after_timeout,
+            generation,
+            client,
+        )
+
+    def _disconnect_after_timeout(self, generation: int, client: BleakClientWithServiceCache) -> None:
+        """Schedule an idle disconnect without blocking the event loop callback."""
+        if generation != self._disconnect_timer_generation:
+            return
+        self._disconnect_timer = None
+        self.loop.create_task(self._execute_timed_disconnect(generation, client))
+
+    async def _execute_timed_disconnect(self, generation: int, client: BleakClientWithServiceCache) -> None:
+        """Disconnect only if no newer operation refreshed the idle deadline."""
+        async with self._operation_lock:
+            if generation != self._disconnect_timer_generation or client is not self._client:
+                return
+            self._logger.debug("%s: Disconnecting after timeout of %s seconds", self.name, DISCONNECT_DELAY)
+            await self._execute_disconnect()
 
     async def disconnect(self) -> None:
         """Disconnect from the device."""
         self._logger.debug("%s: Disconnecting", self.name)
-        await self._execute_disconnect()
+        async with self._operation_lock:
+            await self._execute_disconnect()
 
     async def _execute_disconnect(self) -> None:
         """Execute disconnection."""
         async with self._connect_lock:
             read_char = self._read_char
             client = self._client
-            self._expected_disconnect = True
-            if self._disconnect_timer:
-                self._disconnect_timer.cancel()
-                self._disconnect_timer = None
+            self._cancel_disconnect_timer()
             self._client = None
             self._read_char = None
             self._write_char = None
@@ -787,6 +840,16 @@ class ChihirosDevice:
 
 class ChihirosDosingPump(ChihirosDevice):
     """Concrete BLE client for a Chihiros dosing pump."""
+
+    async def query_status(self) -> None:
+        """Request lifetime and daily dosing counters in app order."""
+        commands_to_send = [
+            commands.create_dose_auth_1_command(self.get_next_msg_id()),
+            commands.create_dose_auth_2_command(self.get_next_msg_id()),
+        ]
+        # Counter replies arrive asynchronously after the writes complete, so
+        # keep notifications subscribed for the standard status wait.
+        await self._send_command(commands_to_send, 3, notification_wait=STATUS_NOTIFICATION_WAIT)
 
     async def dose_ml(self, pump_idx: int, volume_ml: float) -> bytes:
         """Trigger an immediate manual dose on one pump channel.
@@ -974,15 +1037,27 @@ class ChihirosMagStirrer(ChihirosDosingPump):
     ``generalTempSet`` ``(0xA5, 20)`` frame.
     """
 
-    async def set_pre_second(self, channel: int, seconds: int, speed: int = commands.STIRRER_SPEED_DEFAULT) -> None:
-        """Set a channel's pre-stir time and stir speed (``stirrerPreSecond``).
+    async def query_status(self) -> None:
+        """Keep the stirrer refresh fire-and-forget like the vendor app."""
 
-        This is the only wire carrier for the speed; the app applies a speed
-        change while stirring by stopping, re-programming, and restarting the
-        channel.
-        """
-        cmd = commands.create_stirrer_pre_second_command(self.get_next_msg_id(), channel, seconds, speed)
-        await self._send_command(cmd, 3)
+    async def set_pre_second(
+        self,
+        channel: int,
+        seconds: int,
+        speed: int = commands.STIRRER_SPEED_DEFAULT,
+        *,
+        restart: bool = False,
+    ) -> None:
+        """Set pre-stir time and speed, optionally restarting a running channel."""
+        commands_to_send: list[bytes] = []
+        if restart:
+            commands_to_send.append(commands.create_general_temp_run_command(self.get_next_msg_id(), {channel: False}))
+        commands_to_send.append(
+            commands.create_stirrer_pre_second_command(self.get_next_msg_id(), channel, seconds, speed)
+        )
+        if restart:
+            commands_to_send.append(commands.create_general_temp_run_command(self.get_next_msg_id(), {channel: True}))
+        await self._send_command(commands_to_send, 3)
 
     async def stir(self, channel: int, on: bool, *, seconds: int | None = None) -> None:
         """Manually start/stop one stir channel (app's ``tempRun``).
@@ -1011,6 +1086,7 @@ class ChihirosMagStirrer(ChihirosDosingPump):
         ``dosingWorkNew`` only ``if is_active != 0``). Point volumes should
         come from :func:`commands.stirrer_dosage_for_minutes`.
         """
+        commands.validate_stirrer_work_points(points)
         commands_to_send: list[bytes] = [
             commands.create_dosing_active_compensation_command(
                 self.get_next_msg_id(), channel, active=active, compensate=False
@@ -1026,3 +1102,263 @@ class ChihirosMagStirrer(ChihirosDosingPump):
                 )
             )
         await self._send_command(commands_to_send, 3)
+
+
+class ChihirosHeater(ChihirosDevice):
+    """Concrete BLE client for a Chihiros heater (``DYHET``/``DYH1T``).
+
+    The heater reuses the plain-BLE framing (``0x5A``) with its own mode bytes:
+    mode 43 carries the manual or auto-default temperature and power, mode 5
+    sub-commands switch modes/unit and reset the runtime counter, and modes 47
+    and 48 configure the overheat protector and the temperature calibration.
+    Two ``0x5B`` notifications push the setting/current temperature and the
+    runtime/alarm status (``chihiros_xapk/HEATER_CONTROL.md``).
+
+    The device only reports the temperatures, its runtime and its alarms; the
+    power, auto-heating, unit and protector settings are write-only over BLE,
+    so they are tracked optimistically like the app's persisted model.
+    """
+
+    def __init__(
+        self,
+        ble_device: BLEDevice,
+        model: DeviceModel = HEATER,
+        advertisement_data: AdvertisementData | None = None,
+    ) -> None:
+        """Create a heater client."""
+        super().__init__(ble_device, model, advertisement_data)
+        self._setting_temperature = commands.HEATER_DEFAULT_TEMPERATURE_C
+        self._power_watts = commands.HEATER_DEFAULT_POWER_WATTS
+        self._protector_temperature = commands.HEATER_DEFAULT_PROTECTOR_TEMPERATURE_C
+        self._auto_default_temperature = commands.HEATER_DEFAULT_AUTO_TEMPERATURE_C
+        self._auto_default_power_watts = commands.HEATER_DEFAULT_AUTO_POWER_WATTS
+        self._auto_heating = False
+        self._celsius = True
+        self._backlight = True
+        self.last_heater_temperature_notification: HeaterTemperatureNotification | None = None
+        self.last_heater_status_notification: HeaterStatusNotification | None = None
+
+    def _record_notification(self, parsed: ParsedNotification) -> None:
+        """Record a notification, folding the reported setting temperature in.
+
+        The device is authoritative for the target temperature the next
+        ``set_power`` has to resend, so a temperature frame updates the tracked
+        setting as well as the last-seen notification.
+        """
+        super()._record_notification(parsed)
+        if isinstance(parsed, HeaterTemperatureNotification):
+            self._setting_temperature = parsed.setting_temperature_celsius
+
+    @property
+    def setting_temperature_celsius(self) -> float:
+        """Return the last known target temperature."""
+        return self._setting_temperature
+
+    @property
+    def current_temperature_celsius(self) -> float | None:
+        """Return the measured temperature of the last temperature frame, if any."""
+        notification = self.last_heater_temperature_notification
+        return notification.current_temperature_celsius if notification else None
+
+    @property
+    def power_watts(self) -> int:
+        """Return the tracked manual power in watts."""
+        return self._power_watts
+
+    @property
+    def protector_temperature_celsius(self) -> float:
+        """Return the tracked overheat protection temperature."""
+        return self._protector_temperature
+
+    @property
+    def auto_default_temperature_celsius(self) -> float:
+        """Return the tracked auto-mode default temperature."""
+        return self._auto_default_temperature
+
+    @property
+    def auto_default_power_watts(self) -> int:
+        """Return the tracked auto-mode default power in watts."""
+        return self._auto_default_power_watts
+
+    @property
+    def auto_heating(self) -> bool:
+        """Return whether auto heating is enabled."""
+        return self._auto_heating
+
+    @property
+    def is_celsius(self) -> bool:
+        """Return whether the device displays Celsius (as opposed to Fahrenheit)."""
+        return self._celsius
+
+    @property
+    def backlight(self) -> bool:
+        """Return whether the tracked display-backlight state is on."""
+        return self._backlight
+
+    @property
+    def work_time_hours(self) -> int | None:
+        """Return the heating runtime since the last cleaning reset, if reported."""
+        notification = self.last_heater_status_notification
+        return notification.work_time_hours if notification else None
+
+    @property
+    def heater_alarms(self) -> tuple[str, ...]:
+        """Return the names of the alarms in the last status frame."""
+        notification = self.last_heater_status_notification
+        return heater_alarm_names(notification.alarms) if notification else ()
+
+    @property
+    def firmware_version(self) -> int | None:
+        """Return the firmware version of the last status frame, if any."""
+        notification = self.last_heater_status_notification
+        return notification.firmware_version if notification else None
+
+    async def set_temperature(self, temperature_c: float) -> None:
+        """Switch to manual mode and set the target temperature.
+
+        Mirrors the app's ``setTemperature`` → ``initManual`` sequence: one
+        paced batch with ``switchToManual`` followed by the state frame
+        carrying the currently tracked power.
+        """
+        async with self._operation_lock:
+            await self._set_manual_state_locked(temperature_c, self._power_watts)
+
+    async def set_power(self, power_watts: int) -> None:
+        """Switch to manual mode and set the power in watts.
+
+        Power is not part of the device's notifications, so the value is
+        tracked locally after a successful write.
+        """
+        async with self._operation_lock:
+            await self._set_manual_state_locked(self._setting_temperature, power_watts)
+
+    async def set_auto_defaults(self, temperature_c: float, power_watts: int) -> None:
+        """Set the auto-mode defaults the scene schedules heat towards.
+
+        Mirrors the app's ``initAutoDefault``, which sends ``setHeaterCode``
+        with flag 1 and no mode switch. Both values are tracked after a
+        successful write, because the frame always carries the pair and the
+        device never reports it back.
+        """
+        async with self._operation_lock:
+            await self._set_auto_defaults_locked(temperature_c, power_watts)
+
+    async def set_auto_default_temperature(self, temperature_c: float) -> None:
+        """Set the auto-mode default temperature, resending the tracked power."""
+        async with self._operation_lock:
+            await self._set_auto_defaults_locked(temperature_c, self._auto_default_power_watts)
+
+    async def set_auto_default_power(self, power_watts: int) -> None:
+        """Set the auto-mode default power, resending the tracked temperature."""
+        async with self._operation_lock:
+            await self._set_auto_defaults_locked(self._auto_default_temperature, power_watts)
+
+    def restore_setting_temperature(self, temperature_c: float) -> None:
+        """Restore the tracked manual target temperature without writing to the device."""
+        commands.split_heater_temperature(temperature_c)
+        self._setting_temperature = temperature_c
+
+    def restore_manual_power(self, power_watts: int) -> None:
+        """Restore tracked manual power without writing to the device."""
+        commands.encode_heater_power_watts(power_watts)
+        self._power_watts = power_watts
+
+    def restore_auto_default_temperature(self, temperature_c: float) -> None:
+        """Restore the tracked auto temperature without writing to the device."""
+        commands.split_heater_temperature(temperature_c)
+        self._auto_default_temperature = temperature_c
+
+    def restore_auto_default_power(self, power_watts: int) -> None:
+        """Restore tracked auto power without writing to the device."""
+        commands.encode_heater_power_watts(power_watts)
+        self._auto_default_power_watts = power_watts
+
+    async def set_auto_mode(self) -> None:
+        """Switch the heater to auto mode (app's ``switchToAuto``)."""
+        cmd = commands.create_heater_auto_mode_command(self.get_next_msg_id())
+        await self._send_command(cmd, 3)
+
+    async def apply_scene(self) -> None:
+        """Apply the stored scene/auto schedule (app's ``switchToScene``)."""
+        cmd = commands.create_heater_scene_command(self.get_next_msg_id())
+        await self._send_command(cmd, 3)
+
+    async def set_auto_heating(self, enabled: bool) -> None:
+        """Enable or disable the heating element in auto mode (app's ``setHeaterAuto``)."""
+        cmd = commands.create_heater_auto_heating_command(self.get_next_msg_id(), enabled)
+        await self._send_command(cmd, 3)
+        self._auto_heating = enabled
+
+    async def set_temperature_unit(self, *, celsius: bool) -> None:
+        """Set the device's display unit (app's ``switchTemperatureType``)."""
+        cmd = commands.create_heater_temperature_unit_command(self.get_next_msg_id(), celsius=celsius)
+        await self._send_command(cmd, 3)
+        self._celsius = celsius
+
+    async def set_protector_temperature(self, temperature_c: float) -> None:
+        """Set the overheat protection temperature (app's ``setProtectorTemperature``)."""
+        cmd = commands.create_heater_protector_temperature_command(self.get_next_msg_id(), temperature_c)
+        await self._send_command(cmd, 3)
+        self._protector_temperature = temperature_c
+
+    async def calibrate(self, measured_temperature_c: float) -> None:
+        """Calibrate the sensor against a measured reference temperature.
+
+        Mirrors the app's ``calibrate``: the measured value is sent as the
+        temperature the device should currently read.
+        """
+        cmd = commands.create_heater_calibrate_command(self.get_next_msg_id(), measured_temperature_c)
+        await self._send_command(cmd, 3)
+
+    async def reset_work_time(self) -> None:
+        """Zero the runtime counter that drives the cleaning warning.
+
+        Mirrors the app's ``resetWorkTime``, which is sent after the user
+        cleans the heating tube; the new status arrives as a notification.
+        """
+        cmd = commands.create_heater_reset_work_time_command(self.get_next_msg_id())
+        await self._send_command(cmd, 3)
+
+    async def set_backlight(self, enabled: bool) -> None:
+        """Turn the heater's display backlight on or off.
+
+        Mirrors the app's ``deviceBacklight`` toggle. The device does not report
+        the setting, so the new state is tracked optimistically.
+        """
+        cmd = commands.create_heater_backlight_command(self.get_next_msg_id(), enabled=enabled)
+        await self._send_command(cmd, 3)
+        self._backlight = enabled
+
+    async def set_manual_state(self, temperature_c: float, power_watts: int) -> None:
+        """Atomically set both manual values and switch the heater to manual mode."""
+        async with self._operation_lock:
+            await self._set_manual_state_locked(temperature_c, power_watts)
+
+    async def _set_manual_state_locked(self, temperature_c: float, power_watts: int) -> None:
+        """Set and track both manual values while holding the operation lock."""
+        commands_to_send = [
+            commands.create_switch_to_manual_mode_command(self.get_next_msg_id()),
+            commands.create_heater_set_command(
+                self.get_next_msg_id(),
+                auto=False,
+                temperature_c=temperature_c,
+                power_watts=power_watts,
+            ),
+        ]
+        self._logger.debug("%s: Sending commands %s", self.name, [item.hex() for item in commands_to_send])
+        await self._send_command_locked(commands_to_send, 3, COMMAND_NOTIFICATION_WAIT)
+        self._setting_temperature = temperature_c
+        self._power_watts = power_watts
+
+    async def _set_auto_defaults_locked(self, temperature_c: float, power_watts: int) -> None:
+        """Set and track both auto defaults while holding the operation lock."""
+        cmd = commands.create_heater_set_command(
+            self.get_next_msg_id(),
+            auto=True,
+            temperature_c=temperature_c,
+            power_watts=power_watts,
+        )
+        self._logger.debug("%s: Sending commands %s", self.name, [cmd.hex()])
+        await self._send_command_locked([bytes(cmd)], 3, COMMAND_NOTIFICATION_WAIT)
+        self._auto_default_temperature = temperature_c
+        self._auto_default_power_watts = power_watts

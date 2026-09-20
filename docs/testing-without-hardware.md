@@ -18,6 +18,9 @@ The roster currently covers:
 - `DYNW60` WRGB II, `DYWPRO60` WRGB II Pro, `DYNA2` A II
 - `DYMIXR` magnetic stirrer (per-channel stir switches, speed/pre-run numbers,
   timer schedules)
+- `DYHET` heater (manual and auto temperature/power numbers, mode and
+  display-unit selects, auto-heating switch, temperature/runtime/alarm sensors,
+  and the reset-runtime button)
 - The 2.8.59-aligned families: `DYA` A Series, `DYC` New C, `DYARGB`
   RGB+APLUS, `DYREE` RGB VIVID, `DYRGBV` RGB VIVID II, `DYSEA` SEA_LED,
   `DYONE` Commander X, `DYTWO` X300, `DYNLED` Commander 4
@@ -50,6 +53,8 @@ async def run() -> None:
     device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
     with transport.patch_establish_connection():
         await device.query_status()
+        # Successful commands reuse the connection until it goes idle.
+        await device.disconnect()
     print(device.last_runtime_notification)
     print([command.hex() for command in transport.writes])
 
@@ -62,6 +67,10 @@ Rules match on command id, mode byte, and an optional parameter prefix
 callable; `fail=True` simulates a BLE write error (and exercises the client's
 retry/reconnect path). See `tests/test_scripted_transport.py` for end-to-end
 examples covering query status, fan commands, dosing sequences, and retries.
+
+Successful transactions reuse the configured connection. Call
+`await device.disconnect()` in a test when the lifecycle boundary itself is
+under test; retries and failed setup paths disconnect before reconnecting.
 
 The harness is excluded from the vendored HA package
 (`scripts/sync_vendor.py`), so it stays a library/test-only tool.

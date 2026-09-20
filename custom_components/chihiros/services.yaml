@@ -286,8 +286,9 @@ set_stir_schedule:
   description: >
     Replace one magnetic stirrer channel's timer schedule (DYMIXR). Each
     point is a start time and a run time in minutes; the device encodes run
-    minutes with the vendor app's 0.6 mL/min dose-rate equivalence. Points
-    must be at least 2 minutes apart (vendor app rule). Use YAML mode.
+    minutes with the vendor app's 0.6 mL/min dose-rate equivalence. Overlapping
+    or duplicate dose-derived work intervals are rejected before writing. Use
+    YAML mode.
   fields:
     device_id:
       name: Device

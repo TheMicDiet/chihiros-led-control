@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 from bleak_retry_connector import BleakError
 
-from chihiros_led_control.client import ChihirosDevice, ChihirosDosingPump
+from chihiros_led_control.client import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
 from chihiros_led_control.const import (
     CUSTOM_NOTIFY_CHAR_UUID,
     HM10_RX_CHAR_UUID,
@@ -115,6 +115,59 @@ def test_query_status_sends_runtime_status_query() -> None:
     assert notification_waits == [1.0]
 
 
+def test_dosing_pump_status_queries_counters_in_app_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dosing refresh batches lifetime/daily queries and waits for their replies."""
+    from chihiros_led_control import client as client_module
+
+    sent_commands: list[list[bytes]] = []
+    notification_waits: list[float] = []
+    monkeypatch.setattr(client_module, "STATUS_NOTIFICATION_WAIT", 2.5)
+
+    async def run() -> None:
+        device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
+
+        async def capture_command(
+            command: list[bytes] | bytes | bytearray,
+            retry: int | None = None,
+            notification_wait: float = 0,
+        ) -> None:
+            del retry
+            assert isinstance(command, list)
+            sent_commands.append([bytes(item) for item in command])
+            notification_waits.append(notification_wait)
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+        await device.query_status()
+
+    asyncio.run(run())
+
+    assert [[command[5:7] for command in batch] for batch in sent_commands] == [[bytes([4, 4]), bytes([4, 5])]]
+    assert notification_waits == [2.5]
+
+
+def test_mag_stirrer_status_refresh_is_fire_and_forget() -> None:
+    """Stirrers do not request the generic runtime snapshot."""
+    sent_commands: list[bytes] = []
+
+    async def run() -> None:
+        device = ChihirosMagStirrer(FakeBLEDevice(), DeviceModel("Mag Stirrer", (), {}))  # type: ignore[arg-type]
+
+        async def capture_command(
+            command: list[bytes] | bytes | bytearray,
+            retry: int | None = None,
+            notification_wait: float = 0,
+        ) -> None:
+            del retry, notification_wait
+            sent_commands.extend(command if isinstance(command, list) else [bytes(command)])
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+        await device.query_status()
+
+    asyncio.run(run())
+
+    assert sent_commands == []
+
+
 def test_dosing_pump_manual_dose_sends_auth_and_dose_batch() -> None:
     """Manual dosing sends dose auth frames before the one-shot dose command."""
     sent_batches: list[list[bytes]] = []
@@ -169,8 +222,8 @@ def _recording_stub(name: str, events: list[str]) -> Callable[..., Awaitable[Non
     return stub
 
 
-def test_send_command_disconnects_after_command_batch() -> None:
-    """Command batches do not keep the BLE connection alive."""
+def test_send_command_keeps_connection_after_command_batch() -> None:
+    """Successful command batches keep the BLE connection available for reuse."""
     events: list[str] = []
     sleeps: list[float] = []
 
@@ -199,12 +252,41 @@ def test_send_command_disconnects_after_command_batch() -> None:
 
     asyncio.run(run())
 
-    assert events == ["connect", "send:2", "disconnect"]
+    assert events == ["connect", "send:2"]
     assert sleeps == [0.5]
 
 
-def test_concurrent_commands_serialize_complete_transactions() -> None:
-    """Concurrent callers cannot disconnect another caller's transaction."""
+def test_idle_disconnect_timer_ignores_stale_generation() -> None:
+    """A refreshed idle timer cannot tear down the current connection."""
+
+    async def run() -> None:
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+        client = SimpleNamespace(is_connected=True)
+        device._client = client  # type: ignore[assignment]  # noqa: SLF001
+        device._schedule_disconnect_timer()  # noqa: SLF001
+        stale_generation = device._disconnect_timer_generation  # noqa: SLF001
+        device._schedule_disconnect_timer()  # noqa: SLF001
+        current_generation = device._disconnect_timer_generation  # noqa: SLF001
+        assert current_generation != stale_generation
+        device._disconnect_after_timeout(stale_generation, client)  # noqa: SLF001
+        assert device._disconnect_timer is not None  # noqa: SLF001
+
+        calls: list[tuple[int, object]] = []
+
+        async def timed_disconnect(generation: int, current_client: object) -> None:
+            calls.append((generation, current_client))
+
+        device._execute_timed_disconnect = timed_disconnect  # type: ignore[method-assign]
+        device._disconnect_after_timeout(current_generation, client)  # noqa: SLF001
+        await asyncio.sleep(0)
+        assert calls == [(current_generation, client)]
+        device._cancel_disconnect_timer()  # noqa: SLF001
+
+    asyncio.run(run())
+
+
+def test_concurrent_commands_serialize_operations() -> None:
+    """Concurrent callers cannot interleave their operations."""
     events: list[str] = []
 
     async def run() -> None:
@@ -229,7 +311,7 @@ def test_concurrent_commands_serialize_complete_transactions() -> None:
         )
 
     asyncio.run(run())
-    assert events == ["connect", "write:01", "disconnect", "connect", "write:02", "disconnect"]
+    assert events == ["connect", "write:01", "connect", "write:02"]
 
 
 def _retry_write_stub(failures: int, writes: list[int]) -> Callable[[list[bytes]], Awaitable[None]]:
@@ -245,7 +327,7 @@ def _retry_write_stub(failures: int, writes: list[int]) -> Callable[[list[bytes]
 
 @pytest.mark.parametrize("failures", [1, 3])
 def test_transient_write_retry_reconnects_and_exhausts(failures: int) -> None:
-    """Every transient retry reconnects and exhausted retries preserve the BLE error."""
+    """Every transient retry reconnects, while successful attempts remain open."""
     connects = 0
     disconnects = 0
     writes = [0]
@@ -272,8 +354,8 @@ def test_transient_write_retry_reconnects_and_exhausts(failures: int) -> None:
             await device._send_command(b"x", retry=3, notification_wait=0)
 
     asyncio.run(run())
-    expected = 3 if failures == 3 else 2
-    assert (connects, disconnects, writes[0]) == (expected, expected, expected)
+    attempts = min(failures + 1, 3)
+    assert (connects, disconnects, writes[0]) == (attempts, min(failures, 3), attempts)
 
 
 def test_missing_characteristics_and_prelude_failure_clean_up_connection() -> None:

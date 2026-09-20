@@ -1,6 +1,6 @@
 """Chihiros LED control library."""
 
-from .client import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
+from .client import ChihirosDevice, ChihirosDosingPump, ChihirosHeater, ChihirosMagStirrer
 from .exceptions import UnsupportedDeviceError
 from .factory import (
     create_device,
@@ -13,6 +13,7 @@ from .models import DeviceModel
 __all__ = [
     "ChihirosDevice",
     "ChihirosDosingPump",
+    "ChihirosHeater",
     "ChihirosMagStirrer",
     "DeviceModel",
     "UnsupportedDeviceError",
