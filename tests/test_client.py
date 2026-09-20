@@ -115,10 +115,13 @@ def test_query_status_sends_runtime_status_query() -> None:
     assert notification_waits == [1.0]
 
 
-def test_dosing_pump_status_queries_counters_in_app_order() -> None:
-    """Dosing refresh emits lifetime then daily counter queries as one batch."""
+def test_dosing_pump_status_queries_counters_in_app_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dosing refresh batches lifetime/daily queries and waits for their replies."""
+    from chihiros_led_control import client as client_module
+
     sent_commands: list[list[bytes]] = []
     notification_waits: list[float] = []
+    monkeypatch.setattr(client_module, "STATUS_NOTIFICATION_WAIT", 2.5)
 
     async def run() -> None:
         device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
@@ -139,7 +142,7 @@ def test_dosing_pump_status_queries_counters_in_app_order() -> None:
     asyncio.run(run())
 
     assert [[command[5:7] for command in batch] for batch in sent_commands] == [[bytes([4, 4]), bytes([4, 5])]]
-    assert notification_waits == [0]
+    assert notification_waits == [2.5]
 
 
 def test_mag_stirrer_status_refresh_is_fire_and_forget() -> None:

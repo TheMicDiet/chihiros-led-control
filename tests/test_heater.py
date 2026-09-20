@@ -170,6 +170,42 @@ def test_scripted_heater_manual_state_sequence(monkeypatch: pytest.MonkeyPatch) 
     asyncio.run(run())
 
 
+def test_concurrent_manual_setters_preserve_both_values() -> None:
+    """A paired manual update captures its sibling only after prior commits."""
+
+    async def run() -> None:
+        device = ChihirosHeater(FakeBLEDevice(), HEATER)  # type: ignore[arg-type]
+        sent_states: list[list[int]] = []
+        first_write_started = asyncio.Event()
+        release_first_write = asyncio.Event()
+
+        async def capture_locked(commands_to_send: list[bytes], attempts: int, notification_wait: float) -> None:
+            del attempts, notification_wait
+            state_frame = next(command for command in commands_to_send if command[5] == 43)
+            sent_states.append(list(state_frame[6:-1]))
+            if len(sent_states) == 1:
+                first_write_started.set()
+                await release_first_write.wait()
+
+        device._send_command_locked = capture_locked  # type: ignore[method-assign]
+
+        temperature_task = asyncio.create_task(device.set_temperature(26.5))
+        await first_write_started.wait()
+        power_task = asyncio.create_task(device.set_power(800))
+        await asyncio.sleep(0)
+        release_first_write.set()
+        await asyncio.gather(temperature_task, power_task)
+
+        assert sent_states == [
+            [0, 26, 50, 20],
+            [0, 26, 50, 80],
+        ]
+        assert device.setting_temperature_celsius == pytest.approx(26.5)
+        assert device.power_watts == 800
+
+    asyncio.run(run())
+
+
 def test_scripted_heater_settings_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     """Auto defaults, mode switches, unit, protector and reset write their frames."""
     transport = ScriptedTransport(name="DYHET-test")
@@ -227,6 +263,41 @@ def test_scripted_heater_auto_defaults_track_the_pair(monkeypatch: pytest.Monkey
         assert _sent_frames(transport) == [
             (43, [1, 22, 50, 50]),  # 22.5 °C at the app's 500 W default
             (43, [1, 22, 50, 80]),  # the temperature is resent with the new power
+        ]
+        assert device.auto_default_temperature_celsius == pytest.approx(22.5)
+        assert device.auto_default_power_watts == 800
+
+    asyncio.run(run())
+
+
+def test_concurrent_auto_default_setters_preserve_both_values() -> None:
+    """A paired auto-default update captures its sibling after prior commits."""
+
+    async def run() -> None:
+        device = ChihirosHeater(FakeBLEDevice(), HEATER)  # type: ignore[arg-type]
+        sent_states: list[list[int]] = []
+        first_write_started = asyncio.Event()
+        release_first_write = asyncio.Event()
+
+        async def capture_locked(commands_to_send: list[bytes], attempts: int, notification_wait: float) -> None:
+            del attempts, notification_wait
+            sent_states.append(list(commands_to_send[0][6:-1]))
+            if len(sent_states) == 1:
+                first_write_started.set()
+                await release_first_write.wait()
+
+        device._send_command_locked = capture_locked  # type: ignore[method-assign]
+
+        temperature_task = asyncio.create_task(device.set_auto_default_temperature(22.5))
+        await first_write_started.wait()
+        power_task = asyncio.create_task(device.set_auto_default_power(800))
+        await asyncio.sleep(0)
+        release_first_write.set()
+        await asyncio.gather(temperature_task, power_task)
+
+        assert sent_states == [
+            [1, 22, 50, 50],
+            [1, 22, 50, 80],
         ]
         assert device.auto_default_temperature_celsius == pytest.approx(22.5)
         assert device.auto_default_power_watts == 800

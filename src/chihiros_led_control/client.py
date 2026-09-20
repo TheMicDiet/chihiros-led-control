@@ -807,9 +807,9 @@ class ChihirosDosingPump(ChihirosDevice):
             commands.create_dose_auth_1_command(self.get_next_msg_id()),
             commands.create_dose_auth_2_command(self.get_next_msg_id()),
         ]
-        # The app emits both counter queries through its write queue without
-        # requesting the generic runtime snapshot or waiting for a reply.
-        await self._send_command(commands_to_send, 3, notification_wait=0)
+        # Counter replies arrive asynchronously after the writes complete, so
+        # keep notifications subscribed for the standard status wait.
+        await self._send_command(commands_to_send, 3, notification_wait=STATUS_NOTIFICATION_WAIT)
 
     async def dose_ml(self, pump_idx: int, volume_ml: float) -> bytes:
         """Trigger an immediate manual dose on one pump channel.
@@ -1180,7 +1180,8 @@ class ChihirosHeater(ChihirosDevice):
         paced batch with ``switchToManual`` followed by the state frame
         carrying the currently tracked power.
         """
-        await self.set_manual_state(temperature_c, self._power_watts)
+        async with self._operation_lock:
+            await self._set_manual_state_locked(temperature_c, self._power_watts)
 
     async def set_power(self, power_watts: int) -> None:
         """Switch to manual mode and set the power in watts.
@@ -1188,7 +1189,8 @@ class ChihirosHeater(ChihirosDevice):
         Power is not part of the device's notifications, so the value is
         tracked locally after a successful write.
         """
-        await self.set_manual_state(self._setting_temperature, power_watts)
+        async with self._operation_lock:
+            await self._set_manual_state_locked(self._setting_temperature, power_watts)
 
     async def set_auto_defaults(self, temperature_c: float, power_watts: int) -> None:
         """Set the auto-mode defaults the scene schedules heat towards.
@@ -1198,23 +1200,18 @@ class ChihirosHeater(ChihirosDevice):
         successful write, because the frame always carries the pair and the
         device never reports it back.
         """
-        cmd = commands.create_heater_set_command(
-            self.get_next_msg_id(),
-            auto=True,
-            temperature_c=temperature_c,
-            power_watts=power_watts,
-        )
-        await self._send_command(cmd, 3)
-        self._auto_default_temperature = temperature_c
-        self._auto_default_power_watts = power_watts
+        async with self._operation_lock:
+            await self._set_auto_defaults_locked(temperature_c, power_watts)
 
     async def set_auto_default_temperature(self, temperature_c: float) -> None:
         """Set the auto-mode default temperature, resending the tracked power."""
-        await self.set_auto_defaults(temperature_c, self._auto_default_power_watts)
+        async with self._operation_lock:
+            await self._set_auto_defaults_locked(temperature_c, self._auto_default_power_watts)
 
     async def set_auto_default_power(self, power_watts: int) -> None:
         """Set the auto-mode default power, resending the tracked temperature."""
-        await self.set_auto_defaults(self._auto_default_temperature, power_watts)
+        async with self._operation_lock:
+            await self._set_auto_defaults_locked(self._auto_default_temperature, power_watts)
 
     def restore_setting_temperature(self, temperature_c: float) -> None:
         """Restore the tracked manual target temperature without writing to the device."""
@@ -1294,6 +1291,11 @@ class ChihirosHeater(ChihirosDevice):
 
     async def set_manual_state(self, temperature_c: float, power_watts: int) -> None:
         """Atomically set both manual values and switch the heater to manual mode."""
+        async with self._operation_lock:
+            await self._set_manual_state_locked(temperature_c, power_watts)
+
+    async def _set_manual_state_locked(self, temperature_c: float, power_watts: int) -> None:
+        """Set and track both manual values while holding the operation lock."""
         commands_to_send = [
             commands.create_switch_to_manual_mode_command(self.get_next_msg_id()),
             commands.create_heater_set_command(
@@ -1303,6 +1305,20 @@ class ChihirosHeater(ChihirosDevice):
                 power_watts=power_watts,
             ),
         ]
-        await self._send_command(commands_to_send, 3)
+        self._logger.debug("%s: Sending commands %s", self.name, [item.hex() for item in commands_to_send])
+        await self._send_command_locked(commands_to_send, 3, COMMAND_NOTIFICATION_WAIT)
         self._setting_temperature = temperature_c
         self._power_watts = power_watts
+
+    async def _set_auto_defaults_locked(self, temperature_c: float, power_watts: int) -> None:
+        """Set and track both auto defaults while holding the operation lock."""
+        cmd = commands.create_heater_set_command(
+            self.get_next_msg_id(),
+            auto=True,
+            temperature_c=temperature_c,
+            power_watts=power_watts,
+        )
+        self._logger.debug("%s: Sending commands %s", self.name, [cmd.hex()])
+        await self._send_command_locked([bytes(cmd)], 3, COMMAND_NOTIFICATION_WAIT)
+        self._auto_default_temperature = temperature_c
+        self._auto_default_power_watts = power_watts

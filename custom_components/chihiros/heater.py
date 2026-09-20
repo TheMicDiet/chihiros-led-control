@@ -24,7 +24,7 @@ from homeassistant.components.bluetooth.passive_update_coordinator import (
     PassiveBluetoothCoordinatorEntity,
 )
 from homeassistant.components.button import ButtonEntity
-from homeassistant.components.number import NumberEntity, NumberMode
+from homeassistant.components.number import NumberDeviceClass, NumberEntity, NumberMode
 from homeassistant.components.select import SelectEntity
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.components.switch import SwitchEntity
@@ -189,6 +189,7 @@ class ChihirosHeaterTemperatureNumber(ChihirosHeaterNumber):
     """Target temperature the heater holds in manual mode."""
 
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_device_class = NumberDeviceClass.TEMPERATURE
 
     def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
         """Initialize the target temperature number."""
@@ -261,6 +262,7 @@ class ChihirosHeaterAutoTemperatureNumber(ChihirosHeaterAutoDefaultNumber):
     """Temperature auto mode heats towards."""
 
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_device_class = NumberDeviceClass.TEMPERATURE
 
     def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
         """Initialize the auto default temperature number."""
@@ -307,6 +309,7 @@ class ChihirosHeaterProtectorNumber(ChihirosHeaterNumber):
     """Overheat protection temperature."""
 
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_device_class = NumberDeviceClass.TEMPERATURE
     _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
@@ -333,6 +336,7 @@ class ChihirosHeaterCalibrationNumber(ChihirosHeaterNumber):
     """
 
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_device_class = NumberDeviceClass.TEMPERATURE
     _attr_entity_category = EntityCategory.CONFIG
     _attr_icon = "mdi:thermometer-check"
 

@@ -10,18 +10,28 @@ import pytest
 
 try:
     from homeassistant.components.bluetooth import update_coordinator as bluetooth_update
+    from homeassistant.components.number import ATTR_MAX, ATTR_MIN, NumberDeviceClass
     from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
     from homeassistant.components.select import DOMAIN as SELECT_DOMAIN
     from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
     from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
     from homeassistant.config_entries import ConfigEntry, ConfigEntryState
-    from homeassistant.const import ATTR_ENTITY_ID, CONF_ADDRESS, STATE_OFF, STATE_ON, UnitOfTemperature
+    from homeassistant.const import (
+        ATTR_DEVICE_CLASS,
+        ATTR_ENTITY_ID,
+        ATTR_UNIT_OF_MEASUREMENT,
+        CONF_ADDRESS,
+        STATE_OFF,
+        STATE_ON,
+        UnitOfTemperature,
+    )
     from homeassistant.core import HomeAssistant, State
     from homeassistant.exceptions import HomeAssistantError
     from homeassistant.helpers import entity_registry as er
     from homeassistant.helpers.restore_state import StoredState
     from homeassistant.helpers.restore_state import async_get as async_get_restore_data
     from homeassistant.util import dt as dt_util
+    from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
     from pytest_homeassistant_custom_component.common import MockConfigEntry
 
     import custom_components.chihiros as chihiros_integration
@@ -359,6 +369,50 @@ async def test_heater_setup_creates_all_entities(hass: HomeAssistant, monkeypatc
         "firmware_version",
     } <= registered[SENSOR_DOMAIN]
     assert _entity_id(hass, "button", "heater_reset_work_time")
+
+
+async def test_heater_temperature_numbers_follow_configured_unit(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Temperature numbers convert through HA while power numbers remain watts."""
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    _entry, client = await _setup_heater(hass, monkeypatch)
+    client.push_temperature(25.0, 24.0)
+    await _flush()
+
+    calibration_id = _entity_id(hass, NUMBER_DOMAIN, "heater_calibration_temperature")
+    await hass.services.async_call(
+        NUMBER_DOMAIN,
+        "set_value",
+        {ATTR_ENTITY_ID: calibration_id, "value": 77.0},
+        blocking=True,
+    )
+    await _flush()
+    assert client.calibration_calls == [pytest.approx(25.0)]
+
+    expected_temperatures = {
+        "heater_temperature": 77.0,
+        "heater_auto_temperature": 68.0,
+        "heater_protector_temperature": 98.6,
+        "heater_calibration_temperature": 77.0,
+    }
+    for suffix, expected_value in expected_temperatures.items():
+        state = hass.states.get(_entity_id(hass, NUMBER_DOMAIN, suffix))
+        assert float(state.state) == pytest.approx(expected_value)
+        assert state.attributes[ATTR_DEVICE_CLASS] == NumberDeviceClass.TEMPERATURE
+        assert state.attributes[ATTR_UNIT_OF_MEASUREMENT] == UnitOfTemperature.FAHRENHEIT
+        assert state.attributes[ATTR_MIN] == pytest.approx(32.0)
+        assert state.attributes[ATTR_MAX] == pytest.approx(212.0)
+
+    for suffix, expected_value in {
+        "heater_power": 200.0,
+        "heater_auto_power": 500.0,
+    }.items():
+        state = hass.states.get(_entity_id(hass, NUMBER_DOMAIN, suffix))
+        assert float(state.state) == pytest.approx(expected_value)
+        assert ATTR_DEVICE_CLASS not in state.attributes
+        assert state.attributes[ATTR_UNIT_OF_MEASUREMENT] == "W"
 
 
 async def test_heater_notifications_update_sensors(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
