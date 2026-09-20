@@ -26,7 +26,7 @@ from .stirrer import STIRRER_CHANNEL_MAX, is_stirrer_capable, stirrer_client
 from .vendor.chihiros_led_control.commands import (
     DosingWorkPoint,
     stirrer_dosage_for_minutes,
-    validate_stirrer_point_gaps,
+    validate_stirrer_work_points,
 )
 
 SERVICE_SET_STIR_SCHEDULE = "set_stir_schedule"
@@ -90,13 +90,8 @@ def _validate_channel(data: ChihirosData, channel: int) -> None:
 
 
 def validate_stir_points(points: list[dict[str, Any]]) -> list[DosingWorkPoint]:
-    """Validate stir points and convert them to timer-mode work points.
-
-    Start times may not be closer together than the app's 2-minute minimum
-    gap (checked cyclically, so the wraparound from the last point to the
-    first point of the next day counts too).
-    """
-    parsed: list[tuple[int, DosingWorkPoint]] = []
+    """Validate stir points using the app's dose-derived overlap rule."""
+    parsed: list[DosingWorkPoint] = []
     for point in points:
         try:
             start = _parse_start_minutes(point["start"])
@@ -104,26 +99,18 @@ def validate_stir_points(points: list[dict[str, Any]]) -> list[DosingWorkPoint]:
             raise HomeAssistantError(str(ex)) from ex
         minutes = int(point["minutes"])
         parsed.append(
-            (
-                start,
-                DosingWorkPoint(
-                    start // 60,
-                    start % 60,
-                    volume_ml=stirrer_dosage_for_minutes(minutes),
-                ),
+            DosingWorkPoint(
+                start // 60,
+                start % 60,
+                volume_ml=stirrer_dosage_for_minutes(minutes),
             )
         )
-    parsed.sort(key=lambda item: item[0])
-    _validate_point_gaps([start for start, _ in parsed])
-    return [work_point for _, work_point in parsed]
-
-
-def _validate_point_gaps(starts: list[int]) -> None:
-    """Reject start times closer together than the app's cyclic gap rule."""
+    parsed.sort(key=lambda point: (point.start_hour, point.start_minute))
     try:
-        validate_stirrer_point_gaps(starts)
+        validate_stirrer_work_points(parsed)
     except ValueError as ex:
         raise HomeAssistantError(str(ex)) from ex
+    return parsed
 
 
 async def _async_set_stir_schedule(hass: HomeAssistant, call: ServiceCall) -> None:

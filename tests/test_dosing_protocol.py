@@ -199,6 +199,22 @@ def test_general_temp_run_command_layout() -> None:
         commands.create_general_temp_run_command(MSG_ID, {8: True})
 
 
+def test_stirrer_work_points_use_inclusive_non_cyclic_intervals() -> None:
+    """Stirrer validation matches the app's duration-derived interval checks."""
+    points = [
+        DosingWorkPoint(8, 0, volume_ml=commands.stirrer_dosage_for_minutes(5)),
+        DosingWorkPoint(8, 5, volume_ml=commands.stirrer_dosage_for_minutes(1)),
+    ]
+    with pytest.raises(ValueError, match="overlap"):
+        commands.validate_stirrer_work_points(points)
+
+    midnight_points = [
+        DosingWorkPoint(0, 0, volume_ml=commands.stirrer_dosage_for_minutes(1)),
+        DosingWorkPoint(23, 59, volume_ml=commands.stirrer_dosage_for_minutes(1)),
+    ]
+    commands.validate_stirrer_work_points(midnight_points)
+
+
 def test_stirrer_pre_second_command_layout() -> None:
     """StirrerPreSecond is (0xA5, 42, [channel, sec_hi, sec_lo, speed])."""
     frame = commands.create_stirrer_pre_second_command(MSG_ID, 0, 90, 40)

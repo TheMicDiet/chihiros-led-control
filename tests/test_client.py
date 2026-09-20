@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 from bleak_retry_connector import BleakError
 
-from chihiros_led_control.client import ChihirosDevice, ChihirosDosingPump
+from chihiros_led_control.client import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
 from chihiros_led_control.const import (
     CUSTOM_NOTIFY_CHAR_UUID,
     HM10_RX_CHAR_UUID,
@@ -113,6 +113,56 @@ def test_query_status_sends_runtime_status_query() -> None:
 
     assert sent_commands[0][5:7] == bytes([4, 1])
     assert notification_waits == [1.0]
+
+
+def test_dosing_pump_status_queries_counters_in_app_order() -> None:
+    """Dosing refresh emits lifetime then daily counter queries as one batch."""
+    sent_commands: list[list[bytes]] = []
+    notification_waits: list[float] = []
+
+    async def run() -> None:
+        device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
+
+        async def capture_command(
+            command: list[bytes] | bytes | bytearray,
+            retry: int | None = None,
+            notification_wait: float = 0,
+        ) -> None:
+            del retry
+            assert isinstance(command, list)
+            sent_commands.append([bytes(item) for item in command])
+            notification_waits.append(notification_wait)
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+        await device.query_status()
+
+    asyncio.run(run())
+
+    assert [[command[5:7] for command in batch] for batch in sent_commands] == [[bytes([4, 4]), bytes([4, 5])]]
+    assert notification_waits == [0]
+
+
+def test_mag_stirrer_status_refresh_is_fire_and_forget() -> None:
+    """Stirrers do not request the generic runtime snapshot."""
+    sent_commands: list[bytes] = []
+
+    async def run() -> None:
+        device = ChihirosMagStirrer(FakeBLEDevice(), DeviceModel("Mag Stirrer", (), {}))  # type: ignore[arg-type]
+
+        async def capture_command(
+            command: list[bytes] | bytes | bytearray,
+            retry: int | None = None,
+            notification_wait: float = 0,
+        ) -> None:
+            del retry, notification_wait
+            sent_commands.extend(command if isinstance(command, list) else [bytes(command)])
+
+        device._send_command = capture_command  # type: ignore[method-assign]
+        await device.query_status()
+
+    asyncio.run(run())
+
+    assert sent_commands == []
 
 
 def test_dosing_pump_manual_dose_sends_auth_and_dose_batch() -> None:

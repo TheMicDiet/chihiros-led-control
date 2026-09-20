@@ -46,8 +46,6 @@ MANUAL_DOSE_VOLUME_MIN_ML = 0.2
 MANUAL_DOSE_VOLUME_MAX_ML = 999.9
 STIRRER_MAX_SECONDS = 999
 STIRRER_SPEED_DEFAULT = 40
-STIRRER_MIN_POINT_GAP_MINUTES = 2
-MINUTES_PER_DAY = 24 * 60
 # The stirrer UI converts timer-point "dosage" volumes to minutes with
 # round(dosage / 1000 / 0.6): the pump's 0.6 mL/min dosing-rate equivalence.
 STIRRER_ML_PER_MINUTE = 0.6
@@ -56,15 +54,25 @@ STIRRER_ML_PER_MINUTE = 0.6
 DOSING_SCHEDULE_MAX_PAYLOAD = 50
 
 
-def validate_stirrer_point_gaps(starts: Sequence[int]) -> None:
-    """Reject stir points closer than the app's two-minute cyclic gap."""
-    ordered = sorted(starts)
-    if len(ordered) < 2:
-        return
-    gaps = [second - first for first, second in zip(ordered, ordered[1:], strict=False)]
-    gaps.append(ordered[0] + MINUTES_PER_DAY - ordered[-1])
-    if min(gaps) < STIRRER_MIN_POINT_GAP_MINUTES:
-        raise ValueError(f"Stir points must be at least {STIRRER_MIN_POINT_GAP_MINUTES} minutes apart")
+def validate_stirrer_work_points(points: Sequence[DosingWorkPoint]) -> None:
+    """Reject duplicate or overlapping stirrer timer work points.
+
+    The vendor app compares dose-derived intervals in ordinary wall-clock
+    coordinates. Endpoints are inclusive; it does not compare the last point
+    with the first point across midnight.
+    """
+    intervals: list[tuple[int, int]] = []
+    for point in points:
+        _validate_work_point_time(point)
+        start = point.start_hour * 60 + point.start_minute
+        duration = round(stirrer_minutes_for_dosage(point.volume_ml))
+        end = start + duration
+        intervals.append((start, end))
+
+    for index, (start, end) in enumerate(intervals):
+        for other_start, other_end in intervals[index + 1 :]:
+            if start <= other_end and other_start <= end:
+                raise ValueError("Stir work points overlap")
 
 
 class DosingMode(IntEnum):

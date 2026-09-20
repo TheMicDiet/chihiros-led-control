@@ -23,7 +23,7 @@ from .commands import (
     DosingWorkPoint,
     encode_heater_power_watts,
     stirrer_dosage_for_minutes,
-    validate_stirrer_point_gaps,
+    validate_stirrer_work_points,
 )
 from .factory import detect_model, get_device_from_address
 from .weekday_encoding import WeekdaySelect, encode_selected_weekdays
@@ -454,7 +454,7 @@ def stirrer_schedule(
     """
     work_points = [_parse_stir_point(point) for point in points]
     try:
-        validate_stirrer_point_gaps([point.start_hour * 60 + point.start_minute for point in work_points])
+        validate_stirrer_work_points(work_points)
     except ValueError as ex:
         raise typer.BadParameter(str(ex)) from ex
     frequency = encode_selected_weekdays(weekdays)

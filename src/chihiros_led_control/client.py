@@ -802,10 +802,14 @@ class ChihirosDosingPump(ChihirosDevice):
     """Concrete BLE client for a Chihiros dosing pump."""
 
     async def query_status(self) -> None:
-        """Request runtime status and both device-reported dosing counters."""
-        await ChihirosDevice.query_status(self)
-        await self.query_dosed_totals()
-        await self.query_dosed_today()
+        """Request lifetime and daily dosing counters in app order."""
+        commands_to_send = [
+            commands.create_dose_auth_1_command(self.get_next_msg_id()),
+            commands.create_dose_auth_2_command(self.get_next_msg_id()),
+        ]
+        # The app emits both counter queries through its write queue without
+        # requesting the generic runtime snapshot or waiting for a reply.
+        await self._send_command(commands_to_send, 3, notification_wait=0)
 
     async def dose_ml(self, pump_idx: int, volume_ml: float) -> bytes:
         """Trigger an immediate manual dose on one pump channel.
@@ -994,8 +998,7 @@ class ChihirosMagStirrer(ChihirosDosingPump):
     """
 
     async def query_status(self) -> None:
-        """Request the generic status snapshot; stirrers have no dosing readout."""
-        await ChihirosDevice.query_status(self)
+        """Keep the stirrer refresh fire-and-forget like the vendor app."""
 
     async def set_pre_second(
         self,
@@ -1043,7 +1046,7 @@ class ChihirosMagStirrer(ChihirosDosingPump):
         ``dosingWorkNew`` only ``if is_active != 0``). Point volumes should
         come from :func:`commands.stirrer_dosage_for_minutes`.
         """
-        commands.validate_stirrer_point_gaps([point.start_hour * 60 + point.start_minute for point in points])
+        commands.validate_stirrer_work_points(points)
         commands_to_send: list[bytes] = [
             commands.create_dosing_active_compensation_command(
                 self.get_next_msg_id(), channel, active=active, compensate=False

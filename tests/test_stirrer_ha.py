@@ -56,6 +56,7 @@ class _TrackingStirrer:
         self.model = MAG_STIRRER
         self.stir_calls: list[tuple[int, bool]] = []
         self.pre_second_calls: list[tuple[int, int, int]] = []
+        self.restart_calls: list[tuple[int, int, int]] = []
         self.schedule_calls: list[dict[str, Any]] = []
         self._callbacks: set[Callable[[object], None]] = set()
 
@@ -92,8 +93,10 @@ class _TrackingStirrer:
     async def stir(self, channel: int, on: bool, *, seconds: int | None = None) -> None:
         self.stir_calls.append((channel, on, seconds))
 
-    async def set_pre_second(self, channel: int, seconds: int, speed: int = 40) -> None:
+    async def set_pre_second(self, channel: int, seconds: int, speed: int = 40, *, restart: bool = False) -> None:
         self.pre_second_calls.append((channel, seconds, speed))
+        if restart:
+            self.restart_calls.append((channel, seconds, speed))
 
     async def set_stir_schedule(self, channel: int, points: Any, **kwargs: Any) -> None:
         self.schedule_calls.append({"channel": channel, "points": points, **kwargs})
@@ -253,11 +256,19 @@ async def test_stir_numbers_write_pre_second_frame(hass: HomeAssistant, monkeypa
 
     await hass.services.async_call("number", "set_value", {"entity_id": speed_id, "value": 55}, blocking=True)
     assert client.pre_second_calls == [(0, 0, 55)]
+    assert client.restart_calls == []
     assert float(hass.states.get(speed_id).state) == 55
 
+    await hass.services.async_call(
+        "switch", "turn_on", {"entity_id": _entity_id(hass, "switch", "stir_channel_1")}, blocking=True
+    )
+    await hass.services.async_call("number", "set_value", {"entity_id": speed_id, "value": 60}, blocking=True)
+    assert client.restart_calls == [(0, 0, 60)]
+
     await hass.services.async_call("number", "set_value", {"entity_id": prerun_id, "value": 90}, blocking=True)
-    # The pre-run write re-sends the current speed from the shared state.
-    assert client.pre_second_calls == [(0, 0, 55), (0, 90, 55)]
+    # The pre-run write re-sends the current speed without restarting the channel.
+    assert client.pre_second_calls == [(0, 0, 55), (0, 0, 60), (0, 90, 60)]
+    assert client.restart_calls == [(0, 0, 60)]
 
 
 async def test_set_stir_schedule_service(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -330,11 +341,11 @@ async def test_set_stir_schedule_service(hass: HomeAssistant, monkeypatch: pytes
 
 
 async def test_set_stir_schedule_service_validates_points(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Too-close points and invalid times are rejected before touching the device."""
+    """Overlapping work intervals and invalid times are rejected before writing."""
     _entry, client = await _setup_stirrer(hass, monkeypatch)
     await hass.async_block_till_done()
 
-    with pytest.raises(HomeAssistantError, match="2 minutes apart"):
+    with pytest.raises(HomeAssistantError, match="overlap"):
         await hass.services.async_call(
             DOMAIN,
             SERVICE_SET_STIR_SCHEDULE,
@@ -362,21 +373,22 @@ async def test_set_stir_schedule_service_validates_points(hass: HomeAssistant, m
             blocking=True,
         )
 
-    # The wraparound gap counts too: 23:59 and 00:00 are only 1 minute apart.
-    with pytest.raises(HomeAssistantError, match="2 minutes apart"):
-        await hass.services.async_call(
-            DOMAIN,
-            SERVICE_SET_STIR_SCHEDULE,
-            {
-                ATTR_ADDRESS: TEST_ADDRESS,
-                ATTR_CHANNEL: 1,
-                ATTR_STIR_POINTS: [
-                    {"start": "00:00", "minutes": 30},
-                    {"start": "23:59", "minutes": 15},
-                ],
-            },
-            blocking=True,
-        )
+    # The app uses ordinary wall-clock coordinates; it does not apply a
+    # cyclic last-point-to-first-point comparison across midnight.
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_STIR_SCHEDULE,
+        {
+            ATTR_ADDRESS: TEST_ADDRESS,
+            ATTR_CHANNEL: 1,
+            ATTR_STIR_POINTS: [
+                {"start": "00:00", "minutes": 1},
+                {"start": "23:59", "minutes": 1},
+            ],
+        },
+        blocking=True,
+    )
+    assert len(client.schedule_calls) == 1
 
 
 async def test_set_stir_schedule_service_rejects_non_stirrer(
@@ -467,7 +479,7 @@ async def test_unlinking_master_disables_pre_run_entities(hass: HomeAssistant, m
 
 
 async def test_validate_stir_points_unit() -> None:
-    """Point validation converts times and enforces the gap rule in isolation."""
+    """Point validation converts times and enforces app interval overlaps."""
     points = _validate_stir_points(
         [
             {"start": "20:30", "minutes": 10},
@@ -479,8 +491,11 @@ async def test_validate_stir_points_unit() -> None:
         (20, 30, pytest.approx(6.0)),
     ]
 
-    with pytest.raises(HomeAssistantError, match="2 minutes apart"):
+    with pytest.raises(HomeAssistantError, match="overlap"):
         _validate_stir_points([{"start": "08:00", "minutes": 5}, {"start": "08:01", "minutes": 5}])
+
+    with pytest.raises(HomeAssistantError, match="overlap"):
+        _validate_stir_points([{"start": "08:00", "minutes": 5}, {"start": "08:05", "minutes": 1}])
 
 
 async def test_stirrer_capability_and_fake_device() -> None:
