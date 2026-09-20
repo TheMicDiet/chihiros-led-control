@@ -7,10 +7,6 @@ repos:
   - id: check-docstring-first
   - id: check-yaml
     exclude: "^.gitlab-ci.yml$"
-  - id: check-yaml
-    args:
-      - --unsafe
-    files: "^.gitlab-ci.yml$"
   - id: check-toml
   - id: debug-statements
   - id: check-ast

@@ -18,11 +18,6 @@ EXCLUDED_DIRS = {
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
-    "tests",
-    "dist",
-    "build",
-    # Future cli/ package of the plugin architecture; cli.py is excluded by name.
-    "cli",
 }
 EXCLUDED_SUFFIXES = {
     ".pyc",
