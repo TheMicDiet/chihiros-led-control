@@ -48,6 +48,7 @@ from .weekday_encoding import WeekdaySelect, encode_selected_weekdays
 
 DEFAULT_ATTEMPTS = 3
 BLEAK_BACKOFF_TIME = 0.25
+DISCONNECT_DELAY = 120
 COMMAND_NOTIFICATION_WAIT = 0.5
 STATUS_NOTIFICATION_WAIT = 1.0
 # Vendor app paces frames inside one command batch 30 ms apart.
@@ -134,12 +135,13 @@ class ChihirosDevice:
         self._advertisement_data = advertisement_data
         self._client: BleakClientWithServiceCache | None = None
         self._disconnect_timer: asyncio.TimerHandle | None = None
+        self._disconnect_timer_generation = 0
         self._operation_lock: asyncio.Lock = asyncio.Lock()
         self._read_char: BleakGATTCharacteristic | None = None
         self._write_char: BleakGATTCharacteristic | None = None
         self._connect_lock: asyncio.Lock = asyncio.Lock()
-        self._expected_disconnect = False
         self._unexpected_disconnect = asyncio.Event()
+        self._expected_disconnect = False
         self._msg_id = next_message_id()
         self._fan_auto = False
         self._fan_start_temp = 38
@@ -535,21 +537,26 @@ class ChihirosDevice:
     async def _send_command_locked(
         self, commands_to_send: list[bytes], attempts: int, notification_wait: float
     ) -> None:
-        """Run complete connection transactions, reconnecting for each retry."""
+        """Send a transaction, retaining successful connections until idle."""
         for attempt in range(1, attempts + 1):
             try:
-                await self._ensure_connected()
-                await self._execute_command_locked(commands_to_send)
-                if notification_wait:
-                    await asyncio.sleep(notification_wait)
-                return
-            except CharacteristicMissingError:
-                self._logger.debug("%s: characteristic missing; RSSI: %s", self.name, self.rssi, exc_info=True)
+                await self._send_command_transaction(commands_to_send, notification_wait)
+            except (CharacteristicMissingError, asyncio.CancelledError):
+                await self._execute_disconnect()
                 raise
             except BLEAK_EXCEPTIONS as ex:
-                await self._handle_send_failure(ex, attempt, attempts)
-            finally:
                 await self._execute_disconnect()
+                await self._handle_send_failure(ex, attempt, attempts)
+            else:
+                self._schedule_disconnect_timer()
+                return
+
+    async def _send_command_transaction(self, commands_to_send: list[bytes], notification_wait: float) -> None:
+        """Send one command transaction over the current connection."""
+        await self._ensure_connected()
+        await self._execute_command_locked(commands_to_send)
+        if notification_wait:
+            await asyncio.sleep(notification_wait)
 
     async def _handle_send_failure(self, ex: Exception, attempt: int, attempts: int) -> None:
         """Log a failed communication attempt and retry or give up."""
@@ -575,10 +582,13 @@ class ChihirosDevice:
 
     async def _execute_command_locked(self, commands_to_send: list[bytes]) -> None:
         """Write commands to the BLE characteristic."""
-        assert self._client is not None  # nosec
+        client = self._client
+        assert client is not None  # nosec
         write_char = self._require_write_characteristics()
         for index, command in enumerate(commands_to_send):
-            await self._client.write_gatt_char(write_char, command, False)
+            if self._unexpected_disconnect.is_set():
+                raise BleakError("Device unexpectedly disconnected during command batch")
+            await client.write_gatt_char(write_char, command, False)
             if self._unexpected_disconnect.is_set():
                 raise BleakError("Device unexpectedly disconnected during command batch")
             if index < len(commands_to_send) - 1:
@@ -617,6 +627,13 @@ class ChihirosDevice:
 
     def _disconnected(self, client: BleakClientWithServiceCache) -> None:
         """Handle disconnected callback."""
+        if client is not self._client:
+            self._logger.debug("%s: Disconnected from device; RSSI: %s", self.name, self.rssi)
+            return
+        self._cancel_disconnect_timer()
+        self._client = None
+        self._read_char = None
+        self._write_char = None
         if self._expected_disconnect:
             self._logger.debug("%s: Disconnected from device; RSSI: %s", self.name, self.rssi)
             return
@@ -662,6 +679,7 @@ class ChihirosDevice:
 
     async def _ensure_connected(self) -> None:
         """Ensure a BLE connection exists."""
+        self._cancel_disconnect_timer()
         if self._connect_lock.locked():
             self._logger.debug(
                 "%s: Connection already in progress, waiting; RSSI: %s",
@@ -669,17 +687,16 @@ class ChihirosDevice:
                 self.rssi,
             )
         if self._is_connected():
-            self._reset_disconnect_timer()
             return
         async with self._connect_lock:
             if self._is_connected():
-                self._reset_disconnect_timer()
                 return
             await self._establish_connection()
 
     async def _establish_connection(self) -> None:
         """Establish the BLE connection and configure it, cleaning up on failure."""
         self._logger.debug("%s: Connecting; RSSI: %s", self.name, self.rssi)
+        self._expected_disconnect = False
         self._unexpected_disconnect.clear()
         client = await establish_connection(
             BleakClientWithServiceCache,
@@ -705,7 +722,6 @@ class ChihirosDevice:
             raise CharacteristicMissingError("Write characteristic missing")
 
         self._client = client
-        self._reset_disconnect_timer()
 
         if self._read_char is not None:
             self._logger.debug("%s: Subscribe to notifications; RSSI: %s", self.name, self.rssi)
@@ -727,10 +743,7 @@ class ChihirosDevice:
         self._client = None
         self._read_char = None
         self._write_char = None
-        if self._disconnect_timer:
-            self._disconnect_timer.cancel()
-            self._disconnect_timer = None
-        self._expected_disconnect = True
+        self._cancel_disconnect_timer()
         await self._disconnect_client(client, read_char)
 
     async def _send_connection_prelude(self, client: BleakClientWithServiceCache) -> None:
@@ -752,27 +765,54 @@ class ChihirosDevice:
             if index < len(prelude) - 1:
                 await asyncio.sleep(BATCH_WRITE_DELAY)
 
-    def _reset_disconnect_timer(self) -> None:
-        """Reset connection state without scheduling a delayed keepalive."""
+    def _cancel_disconnect_timer(self) -> None:
+        """Cancel any pending idle disconnect and invalidate its callback."""
+        self._disconnect_timer_generation += 1
         if self._disconnect_timer:
             self._disconnect_timer.cancel()
             self._disconnect_timer = None
-        self._expected_disconnect = False
+
+    def _schedule_disconnect_timer(self) -> None:
+        """Disconnect the current client after a bounded idle period."""
+        self._cancel_disconnect_timer()
+        client = self._client
+        if not client or not client.is_connected:
+            return
+        generation = self._disconnect_timer_generation
+        self._disconnect_timer = self.loop.call_later(
+            DISCONNECT_DELAY,
+            self._disconnect_after_timeout,
+            generation,
+            client,
+        )
+
+    def _disconnect_after_timeout(self, generation: int, client: BleakClientWithServiceCache) -> None:
+        """Schedule an idle disconnect without blocking the event loop callback."""
+        if generation != self._disconnect_timer_generation:
+            return
+        self._disconnect_timer = None
+        self.loop.create_task(self._execute_timed_disconnect(generation, client))
+
+    async def _execute_timed_disconnect(self, generation: int, client: BleakClientWithServiceCache) -> None:
+        """Disconnect only if no newer operation refreshed the idle deadline."""
+        async with self._operation_lock:
+            if generation != self._disconnect_timer_generation or client is not self._client:
+                return
+            self._logger.debug("%s: Disconnecting after timeout of %s seconds", self.name, DISCONNECT_DELAY)
+            await self._execute_disconnect()
 
     async def disconnect(self) -> None:
         """Disconnect from the device."""
         self._logger.debug("%s: Disconnecting", self.name)
-        await self._execute_disconnect()
+        async with self._operation_lock:
+            await self._execute_disconnect()
 
     async def _execute_disconnect(self) -> None:
         """Execute disconnection."""
         async with self._connect_lock:
             read_char = self._read_char
             client = self._client
-            self._expected_disconnect = True
-            if self._disconnect_timer:
-                self._disconnect_timer.cancel()
-                self._disconnect_timer = None
+            self._cancel_disconnect_timer()
             self._client = None
             self._read_char = None
             self._write_char = None

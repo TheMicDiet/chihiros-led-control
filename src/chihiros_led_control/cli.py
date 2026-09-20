@@ -45,7 +45,10 @@ HeaterDeviceCommand = Callable[[ChihirosHeater], Awaitable[None]]
 def _run_device_func(device_address: str, command: DeviceCommand) -> None:
     async def _async_func() -> None:
         dev = await get_device_from_address(device_address)
-        await command(dev)
+        try:
+            await command(dev)
+        finally:
+            await dev.disconnect()
 
     asyncio.run(_async_func())
 
@@ -55,9 +58,12 @@ def _run_dosing_func(device_address: str, command: DosingDeviceCommand) -> None:
 
     async def _async_func() -> None:
         dev = await get_device_from_address(device_address)
-        if not isinstance(dev, ChihirosDosingPump) or isinstance(dev, ChihirosMagStirrer):
-            raise typer.BadParameter(f"{dev.name} is not a dosing pump")
-        await command(dev)
+        try:
+            if not isinstance(dev, ChihirosDosingPump) or isinstance(dev, ChihirosMagStirrer):
+                raise typer.BadParameter(f"{dev.name} is not a dosing pump")
+            await command(dev)
+        finally:
+            await dev.disconnect()
 
     asyncio.run(_async_func())
 
@@ -67,9 +73,12 @@ def _run_stirrer_func(device_address: str, command: StirrerDeviceCommand) -> Non
 
     async def _async_func() -> None:
         dev = await get_device_from_address(device_address)
-        if not isinstance(dev, ChihirosMagStirrer):
-            raise typer.BadParameter(f"{dev.name} is not a magnetic stirrer")
-        await command(dev)
+        try:
+            if not isinstance(dev, ChihirosMagStirrer):
+                raise typer.BadParameter(f"{dev.name} is not a magnetic stirrer")
+            await command(dev)
+        finally:
+            await dev.disconnect()
 
     asyncio.run(_async_func())
 
@@ -79,9 +88,12 @@ def _run_heater_func(device_address: str, command: HeaterDeviceCommand) -> None:
 
     async def _async_func() -> None:
         dev = await get_device_from_address(device_address)
-        if not isinstance(dev, ChihirosHeater):
-            raise typer.BadParameter(f"{dev.name} is not a heater")
-        await command(dev)
+        try:
+            if not isinstance(dev, ChihirosHeater):
+                raise typer.BadParameter(f"{dev.name} is not a heater")
+            await command(dev)
+        finally:
+            await dev.disconnect()
 
     asyncio.run(_async_func())
 

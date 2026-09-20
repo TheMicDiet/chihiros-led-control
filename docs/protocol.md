@@ -27,6 +27,20 @@ Some legacy app paths also reference these characteristics:
 | Legacy write/notify characteristic | `0000ffe1-0000-1000-8000-00805f9b34fb` |
 | Legacy AT characteristic | `0000ffab-0000-1000-8000-00805f9b34fb` |
 
+
+### Connection Lifetime
+
+The client reuses one configured GATT connection for multiple successful
+transactions. The connection prelude (`0x90 / 0x04` followed by two
+`0x90 / 0x09` time-sync frames), characteristic discovery, and notification
+subscription run once per physical connection.
+
+After each successful transaction, the client arms a 120-second idle
+disconnect timer. A subsequent transaction cancels and refreshes that timer.
+BLE failures, cancelled transactions, explicit `disconnect()` calls, and
+Home Assistant config-entry unloads tear the connection down immediately.
+The CLI also explicitly disconnects after each one-shot command.
+
 ## Frame Format
 
 Commands are byte arrays with this structure:

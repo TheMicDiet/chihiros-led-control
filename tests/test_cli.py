@@ -30,6 +30,7 @@ class TrackingCliDevice:
     def __init__(self) -> None:
         """Initialize recorded calls."""
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+        self.disconnects = 0
 
     async def turn_on(self) -> None:
         """Record turn-on calls."""
@@ -58,6 +59,10 @@ class TrackingCliDevice:
     async def enable_auto_mode(self) -> None:
         """Record auto-mode calls."""
         self.calls.append(("enable_auto_mode", (), {}))
+
+    async def disconnect(self) -> None:
+        """Record explicit CLI cleanup."""
+        self.disconnects += 1
 
 
 RUNNER = CliRunner()
@@ -99,9 +104,23 @@ def test_turn_on_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> None:
     device = _patch_device(monkeypatch)
 
     result = RUNNER.invoke(cli.app, ["turn-on", TEST_ADDRESS])
-
     assert result.exit_code == 0
+
     assert device.calls == [("turn_on", (), {})]
+    assert device.disconnects == 1
+
+
+def test_cli_disconnects_device_when_command_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI cleanup runs when a device command raises."""
+    device = _patch_device(monkeypatch)
+
+    async def failing_command(_device: ChihirosDevice) -> None:
+        raise RuntimeError("command failed")
+
+    with pytest.raises(RuntimeError, match="command failed"):
+        cli._run_device_func(TEST_ADDRESS, failing_command)
+
+    assert device.disconnects == 1
 
 
 def test_turn_off_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> None:

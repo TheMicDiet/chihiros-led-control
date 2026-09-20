@@ -99,8 +99,8 @@ def test_scripted_fan_commands_round_trip(monkeypatch: pytest.MonkeyPatch) -> No
             assert device.fan_auto is False
 
         writes = transport.writes
-        # Each command reconnects, so the connection prelude runs twice.
-        assert transport.connections == 2
+        # Both actions reuse the same connection and its one-time prelude.
+        assert transport.connections == 1
         auto_frames = [frame for frame in writes if frame[5] == 5 and frame[6] == 0x11]
         speed_frames = [frame for frame in writes if frame[5] == 15]
         assert len(auto_frames) == 1
@@ -193,14 +193,14 @@ def test_scripted_turn_on_and_off_write_manual_switch_and_levels(monkeypatch: py
         with transport.patch_establish_connection():
             await device.turn_on()
             await device.turn_off()
-
         writes = transport.writes
-        # Two transactions, each: prelude (3) + switch-to-manual + brightness.
-        assert len(writes) == 10
-        manual = [frame for frame in writes if frame[5] == 5 and frame[6] == 11]
+
+        # One prelude, followed by two manual-mode and two brightness frames.
+        assert len(writes) == 7
+        manual = [frame for frame in writes if frame[5] == 5 and frame[6] == 0x0B]
         assert len(manual) == 2
         assert writes[4][5] == 7 and writes[4][6:8] == bytes([0, 100])
-        assert writes[9][5] == 7 and writes[9][6:8] == bytes([0, 0])
+        assert writes[6][5] == 7 and writes[6][6:8] == bytes([0, 0])
 
     asyncio.run(run())
 
