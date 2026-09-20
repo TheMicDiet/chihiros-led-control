@@ -470,9 +470,17 @@ class FakeChihirosDevice:
         del seconds
         self.stir_running[channel] = on
 
-    async def set_pre_second(self, channel: int, seconds: int, speed: int = 40) -> None:
+    async def set_pre_second(
+        self,
+        channel: int,
+        seconds: int,
+        speed: int = 40,
+        *,
+        restart: bool = False,
+    ) -> None:
         """Record fake stir speed and pre-stir values."""
         await asyncio.sleep(0)
+        del restart
         self.stir_speeds[channel] = speed
         self.stir_pre_seconds[channel] = seconds
 

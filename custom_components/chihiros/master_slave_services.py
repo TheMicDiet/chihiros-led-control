@@ -287,13 +287,14 @@ async def _apply_channel_setup(
         raise HomeAssistantError(f"Corrupt programming record for channel {channel}: {ex}") from ex
 
 
-async def _replay_recorded_channels(stirrer_data: ChihirosData, channels: dict[int, dict[str, Any]]) -> list[int]:
-    """Replay recorded pump channels onto a stirrer, returning skipped 1-based channels.
-
-    Channels beyond the stirrer's configured count are skipped so hidden
-    channels are not programmed through Home Assistant.
-    """
-    configured_channels = len(stirrer_data.stirrer_states)
+async def _replay_recorded_channels(
+    stirrer_data: ChihirosData,
+    channels: dict[int, dict[str, Any]],
+    *,
+    channel_count: int | None = None,
+) -> list[int]:
+    """Replay recorded pump channels, returning skipped 1-based channels."""
+    configured_channels = len(stirrer_data.stirrer_states) if channel_count is None else channel_count
     skipped: list[int] = []
     for channel in sorted(channels):
         if configured_channels and channel >= configured_channels:
@@ -308,6 +309,7 @@ async def async_mirror_pump_to_stirrer(
     stirrer_data: ChihirosData,
     *,
     delay: bool | None = None,
+    channel_count: int | None = None,
 ) -> None:
     """Replay the pump's full recorded programming onto a stirrer (startAsSlave).
 
@@ -324,14 +326,14 @@ async def async_mirror_pump_to_stirrer(
     if delay is None:
         delay = bool(tracker.device_settings.get("dose_delay", False))
     stirrer = stirrer_client(stirrer_data.device)
-    skipped = await _replay_recorded_channels(stirrer_data, tracker.channels)
+    skipped = await _replay_recorded_channels(stirrer_data, tracker.channels, channel_count=channel_count)
     await stirrer.set_dose_delay(delay)
     if skipped:
         _LOGGER.warning(
             "Skipped pump channels %s when mirroring to %s: only %s stir channels are configured",
             ", ".join(str(channel) for channel in skipped),
             stirrer_data.device.name,
-            len(stirrer_data.stirrer_states),
+            len(stirrer_data.stirrer_states) if channel_count is None else channel_count,
         )
 
 

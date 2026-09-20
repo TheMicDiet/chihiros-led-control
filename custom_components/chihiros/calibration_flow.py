@@ -196,7 +196,7 @@ async def _async_run_test_dose(hass: HomeAssistant, chihiros_data: ChihirosData,
     """
     from . import async_trigger_dose_ml
 
-    await async_trigger_dose_ml(hass, chihiros_data, pump_idx, TEST_DOSE_ML, best_effort_broadcast=True)
+    await async_trigger_dose_ml(hass, chihiros_data, pump_idx, TEST_DOSE_ML)
 
 
 class DosingCalibrationFlowMixin:

@@ -42,14 +42,29 @@ HEATER_BACKLIGHT_TRAILER = 127
 # volumes ride in two bytes as 0.1 mL buckets (0..6553.5 mL) and the stirrer
 # clamps run times to 999 seconds (see chihiros_xapk/DOSING_CONTROL.md).
 DOSE_VOLUME_MAX_ML = 6553.5
+MANUAL_DOSE_VOLUME_MIN_ML = 0.2
+MANUAL_DOSE_VOLUME_MAX_ML = 999.9
 STIRRER_MAX_SECONDS = 999
 STIRRER_SPEED_DEFAULT = 40
+STIRRER_MIN_POINT_GAP_MINUTES = 2
+MINUTES_PER_DAY = 24 * 60
 # The stirrer UI converts timer-point "dosage" volumes to minutes with
 # round(dosage / 1000 / 0.6): the pump's 0.6 mL/min dosing-rate equivalence.
 STIRRER_ML_PER_MINUTE = 0.6
 # Free/timer schedule records batch into 0xA5 frames of at most 50 payload
 # bytes (dataMaker.dart ``cmp #0x32`` batch size).
 DOSING_SCHEDULE_MAX_PAYLOAD = 50
+
+
+def validate_stirrer_point_gaps(starts: Sequence[int]) -> None:
+    """Reject stir points closer than the app's two-minute cyclic gap."""
+    ordered = sorted(starts)
+    if len(ordered) < 2:
+        return
+    gaps = [second - first for first, second in zip(ordered, ordered[1:], strict=False)]
+    gaps.append(ordered[0] + MINUTES_PER_DAY - ordered[-1])
+    if min(gaps) < STIRRER_MIN_POINT_GAP_MINUTES:
+        raise ValueError(f"Stir points must be at least {STIRRER_MIN_POINT_GAP_MINUTES} minutes apart")
 
 
 class DosingMode(IntEnum):
@@ -89,9 +104,9 @@ def create_base_auth_command(msg_id: tuple[int, int]) -> bytearray:
 
 
 def split_dose_volume_ml(ml: float) -> tuple[int, int]:
-    """Encode a dosing pump volume as 25.6 mL buckets plus 0.1 mL remainder."""
-    if ml < 0.2 or ml > 999.9:
-        raise ValueError("Dose volume must be between 0.2 and 999.9 mL")
+    """Encode a manual dosing volume as 25.6 mL buckets plus 0.1 mL remainder."""
+    if ml < MANUAL_DOSE_VOLUME_MIN_ML or ml > MANUAL_DOSE_VOLUME_MAX_ML:
+        raise ValueError(f"Dose volume must be between {MANUAL_DOSE_VOLUME_MIN_ML} and {MANUAL_DOSE_VOLUME_MAX_ML} mL")
     tenths_ml = int(round(ml * 10))
     return divmod(tenths_ml, DOSE_VOLUME_BUCKET_TENTHS_ML)
 

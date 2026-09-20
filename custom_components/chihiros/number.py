@@ -29,6 +29,7 @@ from .heater import (
 from .models import ChihirosData
 from .runtime import ChihirosClient
 from .stirrer import ChihirosStirPreRunNumber, ChihirosStirSpeedNumber, is_stirrer_capable
+from .vendor.chihiros_led_control.commands import MANUAL_DOSE_VOLUME_MAX_ML, MANUAL_DOSE_VOLUME_MIN_ML
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -103,9 +104,8 @@ def _stirrer_numbers(chihiros_data: ChihirosData) -> list[NumberEntity]:
 class ChihirosDosingVolumeNumber(NumberEntity, RestoreEntity):
     """Number entity for a pump's manual dose volume."""
 
-    _attr_should_poll = False
-    _attr_native_min_value = 0.2
-    _attr_native_max_value = 999.9
+    _attr_native_min_value = MANUAL_DOSE_VOLUME_MIN_ML
+    _attr_native_max_value = MANUAL_DOSE_VOLUME_MAX_ML
     _attr_native_step = 0.1
     _attr_native_unit_of_measurement = UnitOfVolume.MILLILITERS
     _attr_mode = NumberMode.BOX

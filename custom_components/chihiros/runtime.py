@@ -52,7 +52,14 @@ class StirrerChihirosClient(Protocol):
     async def stir(self, channel: int, on: bool, *, seconds: int | None = None) -> None:
         """Manually start/stop one stir channel."""
 
-    async def set_pre_second(self, channel: int, seconds: int, speed: int = 40) -> None:
+    async def set_pre_second(
+        self,
+        channel: int,
+        seconds: int,
+        speed: int = 40,
+        *,
+        restart: bool = False,
+    ) -> None:
         """Set a channel's pre-stir time and stir speed."""
 
     async def set_stir_schedule(

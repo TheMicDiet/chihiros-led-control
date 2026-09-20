@@ -17,10 +17,13 @@ from .commands import (
     DOSE_VOLUME_MAX_ML,
     HEATER_MAX_POWER_WATTS,
     HEATER_MAX_TEMPERATURE_C,
+    MANUAL_DOSE_VOLUME_MAX_ML,
+    MANUAL_DOSE_VOLUME_MIN_ML,
     DosingMode,
     DosingWorkPoint,
     encode_heater_power_watts,
     stirrer_dosage_for_minutes,
+    validate_stirrer_point_gaps,
 )
 from .factory import detect_model, get_device_from_address
 from .weekday_encoding import WeekdaySelect, encode_selected_weekdays
@@ -254,7 +257,7 @@ def enable_auto_mode(device_address: str) -> None:
 def dosing_dose(
     device_address: str,
     channel: Annotated[int, typer.Argument(min=1, max=8)],
-    ml: Annotated[float, typer.Argument(min=0.2, max=DOSE_VOLUME_MAX_ML)],
+    ml: Annotated[float, typer.Argument(min=MANUAL_DOSE_VOLUME_MIN_ML, max=MANUAL_DOSE_VOLUME_MAX_ML)],
 ) -> None:
     """Trigger an immediate manual dose on one pump channel."""
     _run_dosing_func(device_address, lambda dev: dev.dose_ml(channel - 1, ml))
@@ -422,9 +425,17 @@ def stirrer_speed(
     channel: Annotated[int, typer.Argument(min=1, max=8)],
     speed: Annotated[int, typer.Argument(min=0, max=100)],
     pre_seconds: Annotated[int, typer.Option(min=0, max=999)] = 0,
+    restart: Annotated[bool, typer.Option("--restart/--no-restart")] = False,
 ) -> None:
-    """Set a stirrer channel's speed and pre-stir time (run-advance seconds)."""
-    _run_stirrer_func(device_address, lambda dev: dev.set_pre_second(channel - 1, pre_seconds, speed))
+    """Set a stirrer channel's speed and pre-stir time."""
+
+    async def command(dev: ChihirosMagStirrer) -> None:
+        if restart:
+            await dev.set_pre_second(channel - 1, pre_seconds, speed, restart=True)
+        else:
+            await dev.set_pre_second(channel - 1, pre_seconds, speed)
+
+    _run_stirrer_func(device_address, command)
 
 
 @stirrer_app.command("schedule")
@@ -442,6 +453,10 @@ def stirrer_schedule(
     Weekdays select the repetition bitmask.
     """
     work_points = [_parse_stir_point(point) for point in points]
+    try:
+        validate_stirrer_point_gaps([point.start_hour * 60 + point.start_minute for point in work_points])
+    except ValueError as ex:
+        raise typer.BadParameter(str(ex)) from ex
     frequency = encode_selected_weekdays(weekdays)
     _run_stirrer_func(
         device_address,

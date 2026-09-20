@@ -13,6 +13,7 @@ from .const import DOMAIN
 from .models import ChihirosData
 from .runtime import DosingChihirosClient
 from .service_utils import DEVICE_SELECTOR_SCHEMA, resolve_service_device
+from .vendor.chihiros_led_control.commands import MANUAL_DOSE_VOLUME_MAX_ML, MANUAL_DOSE_VOLUME_MIN_ML
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,7 +25,9 @@ DOSE_ML_SCHEMA = vol.Schema(
     {
         **DEVICE_SELECTOR_SCHEMA,
         vol.Required(ATTR_PUMP): vol.All(vol.Coerce(int), vol.Range(min=1, max=8)),
-        vol.Required(ATTR_ML): vol.All(vol.Coerce(float), vol.Range(min=0.2, max=999.9)),
+        vol.Required(ATTR_ML): vol.All(
+            vol.Coerce(float), vol.Range(min=MANUAL_DOSE_VOLUME_MIN_ML, max=MANUAL_DOSE_VOLUME_MAX_ML)
+        ),
     }
 )
 
@@ -57,34 +60,35 @@ async def async_trigger_dose_ml(
     chihiros_data: ChihirosData,
     pump_idx: int,
     volume_ml: float,
-    *,
-    best_effort_broadcast: bool = False,
 ) -> None:
-    """Trigger a manual dose, update local totals, and broadcast to slaves.
+    """Trigger a manual dose, then update local totals and broadcast to slaves.
 
-    The vendor app broadcasts the manual-dose frame verbatim to every
-    connected device when a stirrer slave is linked (DOSING_CONTROL.md §5,
-    verified at 0xa62d78) — the stirrer treats it as an immediate stir.
-
-    The dose is non-idempotent and has already been dispensed once the frame
-    is sent, so ``best_effort_broadcast=True`` lets a wizard advance (and keep
-    the recorded total) when only the mirror to linked stirrers failed,
-    instead of re-offering the action and risking a second dose.
+    Once ``dose_ml`` returns, the non-idempotent physical dose has succeeded.
+    Bookkeeping and stirrer mirroring are therefore best-effort: surfacing
+    either post-dose failure as a failed service call would invite a retry and
+    risk dispensing the volume twice.
     """
     if not chihiros_data.dosing_totals:
         raise HomeAssistantError(f"{chihiros_data.device.name} is not a dosing pump")
     dosing_device = cast(DosingChihirosClient, chihiros_data.device)
     manual_dose_frame = await dosing_device.dose_ml(pump_idx, volume_ml)
-    await chihiros_data.dosing_totals.async_add_dose(pump_idx, volume_ml)
+    try:
+        await chihiros_data.dosing_totals.async_add_dose(pump_idx, volume_ml)
+    except Exception as ex:  # noqa: BLE001 — the physical dose already succeeded
+        _LOGGER.error(
+            "Dose of %.1f mL on %s succeeded, but recording its local totals failed: %s",
+            volume_ml,
+            chihiros_data.device.name,
+            ex,
+        )
+
     from .master_slave_services import async_broadcast_frame_to_linked_stirrers
 
     try:
         await async_broadcast_frame_to_linked_stirrers(
             hass, chihiros_data.device.address, manual_dose_frame, "manual dose"
         )
-    except HomeAssistantError as ex:
-        if not best_effort_broadcast:
-            raise
+    except Exception as ex:  # noqa: BLE001 — the physical dose already succeeded
         _LOGGER.warning(
             "Dose of %.1f mL on %s succeeded, but broadcasting to linked stirrers failed: %s",
             volume_ml,

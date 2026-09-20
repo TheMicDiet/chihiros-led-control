@@ -23,7 +23,11 @@ from .service_utils import (
     resolve_service_device,
 )
 from .stirrer import STIRRER_CHANNEL_MAX, is_stirrer_capable, stirrer_client
-from .vendor.chihiros_led_control.commands import DosingWorkPoint, stirrer_dosage_for_minutes
+from .vendor.chihiros_led_control.commands import (
+    DosingWorkPoint,
+    stirrer_dosage_for_minutes,
+    validate_stirrer_point_gaps,
+)
 
 SERVICE_SET_STIR_SCHEDULE = "set_stir_schedule"
 SERVICE_STIR_FOR = "stir_for"
@@ -34,15 +38,12 @@ ATTR_DURATION = "duration"
 ATTR_ACTIVE = "active"
 ATTR_FIRST_SETTING = "first_setting"
 
-# App-side validation limits (DOSING_CONTROL.md §6.5): work points must be at
-# least 2 minutes apart (stirrer_time_gap_warning / duplicateJudge) and run
-# times are capped at 999 minutes (duplicateJudge's iteration bound).
-STIRRER_MIN_POINT_GAP_MINUTES = 2
+# App-side run-time limit (DOSING_CONTROL.md §6.5): work points are capped at
+# 999 minutes (duplicateJudge's iteration bound).
 STIRRER_MAX_MINUTES = 999
 # The tempRun duration field is [minutes, seconds] — one byte each, so a
 # bounded manual stir is capped at 255 min 59 s (create_general_temp_run_command).
 STIRRER_MAX_TEMP_RUN_SECONDS = 255 * 60 + 59
-MINUTES_PER_DAY = 24 * 60
 
 STIR_POINT_SCHEMA = vol.Schema(
     {
@@ -118,13 +119,11 @@ def validate_stir_points(points: list[dict[str, Any]]) -> list[DosingWorkPoint]:
 
 
 def _validate_point_gaps(starts: list[int]) -> None:
-    """Reject start times closer together than the app's 2-minute minimum gap."""
-    gap_error = HomeAssistantError(f"Stir points must be at least {STIRRER_MIN_POINT_GAP_MINUTES} minutes apart")
-    for first, second in zip(starts, starts[1:], strict=False):
-        if second - first < STIRRER_MIN_POINT_GAP_MINUTES:
-            raise gap_error
-    if len(starts) > 1 and starts[0] + MINUTES_PER_DAY - starts[-1] < STIRRER_MIN_POINT_GAP_MINUTES:
-        raise gap_error
+    """Reject start times closer together than the app's cyclic gap rule."""
+    try:
+        validate_stirrer_point_gaps(starts)
+    except ValueError as ex:
+        raise HomeAssistantError(str(ex)) from ex
 
 
 async def _async_set_stir_schedule(hass: HomeAssistant, call: ServiceCall) -> None:

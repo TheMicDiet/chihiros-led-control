@@ -801,6 +801,12 @@ class ChihirosDevice:
 class ChihirosDosingPump(ChihirosDevice):
     """Concrete BLE client for a Chihiros dosing pump."""
 
+    async def query_status(self) -> None:
+        """Request runtime status and both device-reported dosing counters."""
+        await ChihirosDevice.query_status(self)
+        await self.query_dosed_totals()
+        await self.query_dosed_today()
+
     async def dose_ml(self, pump_idx: int, volume_ml: float) -> bytes:
         """Trigger an immediate manual dose on one pump channel.
 
@@ -987,15 +993,28 @@ class ChihirosMagStirrer(ChihirosDosingPump):
     ``generalTempSet`` ``(0xA5, 20)`` frame.
     """
 
-    async def set_pre_second(self, channel: int, seconds: int, speed: int = commands.STIRRER_SPEED_DEFAULT) -> None:
-        """Set a channel's pre-stir time and stir speed (``stirrerPreSecond``).
+    async def query_status(self) -> None:
+        """Request the generic status snapshot; stirrers have no dosing readout."""
+        await ChihirosDevice.query_status(self)
 
-        This is the only wire carrier for the speed; the app applies a speed
-        change while stirring by stopping, re-programming, and restarting the
-        channel.
-        """
-        cmd = commands.create_stirrer_pre_second_command(self.get_next_msg_id(), channel, seconds, speed)
-        await self._send_command(cmd, 3)
+    async def set_pre_second(
+        self,
+        channel: int,
+        seconds: int,
+        speed: int = commands.STIRRER_SPEED_DEFAULT,
+        *,
+        restart: bool = False,
+    ) -> None:
+        """Set pre-stir time and speed, optionally restarting a running channel."""
+        commands_to_send: list[bytes] = []
+        if restart:
+            commands_to_send.append(commands.create_general_temp_run_command(self.get_next_msg_id(), {channel: False}))
+        commands_to_send.append(
+            commands.create_stirrer_pre_second_command(self.get_next_msg_id(), channel, seconds, speed)
+        )
+        if restart:
+            commands_to_send.append(commands.create_general_temp_run_command(self.get_next_msg_id(), {channel: True}))
+        await self._send_command(commands_to_send, 3)
 
     async def stir(self, channel: int, on: bool, *, seconds: int | None = None) -> None:
         """Manually start/stop one stir channel (app's ``tempRun``).
@@ -1024,6 +1043,7 @@ class ChihirosMagStirrer(ChihirosDosingPump):
         ``dosingWorkNew`` only ``if is_active != 0``). Point volumes should
         come from :func:`commands.stirrer_dosage_for_minutes`.
         """
+        commands.validate_stirrer_point_gaps([point.start_hour * 60 + point.start_minute for point in points])
         commands_to_send: list[bytes] = [
             commands.create_dosing_active_compensation_command(
                 self.get_next_msg_id(), channel, active=active, compensate=False

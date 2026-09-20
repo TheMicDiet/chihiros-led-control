@@ -329,11 +329,16 @@ class ChihirosOptionsFlow(OptionsFlowWithReload):
             selected = user_input[CONF_MASTER_ADDRESS]
             master = None if selected in (None, "", UNLINKED_MASTER) else selected
             self._update_master_link(master)
+            selected_channel_count = int(user_input[CONF_STIRRER_CHANNEL_COUNT])
             set_stirrer_pre_run_entities_enabled(
-                self.hass, data.device.address, len(data.stirrer_states), enabled=master is not None
+                self.hass, data.device.address, selected_channel_count, enabled=master is not None
             )
             if master is not None:
-                await self._async_mirror_new_master(master, data)
+                await self._async_mirror_new_master(
+                    master,
+                    data,
+                    channel_count=selected_channel_count,
+                )
         return self.async_create_entry(
             title="", data={CONF_STIRRER_CHANNEL_COUNT: int(user_input[CONF_STIRRER_CHANNEL_COUNT])}
         )
@@ -377,13 +382,19 @@ class ChihirosOptionsFlow(OptionsFlowWithReload):
             new_data = {**entry.data, CONF_MASTER_ADDRESS: master}
         self.hass.config_entries.async_update_entry(entry, data=new_data)
 
-    async def _async_mirror_new_master(self, master_address: str, stirrer_data: ChihirosData) -> None:
+    async def _async_mirror_new_master(
+        self,
+        master_address: str,
+        stirrer_data: ChihirosData,
+        *,
+        channel_count: int | None = None,
+    ) -> None:
         """Replay the pump's recorded programming onto the stirrer (best effort)."""
         master_data = self._find_master(master_address)
         if master_data is None:
             return
         try:
-            await async_mirror_pump_to_stirrer(master_data, stirrer_data)
+            await async_mirror_pump_to_stirrer(master_data, stirrer_data, channel_count=channel_count)
         except Exception as ex:  # noqa: BLE001 — linking must succeed even if replay does not
             _LOGGER.warning(
                 "Linked %s to %s, but replaying the pump programming failed: %s",

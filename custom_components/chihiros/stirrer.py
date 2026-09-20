@@ -227,7 +227,15 @@ class ChihirosStirNumberBase(
             self._write_state(clamped)
             client = stirrer_client(self._device)
             try:
-                await client.set_pre_second(self._channel, self._state.pre_seconds, self._state.speed)
+                if self._state.running:
+                    await client.set_pre_second(
+                        self._channel,
+                        self._state.pre_seconds,
+                        self._state.speed,
+                        restart=True,
+                    )
+                else:
+                    await client.set_pre_second(self._channel, self._state.pre_seconds, self._state.speed)
             except Exception as ex:
                 self._write_state(previous)
                 raise HomeAssistantError(f"Failed to set {self._attr_name}") from ex
