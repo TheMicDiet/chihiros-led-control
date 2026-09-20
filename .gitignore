@@ -8,6 +8,7 @@ dist/
 
 # Local environments and tool caches
 .venv/
+.uv-python/
 .uv/
 .uv-cache/
 .pytest_cache/
