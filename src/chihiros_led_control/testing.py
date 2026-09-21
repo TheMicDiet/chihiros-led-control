@@ -11,12 +11,12 @@ Example::
     import asyncio
 
     from chihiros_led_control.devices.led import ChihirosDevice
-    from chihiros_led_control.models import WHITE_CHANNELS, DeviceModel
+    from chihiros_led_control.models import WHITE_CHANNELS, DeviceModel, LedSpec
 
     async def run() -> None:
         transport = ScriptedTransport()
         transport.expect(90, 4, [1], respond=[bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")])
-        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
+        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
         await device.query_status()
         print(device.last_runtime_notification)
         print([command.hex() for command in transport.writes])
