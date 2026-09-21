@@ -37,43 +37,46 @@ try:
     from pytest_homeassistant_custom_component.common import MockConfigEntry
 
     import custom_components.chihiros as chihiros_integration
-    from custom_components.chihiros import (
-        ATTR_ADDRESS,
+    from custom_components.chihiros.const import DOMAIN
+    from custom_components.chihiros.coordinator import ChihirosDataUpdateCoordinator
+    from custom_components.chihiros.dosing import CONF_PUMP_COUNT
+    from custom_components.chihiros.dosing_services import ATTR_ML, ATTR_PUMP, SERVICE_DOSE_ML
+    from custom_components.chihiros.runtime import ChihirosRuntime
+    from custom_components.chihiros.schedule_services import (
+        ATTR_BRIGHTNESS as ATTR_SCHEDULE_BRIGHTNESS,
+    )
+    from custom_components.chihiros.schedule_services import (
         ATTR_END,
-        ATTR_ENTRY_ID,
         ATTR_LEVELS,
-        ATTR_ML,
         ATTR_PERIODS,
-        ATTR_PUMP,
         ATTR_RAMP_UP_MINUTES,
         ATTR_START,
         ATTR_WEEKDAYS,
         SERVICE_ADD_SCHEDULE,
-        SERVICE_DOSE_ML,
         SERVICE_REMOVE_SCHEDULE,
         SERVICE_RESET_SCHEDULE,
         SERVICE_SET_SCHEDULE,
     )
-    from custom_components.chihiros import (
-        ATTR_BRIGHTNESS as ATTR_SCHEDULE_BRIGHTNESS,
-    )
-    from custom_components.chihiros.const import DOMAIN
-    from custom_components.chihiros.coordinator import ChihirosDataUpdateCoordinator
-    from custom_components.chihiros.dosing import CONF_PUMP_COUNT
-    from custom_components.chihiros.runtime import ChihirosRuntime
+    from custom_components.chihiros.service_utils import ATTR_ADDRESS, ATTR_ENTRY_ID
 except ImportError as err:
     pytest.skip(
         f"Home Assistant test group is not installed or is incompatible: {err}",
         allow_module_level=True,
     )
 
-from custom_components.chihiros.vendor.chihiros_led_control.models import RGB_CHANNELS, DeviceModel
-from custom_components.chihiros.vendor.chihiros_led_control.protocol import (
-    ParsedNotification,
+from custom_components.chihiros.vendor.chihiros_led_control.models import (
+    DOSING_PUMP,
+    RGB_CHANNELS,
+    DeviceKind,
+    DeviceModel,
+    LedSpec,
+)
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.led import (
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
 )
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.notifications import ParsedNotification
 
 pytestmark = [
     pytest.mark.integration,
@@ -89,7 +92,7 @@ class TrackingChihirosClient:
 
     def __init__(self) -> None:
         """Initialize the tracking client."""
-        self.model = DeviceModel("Test RGB", ("TEST-RGB",), RGB_CHANNELS)
+        self.model = DeviceModel("Test RGB", ("TEST-RGB",), LedSpec(RGB_CHANNELS))
         self.last_runtime_notification: RuntimeNotification | None = None
         self.last_schedule_snapshot_notification: ScheduleSnapshotNotification | None = None
         self.query_status_calls = 0
@@ -112,6 +115,11 @@ class TrackingChihirosClient:
     def name(self) -> str:
         """Return the fake device name."""
         return "Test Chihiros"
+
+    @property
+    def device_kind(self) -> DeviceKind:
+        """Return the typed family discriminator."""
+        return self.model.device_kind
 
     @property
     def model_name(self) -> str:
@@ -232,7 +240,7 @@ class TrackingDosingClient(TrackingChihirosClient):
     def __init__(self) -> None:
         """Initialize the tracking dosing pump client."""
         super().__init__()
-        self.model = DeviceModel("Dosing Pump", ("DYDOSE",), {})
+        self.model = DOSING_PUMP
         self.calibrate_calls: list[dict[str, Any]] = []
 
     @property

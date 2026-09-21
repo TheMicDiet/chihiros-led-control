@@ -1,4 +1,5 @@
-"""Runtime device resolution for the Chihiros Home Assistant integration."""
+"""Runtime device resolution for the Home Assistant integration."""
+# ruff: noqa: D102
 
 from __future__ import annotations
 
@@ -19,22 +20,20 @@ from .fake import create_fake_device, fake_devices_enabled, is_fake_address
 from .vendor.chihiros_led_control import create_device, needs_device_type
 from .vendor.chihiros_led_control.exceptions import UnsupportedDeviceError
 from .vendor.chihiros_led_control.models import DeviceKind, DeviceModel, LedFeature, LedSpec
-from .vendor.chihiros_led_control.protocol import (
+from .vendor.chihiros_led_control.protocol.led import (
     FanStatusNotification,
-    ParsedNotification,
     RuntimeNotification,
     ScheduleSnapshotNotification,
 )
+from .vendor.chihiros_led_control.protocol.notifications import ParsedNotification
 from .vendor.chihiros_led_control.weekday_encoding import WeekdaySelect
 
 NotificationCallback = Callable[[ParsedNotification], None]
 
 
 def is_device_kind(device: object, kind: DeviceKind) -> bool:
-    """Return whether a real, fake, or test client belongs to a family."""
+    """Return whether a runtime device belongs to a family."""
     candidate = getattr(device, "device_kind", None)
-    if candidate is None:
-        candidate = getattr(getattr(device, "model", None), "device_kind", None)
     return candidate is kind or candidate == kind or candidate == kind.value
 
 
@@ -45,11 +44,117 @@ def has_led_feature(device: object, feature: LedFeature) -> bool:
     return isinstance(spec, LedSpec) and feature in spec.features
 
 
-class DosingChihirosClient(Protocol):
+class BaseChihirosClient(Protocol):
+    """Common identity, notification, status, and lifecycle operations."""
+
+    model: DeviceModel
+    last_runtime_notification: RuntimeNotification | None
+    last_fan_status_notification: FanStatusNotification | None
+    last_schedule_snapshot_notification: ScheduleSnapshotNotification | None
+
+    @property
+    def device_kind(self) -> DeviceKind:
+        """Return the device-family discriminator."""
+
+    @property
+    def address(self) -> str:
+        """Return the device address."""
+
+    @property
+    def name(self) -> str:
+        """Return the advertised/display name."""
+
+    @property
+    def model_name(self) -> str:
+        """Return the model name."""
+
+    def add_notification_callback(self, callback: NotificationCallback) -> Callable[[], None]:
+        """Register a parsed notification callback."""
+
+    async def query_status(self) -> None:
+        """Request the latest status snapshot."""
+
+    async def disconnect(self) -> None:
+        """Disconnect the client."""
+
+
+class LedChihirosClient(BaseChihirosClient, Protocol):
+    """Home Assistant-facing LED client surface."""
+
+    @property
+    def colors(self) -> Mapping[str, int]:
+        """Return supported color channels."""
+
+    @property
+    def fan_auto(self) -> bool:
+        """Return whether the fan is in automatic mode."""
+
+    @property
+    def fan_start_temp(self) -> int:
+        """Return the fan start temperature."""
+
+    @property
+    def fan_stop_temp(self) -> int:
+        """Return the fan stop temperature."""
+
+    @property
+    def temp_protect(self) -> bool:
+        """Return whether temperature protection is enabled."""
+
+    @property
+    def bluetooth_led(self) -> bool:
+        """Return whether the indicator LED is enabled."""
+
+    async def set_brightness(self, brightness: int | Sequence[int] | Mapping[str | int, int]) -> None: ...
+
+    async def turn_on(self) -> None: ...
+
+    async def turn_off(self) -> None: ...
+
+    async def enable_auto_mode(self, timestamp: datetime | None = None) -> None: ...
+
+    async def set_manual_mode(self) -> None: ...
+
+    async def set_auto_point(self, channel: int, minutes: int, level: int) -> None: ...
+
+    async def set_auto_curve(self, points: Sequence[tuple[int, int, int]]) -> None: ...
+
+    async def set_fan_speed(self, speed_percent: int) -> None: ...
+
+    async def set_fan_auto(self) -> None: ...
+
+    async def set_fan_start_stop_temp(self, start_temp: int, stop_temp: int) -> None: ...
+
+    async def set_temp_protect(self, enabled: bool) -> None: ...
+
+    async def set_bluetooth_led(self, enabled: bool) -> None: ...
+
+    async def add_setting(
+        self,
+        sunrise: datetime,
+        sunset: datetime,
+        max_brightness: int | Sequence[int] | Mapping[str | int, int] = 100,
+        ramp_up_in_minutes: int = 0,
+        weekdays: list[WeekdaySelect] | None = None,
+    ) -> None: ...
+
+    async def remove_setting(
+        self,
+        sunrise: datetime,
+        sunset: datetime,
+        ramp_up_in_minutes: int = 0,
+        weekdays: list[WeekdaySelect] | None = None,
+    ) -> None: ...
+
+    async def reset_settings(self) -> None: ...
+
+
+class DosingChihirosClient(BaseChihirosClient, Protocol):
     """Home Assistant-facing dosing pump client surface."""
 
-    async def dose_ml(self, pump_idx: int, volume_ml: float) -> bytes:
-        """Dose a volume in mL on a dosing pump channel and return the frame."""
+    async def dose_ml(self, pump_idx: int, volume_ml: float) -> bytes: ...
+
+    async def reset_channel(self, channel: int) -> bytes: ...
 
     async def calibrate_channel(
         self,
@@ -57,15 +162,30 @@ class DosingChihirosClient(Protocol):
         *,
         seconds: int | None = None,
         volume_ml: float | None = None,
-    ) -> bytes:
-        """Run one channel's calibration test dose or record its measured volume."""
+    ) -> bytes: ...
+
+    async def set_channel_active(self, channel: int, *, active: bool = True, compensate: bool = False) -> None: ...
+
+    async def apply_dosing_settings(
+        self,
+        channel: int,
+        dose_per_day_ml: float | None,
+        frequency: int = 127,
+        *,
+        is_first_setting: bool = True,
+    ) -> None: ...
+
+    async def set_schedule(self, channel: int, mode: object, points: Sequence[object]) -> None: ...
+
+    async def set_dose_delay(self, enabled: bool) -> None: ...
+
+    async def program_channel(self, channel: int, **kwargs: Any) -> None: ...
 
 
-class StirrerChihirosClient(Protocol):
+class StirrerChihirosClient(BaseChihirosClient, Protocol):
     """Home Assistant-facing magnetic stirrer client surface."""
 
-    async def stir(self, channel: int, on: bool, *, seconds: int | None = None) -> None:
-        """Manually start/stop one stir channel."""
+    async def stir(self, channel: int, on: bool, *, seconds: int | None = None) -> None: ...
 
     async def set_pre_second(
         self,
@@ -74,8 +194,7 @@ class StirrerChihirosClient(Protocol):
         speed: int = 40,
         *,
         restart: bool = False,
-    ) -> None:
-        """Set a channel's pre-stir time and stir speed."""
+    ) -> None: ...
 
     async def set_stir_schedule(
         self,
@@ -85,224 +204,93 @@ class StirrerChihirosClient(Protocol):
         frequency: int = 127,
         active: bool = True,
         is_first_setting: bool = True,
-    ) -> None:
-        """Replace one channel's timer-mode schedule."""
+    ) -> None: ...
 
-    async def program_channel(self, channel: int, **kwargs: Any) -> None:
-        """Program one channel in a single transaction (mirror replay)."""
+    async def program_channel(self, channel: int, **kwargs: Any) -> None: ...
 
-    async def send_frame(self, frame: bytes | bytearray) -> None:
-        """Send a pre-built frame verbatim (broadcast replay)."""
+    async def send_frame(self, frame: bytes | bytearray) -> None: ...
 
-    async def set_dose_delay(self, enabled: bool) -> None:
-        """Set the dose-delay flag mirrored from the master."""
+    async def set_dose_delay(self, enabled: bool) -> None: ...
 
 
-class HeaterChihirosClient(Protocol):
-    """Home Assistant-facing Chihiros heater client surface."""
+class HeaterChihirosClient(BaseChihirosClient, Protocol):
+    """Home Assistant-facing heater client surface."""
 
     @property
-    def setting_temperature_celsius(self) -> float:
-        """Return the last known target temperature."""
+    def setting_temperature_celsius(self) -> float: ...
 
     @property
-    def power_watts(self) -> int:
-        """Return the tracked manual power in watts."""
+    def power_watts(self) -> int: ...
 
     @property
-    def protector_temperature_celsius(self) -> float:
-        """Return the tracked overheat protection temperature."""
+    def protector_temperature_celsius(self) -> float: ...
 
     @property
-    def auto_default_temperature_celsius(self) -> float:
-        """Return the tracked auto-mode default temperature."""
+    def auto_default_temperature_celsius(self) -> float: ...
 
     @property
-    def auto_default_power_watts(self) -> int:
-        """Return the tracked auto-mode default power in watts."""
+    def auto_default_power_watts(self) -> int: ...
 
     @property
-    def auto_heating(self) -> bool:
-        """Return whether auto heating is enabled."""
+    def auto_heating(self) -> bool: ...
 
     @property
-    def is_celsius(self) -> bool:
-        """Return whether the device displays Celsius (as opposed to Fahrenheit)."""
+    def is_celsius(self) -> bool: ...
 
     @property
-    def backlight(self) -> bool:
-        """Return whether the tracked display-backlight state is on."""
+    def backlight(self) -> bool: ...
 
-    async def set_temperature(self, temperature_c: float) -> None:
-        """Set the target temperature and switch to manual mode."""
+    async def set_temperature(self, temperature_c: float) -> None: ...
 
-    async def set_power(self, power_watts: int) -> None:
-        """Set the manual power in watts and switch to manual mode."""
+    async def set_power(self, power_watts: int) -> None: ...
 
-    async def set_manual_state(self, temperature_c: float, power_watts: int) -> None:
-        """Atomically set both manual values and switch to manual mode."""
+    async def set_manual_state(self, temperature_c: float, power_watts: int) -> None: ...
 
-    async def set_manual_mode(self) -> None:
-        """Switch to manual mode without writing a setpoint."""
+    async def set_manual_mode(self) -> None: ...
 
-    async def apply_scene(self) -> None:
-        """Apply the stored auto schedule."""
+    async def apply_scene(self) -> None: ...
 
-    async def set_auto_default_temperature(self, temperature_c: float) -> None:
-        """Set the auto-mode default temperature, resending the tracked power."""
+    async def set_auto_default_temperature(self, temperature_c: float) -> None: ...
 
-    async def set_auto_default_power(self, power_watts: int) -> None:
-        """Set the auto-mode default power, resending the tracked temperature."""
+    async def set_auto_default_power(self, power_watts: int) -> None: ...
 
-    def restore_setting_temperature(self, temperature_c: float) -> None:
-        """Restore tracked manual target temperature without writing to the device."""
+    def restore_setting_temperature(self, temperature_c: float) -> None: ...
 
-    def restore_manual_power(self, power_watts: int) -> None:
-        """Restore tracked manual power without writing to the device."""
+    def restore_manual_power(self, power_watts: int) -> None: ...
 
-    def restore_auto_default_temperature(self, temperature_c: float) -> None:
-        """Restore tracked auto temperature without writing to the device."""
+    def restore_auto_default_temperature(self, temperature_c: float) -> None: ...
 
-    def restore_auto_default_power(self, power_watts: int) -> None:
-        """Restore tracked auto power without writing to the device."""
+    def restore_auto_default_power(self, power_watts: int) -> None: ...
 
-    async def set_auto_heating(self, enabled: bool) -> None:
-        """Enable or disable the heating element in auto mode."""
+    async def set_auto_heating(self, enabled: bool) -> None: ...
 
-    async def set_temperature_unit(self, *, celsius: bool) -> None:
-        """Set the device's display unit."""
+    async def set_temperature_unit(self, *, celsius: bool) -> None: ...
 
-    async def set_backlight(self, enabled: bool) -> None:
-        """Turn the device's display backlight on or off."""
+    async def set_backlight(self, enabled: bool) -> None: ...
 
-    async def set_protector_temperature(self, temperature_c: float) -> None:
-        """Set the overheat protection temperature."""
+    async def set_protector_temperature(self, temperature_c: float) -> None: ...
 
-    async def calibrate(self, measured_temperature_c: float) -> None:
-        """Calibrate the sensor against a measured reference temperature."""
+    async def calibrate(self, measured_temperature_c: float) -> None: ...
 
-    async def reset_work_time(self) -> None:
-        """Zero the runtime counter that drives the cleaning warning."""
-
-
-class ChihirosClient(Protocol):
-    """Home Assistant-facing device client surface."""
-
-    model: DeviceModel
-    last_runtime_notification: RuntimeNotification | None
-    last_fan_status_notification: FanStatusNotification | None
-    last_schedule_snapshot_notification: ScheduleSnapshotNotification | None
-
-    @property
-    def fan_auto(self) -> bool:
-        """Return whether the fan is in temperature-controlled auto mode."""
-
-    @property
-    def fan_start_temp(self) -> int:
-        """Return the last fan start temperature in whole degrees Celsius."""
-
-    @property
-    def fan_stop_temp(self) -> int:
-        """Return the last fan stop temperature in whole degrees Celsius."""
-
-    @property
-    def address(self) -> str:
-        """Return the device address."""
-
-    @property
-    def name(self) -> str:
-        """Return the device name."""
-
-    @property
-    def model_name(self) -> str:
-        """Return the model name."""
-
-    @property
-    def colors(self) -> dict[str, int]:
-        """Return supported color channels."""
-
-    def add_notification_callback(self, callback: NotificationCallback) -> Callable[[], None]:
-        """Register a parsed notification callback."""
-
-    async def query_status(self) -> None:
-        """Request a current runtime/status snapshot."""
-
-    async def set_brightness(self, brightness: int | Sequence[int] | Mapping[str | int, int]) -> None:
-        """Set device brightness."""
-
-    async def turn_on(self) -> None:
-        """Turn the device on."""
-
-    async def turn_off(self) -> None:
-        """Turn the device off."""
-
-    async def enable_auto_mode(self, timestamp: datetime | None = None) -> None:
-        """Enable automatic mode."""
-
-    async def set_manual_mode(self) -> None:
-        """Enable manual mode."""
-
-    async def set_auto_point(self, channel: int, minutes: int, level: int) -> None:
-        """Write one auto-curve point for a channel."""
-
-    async def set_auto_curve(self, points: Sequence[tuple[int, int, int]]) -> None:
-        """Replace the device's auto curve in one transaction."""
-
-    async def set_fan_speed(self, speed_percent: int) -> None:
-        """Set the fan speed percentage on fan-equipped models."""
-
-    async def set_fan_auto(self) -> None:
-        """Switch the fan to temperature-controlled auto mode."""
-
-    async def set_fan_start_stop_temp(self, start_temp: int, stop_temp: int) -> None:
-        """Set the fan start/stop temperatures used by auto mode."""
-
-    async def add_setting(
-        self,
-        sunrise: datetime,
-        sunset: datetime,
-        max_brightness: int | Sequence[int] | Mapping[str | int, int] = 100,
-        ramp_up_in_minutes: int = 0,
-        weekdays: list[WeekdaySelect] | None = None,
-    ) -> None:
-        """Add a schedule setting."""
-
-    async def remove_setting(
-        self,
-        sunrise: datetime,
-        sunset: datetime,
-        ramp_up_in_minutes: int = 0,
-        weekdays: list[WeekdaySelect] | None = None,
-    ) -> None:
-        """Remove a schedule setting."""
-
-    async def reset_settings(self) -> None:
-        """Reset schedule settings."""
-
-    async def disconnect(self) -> None:
-        """Disconnect the client."""
+    async def reset_work_time(self) -> None: ...
 
 
 @dataclass(frozen=True)
 class ChihirosRuntime:
     """Resolved runtime device data for a config entry."""
 
-    client: ChihirosClient
+    client: BaseChihirosClient
     address: str
     always_available: bool = False
 
 
 def _resolve_fake_runtime(address: str, entry: ConfigEntry) -> ChihirosRuntime:
-    """Build a fake development client for a fake device address."""
     return ChihirosRuntime(
-        client=create_fake_device(address, entry_pump_count(entry)),
-        address=address,
-        always_available=True,
+        client=create_fake_device(address, entry_pump_count(entry)), address=address, always_available=True
     )
 
 
 def _apply_entry_name(ble_device: BLEDevice, entry: ConfigEntry) -> None:
-    """Fall back to the entry title for devices that advertise without a name."""
     entry_name = entry.data.get(CONF_NAME)
     if not entry_name:
         return
@@ -313,10 +301,9 @@ def _apply_entry_name(ble_device: BLEDevice, entry: ConfigEntry) -> None:
 
 
 async def resolve_chihiros_runtime(hass: HomeAssistant, entry: ConfigEntry) -> ChihirosRuntime:
-    """Resolve a config entry to either a real BLE client or a development fake client."""
+    """Resolve a config entry to a real BLE client or development fake."""
     if entry.unique_id is None:
         raise ConfigEntryNotReady(f"Entry doesn't have any unique_id {entry.title}")
-
     address: str = entry.unique_id
     if fake_devices_enabled() and is_fake_address(address):
         return _resolve_fake_runtime(address, entry)
@@ -332,10 +319,8 @@ async def _resolve_ble_runtime(hass: HomeAssistant, entry: ConfigEntry, address:
         raise ConfigEntryNotReady(f"Found Chihiros BLE device with address {address} but can not find its name")
     if needs_device_type(ble_device.name):
         _apply_entry_name(ble_device, entry)
-
     try:
         client = create_device(ble_device, device_type=entry.data.get("device_type"))
     except UnsupportedDeviceError as ex:
         raise ConfigEntryNotReady(str(ex)) from ex
-
     return ChihirosRuntime(client=client, address=ble_device.address)

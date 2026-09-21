@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from chihiros_led_control.client import ChihirosDosingPump
+from chihiros_led_control.devices import ChihirosDosingPump
 from chihiros_led_control.exceptions import UnsupportedDeviceError
 from chihiros_led_control.factory import (
     create_device,
@@ -14,7 +14,12 @@ from chihiros_led_control.factory import (
     needs_device_type,
     resolve_model,
 )
-from chihiros_led_control.models import FALLBACK
+from chihiros_led_control.models import (
+    FALLBACK,
+    DeviceKind,
+    LedFeature,
+    LedProtocol,
+)
 
 
 class FakeBLEDevice:
@@ -28,7 +33,7 @@ class FakeBLEDevice:
 
 def test_detect_model_wrgb2_generation_split() -> None:
     """WRGB2 new-gen codes are SeaLed; legacy DYWRGB is BleLed."""
-    assert detect_model("DYWRGB1234567890").sea_led_family is False
+    assert detect_model("DYWRGB1234567890").spec.protocol is not LedProtocol.SEA_LED
     # DYN-prefixed new gen (length suffixes are light sizes): SeaLed
     for name in (
         "DYNT901234567890",
@@ -41,7 +46,7 @@ def test_detect_model_wrgb2_generation_split() -> None:
     ):
         model = detect_model(name)
         assert model.name == "WRGB II"
-        assert model.sea_led_family is True
+        assert model.spec.protocol is LedProtocol.SEA_LED
 
 
 def test_detect_model_new_gen_families_are_sea_led() -> None:
@@ -62,10 +67,10 @@ def test_detect_model_new_gen_families_are_sea_led() -> None:
     for name, expected in sea_led_cases.items():
         model = detect_model(name)
         assert model.name == expected
-        assert model.sea_led_family is True, name
+        assert model.spec.protocol is LedProtocol.SEA_LED, name
     # WRGB VIVID III: device_type "NewVivid3" is not in {BleLed, NewBleLed},
     # so _judgeNewLed sets field_147 true → SeaLed family (binary-verified).
-    assert detect_model("DYVVD31234567890").sea_led_family is True
+    assert detect_model("DYVVD31234567890").spec.protocol is LedProtocol.SEA_LED
 
 
 def test_detect_model_does_not_rely_on_fixed_slicing() -> None:
@@ -85,7 +90,7 @@ def test_detect_model_matches_wrgb_vivid_iii_prefix() -> None:
 
     assert model.name == "WRGB VIVID III"
     assert dict(model.color_channels) == {"white": 3, "red": 0, "green": 1, "blue": 2}
-    assert model.has_fan is True
+    assert LedFeature.FAN in model.spec.features
 
 
 def test_unknown_model_needs_device_type() -> None:
@@ -139,8 +144,7 @@ def test_factory_created_dosing_pump_uses_dosing_client() -> None:
     device = asyncio.run(create())
 
     assert isinstance(device, ChihirosDosingPump)
-    assert device.model_name == "Dosing Pump"
-    assert device.colors == {}
+    assert device.device_kind is DeviceKind.DOSING_PUMP
 
 
 def test_detect_model_matches_rgb_aplus_prefixes() -> None:
@@ -162,13 +166,13 @@ def test_detect_model_matches_rgb_vivid_prefixes() -> None:
     dyrgbv = detect_model("DYRGBV1234567890")
     assert dyrgbv.name == "RGB VIVID II"
     assert dict(dyrgbv.color_channels) == {"red": 0, "green": 1, "blue": 2}
-    assert dyrgbv.sea_led_family is False
+    assert dyrgbv.spec.protocol is not LedProtocol.SEA_LED
     for name in ("DYNVVD1234567890", "DYNV1234567890"):
         model = detect_model(name)
 
         assert model.name == "RGB VIVID II"
         assert dict(model.color_channels) == {"red": 0, "green": 1, "blue": 2}
-        assert model.sea_led_family is True
+        assert model.spec.protocol is LedProtocol.SEA_LED
 
 
 def test_detect_model_matches_single_channel_white_prefixes() -> None:
@@ -208,10 +212,10 @@ def test_detect_model_matches_new_gen_commander_prefix() -> None:
     assert dyled.name == "Commander 4"
     assert dict(dyled.color_channels) == {"white": 3, "red": 0, "green": 1, "blue": 2}
     assert dyled.needs_device_type is False
-    assert dyled.sea_led_family is False  # BleLed device_type → [ch, minutes/30, level] auto points
+    assert dyled.spec.protocol is not LedProtocol.SEA_LED  # BleLed device_type → [ch, minutes/30, level] auto points
 
     dynled = detect_model("DYNLED1234567890")
     assert dynled.name == "Commander 4"
     assert dict(dynled.color_channels) == {"white": 3, "red": 0, "green": 1, "blue": 2}
     assert needs_device_type("DYNLED1234567890") is False
-    assert dynled.sea_led_family is True  # SeaLed device_type → [ch, hour, minute, level] auto points
+    assert dynled.spec.protocol is LedProtocol.SEA_LED  # SeaLed device_type → [ch, hour, minute, level] auto points

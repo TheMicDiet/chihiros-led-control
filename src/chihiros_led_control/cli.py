@@ -12,21 +12,18 @@ from rich import print
 from rich.table import Table
 from typing_extensions import Annotated
 
-from .commands import (
+from .devices import ChihirosDevice, ChihirosDosingPump, ChihirosHeater, ChihirosMagStirrer
+from .factory import detect_model, get_device_from_address
+from .models import DeviceKind
+from .protocol.dosing import (
     DOSE_VOLUME_MAX_ML,
-    HEATER_MAX_POWER_WATTS,
-    HEATER_MAX_TEMPERATURE_C,
     MANUAL_DOSE_VOLUME_MAX_ML,
     MANUAL_DOSE_VOLUME_MIN_ML,
     DosingMode,
     DosingWorkPoint,
-    encode_heater_power_watts,
-    stirrer_dosage_for_minutes,
-    validate_stirrer_work_points,
 )
-from .devices import ChihirosDevice, ChihirosDosingPump, ChihirosHeater, ChihirosMagStirrer
-from .factory import detect_model, get_device_from_address
-from .models import DeviceKind
+from .protocol.heater import HEATER_MAX_POWER_WATTS, HEATER_MAX_TEMPERATURE_C, encode_heater_power_watts
+from .protocol.stirrer import stirrer_dosage_for_minutes, validate_stirrer_work_points
 from .weekday_encoding import WeekdaySelect, encode_selected_weekdays
 
 app = typer.Typer()

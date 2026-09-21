@@ -5,8 +5,8 @@ library without owning any Chihiros device.
 
 ## Home Assistant fake devices
 
-`custom_components/chihiros/fake.py` provides in-memory devices that implement
-the full `ChihirosClient` surface. They appear in the integration's device
+`custom_components/chihiros/fake/` provides in-memory devices that implement
+family-specific fake device surfaces. They appear in the integration's device
 picker when `CHIHIROS_FAKE_DEVICES=1` (the default in the Docker compose
 setup; see [home-assistant-docker.md](home-assistant-docker.md)).
 
@@ -33,7 +33,7 @@ roster assertion in `tests/test_home_assistant_unit.py`.
 ## Scripted BLE transport
 
 `src/chihiros_led_control/testing.py` provides an injectable in-memory
-`ChihirosTransport`, so the real family driver runs its connect flow,
+`ScriptedTransport`, so the real family driver runs its connect flow,
 command encoding, retry logic, and notification parsing against scripted
 bytes.
 
@@ -41,14 +41,14 @@ bytes.
 import asyncio
 
 from chihiros_led_control import ChihirosDevice
-from chihiros_led_control.models import WHITE_CHANNELS, DeviceModel
+from chihiros_led_control.models import DeviceModel, LedSpec, WHITE_CHANNELS
 from chihiros_led_control.testing import ScriptedTransport
 
 async def run() -> None:
     transport = ScriptedTransport()
     # Reply to the auth/status command with a runtime notification frame.
     transport.expect(90, 4, [1], respond=[bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")])
-    device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
+    device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
     await device.query_status()
     # Successful commands reuse the connection until it goes idle.
     await device.disconnect()

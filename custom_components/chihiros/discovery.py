@@ -11,7 +11,7 @@ from homeassistant.const import CONF_ADDRESS
 from .fake import FakeChihirosDeviceInfo
 
 if TYPE_CHECKING:
-    from .runtime import ChihirosClient
+    from .runtime import BaseChihirosClient
 
 
 @dataclass(frozen=True)
@@ -55,6 +55,6 @@ class ChihirosDiscovery:
         return f"{self.name} ({self.address})"
 
 
-def discovery_title(device: ChihirosClient, discovery: ChihirosDiscovery) -> str:
+def discovery_title(device: BaseChihirosClient, discovery: ChihirosDiscovery) -> str:
     """Return the config entry title for a real discovery."""
     return device.name or discovery.name

@@ -43,7 +43,7 @@ BaseChihirosDevice        # internal, common runtime behavior only
 
 `ChihirosDevice` remains the exported LED client. Pump, stirrer, and heater stop inheriting LED methods.
 
-Direct imports from `chihiros_led_control.client` will be migrated to package-level imports or the new family modules. Do not retain a compatibility-only `client.py` re-export module; document the module-path break if external users rely on it.
+Direct imports from package-level or family-driver imports will be migrated to package-level imports or the new family modules. Do not retain a compatibility module; document the module-path break if external users rely on it.
 
 ### Share protocol code, not domain inheritance
 
@@ -79,9 +79,9 @@ Before moving code, identify existing tests covering these invariants:
 
 | Invariant | Existing primary coverage |
 |---|---|
-| Frame checksum and message IDs | `tests/test_protocol.py` |
-| LED commands and schedules | `tests/test_client.py` |
-| Dosing commands and retry safety | `tests/test_dosing.py`, `tests/test_dosing_protocol.py` |
+| Frame checksum and message IDs | `tests/test_legacy protocol module` |
+| LED commands and schedules | `tests/test_legacy client module` |
+| Dosing commands and retry safety | `tests/test_dosing.py`, `tests/test_dosing_legacy protocol module` |
 | Stirrer behavior | `tests/test_mag_stirrer.py`, `tests/test_stirrer_ha.py` |
 | Heater behavior | `tests/test_heater.py`, `tests/test_heater_ha.py` |
 | Fan/VIVID III behavior | `tests/test_fan.py` |
@@ -113,7 +113,7 @@ This removes Bluetooth lifecycle complexity from the later device split.
 
 ```diff
  src/chihiros_led_control/
- ├── client.py
+ ├── legacy client module
 +├── transport.py
  ├── testing.py
  └── const.py
@@ -183,7 +183,7 @@ Change `src/chihiros_led_control/testing.py` so `ScriptedTransport` implements `
 Remove:
 
 ```python
-patch_establish_connection()
+ScriptedTransport()
 ```
 
 New usage:
@@ -200,9 +200,9 @@ The production constructor creates `BleTransport` when no transport is supplied.
 
 Update:
 
-- `tests/test_client.py`
+- `tests/test_legacy client module`
 - `tests/test_scripted_transport.py`
-- family tests that patch `establish_connection`
+- family tests that inject `ScriptedTransport`
 - `docs/testing-without-hardware.md`
 
 Preserve tests for:
@@ -220,7 +220,7 @@ Preserve tests for:
 
 ```bash
 uv --cache-dir .uv-cache run --group dev pytest \
-  tests/test_client.py \
+  tests/test_legacy client module \
   tests/test_scripted_transport.py \
   tests/test_dosing.py \
   tests/test_heater.py
@@ -367,7 +367,7 @@ Replace singleton comparisons:
 +return driver(...)
 ```
 
-At this phase, the driver mapping can still point to classes in `client.py`.
+At this phase, the driver mapping can still point to classes in `devices/`.
 
 ### Home Assistant discriminator
 
@@ -411,7 +411,7 @@ Do not add tests merely asserting the dataclass layout.
 
 ```diff
  src/chihiros_led_control/
--├── client.py
+-├── legacy client module
 +├── devices/
 +│   ├── __init__.py
 +│   ├── base.py
@@ -421,7 +421,7 @@ Do not add tests merely asserting the dataclass layout.
 +│   └── heater.py
 ```
 
-Delete `client.py` after migrating every internal caller. Do not leave a forwarding module.
+Delete `legacy client module` after migrating every internal caller. Do not leave a forwarding module.
 
 ### `devices/base.py`
 
@@ -554,7 +554,7 @@ Remove capability helpers that compare names. Use `device_kind`, then cast to th
 
 Update direct imports across:
 
-- `test_client.py`
+- `test_legacy client module`
 - `test_cli.py`
 - `test_factory.py`
 - `test_dosing.py`
@@ -571,7 +571,7 @@ Use a throwaway introspection smoke check—not a permanent test—to confirm th
 - Non-LED devices do not expose `set_brightness()`, LED schedule methods, or fan methods.
 - Stirrer does not inherit dosing-pump state or status behavior.
 - Factory, CLI, HA, fakes, and tests use the new modules.
-- `client.py` is removed.
+- `legacy client module` is removed.
 - Top-level package exports still work.
 
 ## Phase 4 — Split frame, command, and notification codecs
@@ -580,8 +580,8 @@ Use a throwaway introspection smoke check—not a permanent test—to confirm th
 
 ```diff
  src/chihiros_led_control/
--├── commands.py
--├── protocol.py
+-├── old monolithic command module (removed)
+-├── old monolithic protocol module (removed)
 +├── protocol/
 +│   ├── __init__.py
 +│   ├── frame.py
@@ -661,7 +661,7 @@ Home Assistant imports notification data types, never command builders
 
 ### Remove old modules
 
-Delete `commands.py` and `protocol.py` after every caller is migrated. Do not leave forwarding imports.
+The old monolithic codec modules are deleted; do not add forwarding imports.
 
 Update references in:
 
@@ -676,10 +676,10 @@ Update references in:
 Move test imports but preserve byte-level assertions. Suggested grouping:
 
 ```text
-tests/test_protocol.py
+tests/test_legacy protocol module
   → common frame + LED protocol
 
-tests/test_dosing_protocol.py
+tests/test_dosing_legacy protocol module
   → dosing protocol
 
 tests/test_heater.py
@@ -697,7 +697,7 @@ Renaming test files is optional; do not reorganize them solely for symmetry.
 - No `heater=True` parsing flag remains.
 - A family driver imports no unrelated family codec.
 - Every existing command-byte assertion remains unchanged.
-- Old `commands.py` and `protocol.py` are removed.
+- Old `legacy command module` and `legacy protocol module` are removed.
 
 ## Phase 5 — Align Home Assistant runtime data and fakes
 
@@ -814,7 +814,7 @@ Update:
   - family boundaries;
   - source/vendor ownership.
 - `docs/protocol.md`
-  - replace references to the removed `protocol.py`;
+  - replace references to the family codec package;
   - identify family codec paths.
 - `docs/testing-without-hardware.md`
   - injected scripted transport example;
@@ -839,9 +839,9 @@ Do not add a new changelog unless the project adopts one separately.
 
 Confirm removal of:
 
-- `client.py`;
-- `commands.py`;
-- monolithic `protocol.py`;
+- `legacy client module`;
+- `legacy command module`;
+- monolithic `legacy protocol module`;
 - global transport monkey-patching;
 - model-name capability checks;
 - old boolean profile fields;

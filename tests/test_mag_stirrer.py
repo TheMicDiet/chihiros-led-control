@@ -8,10 +8,11 @@ import pytest
 from typer.testing import CliRunner
 
 from chihiros_led_control import cli
-from chihiros_led_control.client import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
-from chihiros_led_control.commands import DosingMode, DosingWorkPoint, stirrer_dosage_for_minutes
+from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
 from chihiros_led_control.factory import create_device, detect_model
 from chihiros_led_control.models import DOSING_PUMP, MAG_STIRRER
+from chihiros_led_control.protocol.dosing import DosingMode, DosingWorkPoint
+from chihiros_led_control.protocol.stirrer import stirrer_dosage_for_minutes
 from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
 
 RUNNER = CliRunner()
@@ -35,29 +36,30 @@ def test_detect_model_recognizes_stirrer_prefix() -> None:
 
 
 def test_create_device_builds_stirrer_client() -> None:
-    """DYMIXR devices get a ChihirosMagStirrer, which is a dosing pump client."""
+    """DYMIXR devices get an independent magnetic-stirrer client."""
 
-    async def run() -> ChihirosDevice:
-        return create_device(FakeBLEDevice())  # type: ignore[arg-type]
+    async def run() -> ChihirosMagStirrer:
+        return create_device(ScriptedBLEDevice("DYMIXR-test", "AA:BB:CC:DD:EE:FF"))
 
     device = asyncio.run(run())
     assert isinstance(device, ChihirosMagStirrer)
-    assert isinstance(device, ChihirosDosingPump)
-    assert isinstance(device, ChihirosDevice)
+    assert not isinstance(device, ChihirosDosingPump)
+    assert not isinstance(device, ChihirosDevice)
     assert device.model_name == "Mag Stirrer"
 
 
 def _fast_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove notification sleeps so scripted sessions run quickly."""
-    from chihiros_led_control import client as client_module
+    from chihiros_led_control import transport as transport_module
+    from chihiros_led_control.devices import base as client_module
 
     monkeypatch.setattr(client_module, "COMMAND_NOTIFICATION_WAIT", 0.0)
     monkeypatch.setattr(client_module, "STATUS_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(client_module, "BATCH_WRITE_DELAY", 0.0)
+    monkeypatch.setattr(transport_module, "BATCH_WRITE_DELAY", 0.0)
 
 
 def _make_stirrer(transport: ScriptedTransport) -> ChihirosMagStirrer:
-    return ChihirosMagStirrer(ScriptedBLEDevice(transport.name, transport.address), MAG_STIRRER)
+    return ChihirosMagStirrer(ScriptedBLEDevice(transport.name, transport.address), MAG_STIRRER, transport=transport)
 
 
 def test_scripted_stirrer_pre_second_and_manual_stir(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -67,7 +69,7 @@ def test_scripted_stirrer_pre_second_and_manual_stir(monkeypatch: pytest.MonkeyP
 
     async def run() -> None:
         device = _make_stirrer(transport)
-        with transport.patch_establish_connection():
+        if transport:
             await device.set_pre_second(0, 90, speed=60)
             await device.stir(2, True)
             await device.stir(2, False, seconds=300)
@@ -95,7 +97,7 @@ def test_scripted_stirrer_schedule_sequence(monkeypatch: pytest.MonkeyPatch) -> 
             DosingWorkPoint(8, 0, volume_ml=stirrer_dosage_for_minutes(10)),
             DosingWorkPoint(20, 30, volume_ml=stirrer_dosage_for_minutes(5)),
         ]
-        with transport.patch_establish_connection():
+        if transport:
             await device.set_stir_schedule(1, points, frequency=127)
 
         dosing_frames = [frame for frame in transport.writes if frame[0] == 165]
@@ -117,7 +119,7 @@ def test_scripted_stirrer_inactive_channel_skips_schedule(monkeypatch: pytest.Mo
     async def run() -> None:
         device = _make_stirrer(transport)
         points = [DosingWorkPoint(8, 0, volume_ml=stirrer_dosage_for_minutes(10))]
-        with transport.patch_establish_connection():
+        if transport:
             await device.set_stir_schedule(0, points, frequency=127, active=False)
 
         dosing_frames = [frame for frame in transport.writes if frame[0] == 165]
@@ -133,8 +135,12 @@ def test_scripted_pump_schedule_and_settings(monkeypatch: pytest.MonkeyPatch) ->
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = ChihirosDosingPump(ScriptedBLEDevice(transport.name, transport.address), DOSING_PUMP)
-        with transport.patch_establish_connection():
+        device = ChihirosDosingPump(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DOSING_PUMP,
+            transport=transport,
+        )
+        if transport:
             await device.set_channel_active(0, active=True, compensate=True)
             await device.apply_dosing_settings(0, 10.0, 127, is_first_setting=False)
             await device.set_schedule(
@@ -358,7 +364,7 @@ def test_stirrer_schedule_cli_encodes_weekdays(monkeypatch: pytest.MonkeyPatch) 
 
 def test_doser_query_cli_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     """doser-totals/doser-today query the device and print the reported volumes."""
-    from chihiros_led_control.protocol import DosingDailyNotification, DosingTotalsNotification
+    from chihiros_led_control.protocol.notifications import DosingDailyNotification, DosingTotalsNotification
 
     queried: list[str] = []
 
@@ -437,7 +443,7 @@ def test_scripted_program_channel_is_one_transaction(monkeypatch: pytest.MonkeyP
 
     async def run() -> None:
         device = _make_stirrer(transport)
-        with transport.patch_establish_connection():
+        if transport:
             await device.program_channel(
                 1,
                 active=True,

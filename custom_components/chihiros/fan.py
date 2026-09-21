@@ -19,7 +19,7 @@ from .const import DOMAIN
 from .coordinator import ATTR_FAN_RPM, ChihirosDataUpdateCoordinator
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData
-from .runtime import ChihirosClient, has_led_feature
+from .runtime import LedChihirosClient, has_led_feature
 from .vendor.chihiros_led_control.models import LedFeature
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ class ChihirosFanEntity(
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        chihiros_device: ChihirosClient,
+        chihiros_device: LedChihirosClient,
     ) -> None:
         """Initialize the fan entity."""
         super().__init__(coordinator)

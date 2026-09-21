@@ -9,8 +9,8 @@ import pytest
 from typer.testing import CliRunner
 
 from chihiros_led_control import cli
-from chihiros_led_control.client import ChihirosDevice, ChihirosDosingPump
-from chihiros_led_control.models import DOSING_PUMP, WHITE_CHANNELS, DeviceModel
+from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump
+from chihiros_led_control.models import DOSING_PUMP, WHITE_CHANNELS, DeviceModel, LedSpec
 
 
 class FakeBLEDevice:
@@ -260,7 +260,9 @@ def test_dose_cli_rejects_non_dosing_device(monkeypatch: pytest.MonkeyPatch) -> 
 
     async def get_device_from_address(address: str) -> ChihirosDevice:
         assert address == TEST_ADDRESS
-        return ChihirosDevice(FakeBLEDevice(address=TEST_ADDRESS), DeviceModel("Test Light", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+        return ChihirosDevice(
+            FakeBLEDevice(address=TEST_ADDRESS), DeviceModel("Test Light", (), LedSpec(WHITE_CHANNELS))
+        )  # type: ignore[arg-type]
 
     monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
 

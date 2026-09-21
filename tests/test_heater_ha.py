@@ -45,8 +45,8 @@ except ImportError as err:
         allow_module_level=True,
     )
 
-from custom_components.chihiros.vendor.chihiros_led_control.models import HEATER
-from custom_components.chihiros.vendor.chihiros_led_control.protocol import (
+from custom_components.chihiros.vendor.chihiros_led_control.models import HEATER, DeviceKind
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.heater import (
     HeaterStatusNotification,
     HeaterTemperatureNotification,
 )
@@ -95,6 +95,10 @@ class _TrackingHeater:
     @property
     def name(self) -> str:
         return "DYHET-test"
+
+    @property
+    def device_kind(self) -> DeviceKind:
+        return self.model.device_kind
 
     @property
     def model_name(self) -> str:

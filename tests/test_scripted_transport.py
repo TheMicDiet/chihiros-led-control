@@ -1,6 +1,6 @@
 """End-to-end client tests against a scripted BLE transport (no hardware).
 
-The scripted transport replaces ``establish_connection`` so the real
+The scripted transport is injected into the real
 ``ChihirosDevice`` connect flow (characteristic resolution, notification
 subscription, connection prelude), command writes, and notification parsing
 run against scripted bytes instead of Bluetooth hardware.
@@ -15,10 +15,11 @@ from datetime import datetime
 import pytest
 from bleak_retry_connector import BleakError
 
-from chihiros_led_control import client as client_module
-from chihiros_led_control import commands
-from chihiros_led_control.models import WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
-from chihiros_led_control.protocol import DosingTotalsNotification, RuntimeNotification
+from chihiros_led_control import testing as testing_module
+from chihiros_led_control.devices import base as device_base
+from chihiros_led_control.models import WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel, LedFeature, LedSpec
+from chihiros_led_control.protocol import led as commands
+from chihiros_led_control.protocol.notifications import DosingTotalsNotification, RuntimeNotification
 from chihiros_led_control.testing import ScriptedTransport
 from chihiros_led_control.weekday_encoding import WeekdaySelect
 
@@ -27,9 +28,9 @@ RUNTIME_FRAME = bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")
 
 def _fast_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove notification sleeps so scripted sessions run quickly."""
-    monkeypatch.setattr(client_module, "COMMAND_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(client_module, "STATUS_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(client_module, "BATCH_WRITE_DELAY", 0.0)
+    monkeypatch.setattr(device_base, "COMMAND_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(device_base, "STATUS_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(testing_module, "BATCH_WRITE_DELAY", 0.0)
 
 
 def test_scripted_query_status_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -39,8 +40,8 @@ def test_scripted_query_status_round_trip(monkeypatch: pytest.MonkeyPatch) -> No
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
-        with transport.patch_establish_connection():
+        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        if transport:
             await device.query_status()
 
         assert device.last_runtime_notification == RuntimeNotification(27, 511, RUNTIME_FRAME)
@@ -71,8 +72,8 @@ def test_scripted_fire_and_forget_without_notify_characteristic(
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
-        with caplog.at_level(logging.WARNING), transport.patch_establish_connection():
+        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        with caplog.at_level(logging.WARNING):
             await device.query_status()
 
         # Prelude (3) + query status execute without a notify subscription.
@@ -91,8 +92,10 @@ def test_scripted_fan_commands_round_trip(monkeypatch: pytest.MonkeyPatch) -> No
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, min_fan_speed=25))
-        with transport.patch_establish_connection():
+        device = transport.make_device(
+            DeviceModel("VIVID3", (), LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25))
+        )
+        if transport:
             await device.set_fan_auto()
             assert device.fan_auto is True
             await device.set_fan_speed(50)
@@ -121,7 +124,7 @@ def test_scripted_dosing_pump_dose_sequence(monkeypatch: pytest.MonkeyPatch) -> 
 
     async def run() -> None:
         device = transport.make_pump()
-        with transport.patch_establish_connection():
+        if transport:
             await device.dose_ml(1, 2.0)
 
         assert device.last_dosing_totals_notification == DosingTotalsNotification((105500, 0), dosing_frame)
@@ -153,8 +156,8 @@ def test_scripted_retries_transient_write_failure(monkeypatch: pytest.MonkeyPatc
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
-        with transport.patch_establish_connection():
+        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        if transport:
             await device.query_status()
 
         assert transport.connections == 2
@@ -173,8 +176,10 @@ def test_scripted_fan_speed_can_fail_permanently(monkeypatch: pytest.MonkeyPatch
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, min_fan_speed=25))
-        with transport.patch_establish_connection():
+        device = transport.make_device(
+            DeviceModel("VIVID3", (), LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25))
+        )
+        if transport:
             with pytest.raises(BleakError, match="scripted write failure"):
                 await device.set_fan_speed(50)
 
@@ -189,8 +194,8 @@ def test_scripted_turn_on_and_off_write_manual_switch_and_levels(monkeypatch: py
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
-        with transport.patch_establish_connection():
+        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        if transport:
             await device.turn_on()
             await device.turn_off()
         writes = transport.writes
@@ -211,8 +216,8 @@ def test_scripted_remove_setting_writes_delete_frame(monkeypatch: pytest.MonkeyP
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
-        with transport.patch_establish_connection():
+        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        if transport:
             await device.remove_setting(
                 datetime(2024, 1, 1, 6, 0),
                 datetime(2024, 1, 1, 18, 0),
@@ -239,8 +244,8 @@ def test_scripted_reset_settings_writes_reset_frame(monkeypatch: pytest.MonkeyPa
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
-        with transport.patch_establish_connection():
+        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        if transport:
             await device.reset_settings()
 
         writes = transport.writes
@@ -258,12 +263,12 @@ def test_scripted_disconnect_closes_connection_until_next_command(monkeypatch: p
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
-        with transport.patch_establish_connection():
+        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        if transport:
             await device.query_status()
             assert transport.connections == 1
             await device.disconnect()
-            assert device._client is None  # noqa: SLF001
+            assert not transport.is_connected
             await device.query_status()
             assert transport.connections == 2
 
@@ -275,7 +280,7 @@ def test_scripted_set_log_level_configures_device_logger() -> None:
 
     async def run() -> None:
         transport = ScriptedTransport()
-        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
+        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
 
         device.set_log_level("DEBUG")
         assert device._logger.level == logging.DEBUG  # noqa: SLF001

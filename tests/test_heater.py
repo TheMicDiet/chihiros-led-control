@@ -8,23 +8,24 @@ import pytest
 from typer.testing import CliRunner
 
 from chihiros_led_control import cli
-from chihiros_led_control.client import ChihirosDevice, ChihirosHeater
-from chihiros_led_control.commands import (
+from chihiros_led_control.devices import ChihirosDevice, ChihirosHeater
+from chihiros_led_control.factory import create_device, detect_model
+from chihiros_led_control.models import HEATER
+from chihiros_led_control.protocol.heater import (
+    HeaterStatusNotification,
+    HeaterTemperatureNotification,
     create_heater_backlight_command,
     create_heater_calibrate_command,
     create_heater_protector_temperature_command,
     create_heater_set_command,
     encode_heater_power_watts,
+    heater_alarm_names,
     split_heater_temperature,
 )
-from chihiros_led_control.factory import create_device, detect_model
-from chihiros_led_control.models import HEATER
-from chihiros_led_control.protocol import (
-    HeaterStatusNotification,
-    HeaterTemperatureNotification,
-    heater_alarm_names,
-    parse_notification,
+from chihiros_led_control.protocol.heater import (
+    parse_notification as parse_heater_notification,
 )
+from chihiros_led_control.protocol.led import parse_notification as parse_led_notification
 from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
 
 RUNNER = CliRunner()
@@ -72,19 +73,18 @@ def test_detect_model_recognizes_heater_prefixes() -> None:
         model = detect_model(name)
         assert model.name == "Heater"
         assert model is HEATER
-        assert model.is_heater
+        assert model.device_kind.value == "heater"
         assert dict(model.color_channels) == {}
 
 
 def test_create_device_builds_heater_client() -> None:
-    """DYHET devices get a ChihirosHeater client."""
+    """DYHET devices get an independent ChihirosHeater client."""
 
-    async def run() -> ChihirosDevice:
+    async def run() -> ChihirosHeater:
         return create_device(FakeBLEDevice())  # type: ignore[arg-type]
 
     device = asyncio.run(run())
     assert isinstance(device, ChihirosHeater)
-    assert isinstance(device, ChihirosDevice)
     assert device.model_name == "Heater"
 
 
@@ -127,15 +127,18 @@ def test_heater_frames_match_captured_app_traffic() -> None:
 
 def _fast_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove notification sleeps so scripted sessions run quickly."""
-    from chihiros_led_control import client as client_module
+    from chihiros_led_control import transport as transport_module
+    from chihiros_led_control.devices import base as client_module
+    from chihiros_led_control.devices import heater as heater_module
 
     monkeypatch.setattr(client_module, "COMMAND_NOTIFICATION_WAIT", 0.0)
     monkeypatch.setattr(client_module, "STATUS_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(client_module, "BATCH_WRITE_DELAY", 0.0)
+    monkeypatch.setattr(heater_module, "STATUS_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(transport_module, "BATCH_WRITE_DELAY", 0.0)
 
 
 def _make_heater(transport: ScriptedTransport) -> ChihirosHeater:
-    return ChihirosHeater(ScriptedBLEDevice(transport.name, transport.address), HEATER)
+    return ChihirosHeater(ScriptedBLEDevice(transport.name, transport.address), HEATER, transport=transport)
 
 
 def _sent_frames(transport: ScriptedTransport) -> list[tuple[int, list[int]]]:
@@ -154,7 +157,7 @@ def test_scripted_heater_manual_state_sequence(monkeypatch: pytest.MonkeyPatch) 
 
     async def run() -> None:
         device = _make_heater(transport)
-        with transport.patch_establish_connection():
+        if transport:
             await device.set_temperature(26.5)
             await device.set_power(800)
 
@@ -187,7 +190,7 @@ def test_concurrent_manual_setters_preserve_both_values() -> None:
                 first_write_started.set()
                 await release_first_write.wait()
 
-        device._send_command_locked = capture_locked  # type: ignore[method-assign]
+        device._send_command = capture_locked  # type: ignore[method-assign]
 
         temperature_task = asyncio.create_task(device.set_temperature(26.5))
         await first_write_started.wait()
@@ -213,7 +216,7 @@ def test_scripted_heater_settings_commands(monkeypatch: pytest.MonkeyPatch) -> N
 
     async def run() -> None:
         device = _make_heater(transport)
-        with transport.patch_establish_connection():
+        if transport:
             await device.set_auto_defaults(24.0, 1000)
             await device.set_manual_mode()
             await device.set_auto_mode()
@@ -256,7 +259,7 @@ def test_scripted_heater_auto_defaults_track_the_pair(monkeypatch: pytest.Monkey
 
     async def run() -> None:
         device = _make_heater(transport)
-        with transport.patch_establish_connection():
+        if transport:
             await device.set_auto_default_temperature(22.5)
             await device.set_auto_default_power(800)
 
@@ -286,7 +289,7 @@ def test_concurrent_auto_default_setters_preserve_both_values() -> None:
                 first_write_started.set()
                 await release_first_write.wait()
 
-        device._send_command_locked = capture_locked  # type: ignore[method-assign]
+        device._send_command = capture_locked  # type: ignore[method-assign]
 
         temperature_task = asyncio.create_task(device.set_auto_default_temperature(22.5))
         await first_write_started.wait()
@@ -312,7 +315,7 @@ def test_restored_heater_pairs_drive_real_client_writes(monkeypatch: pytest.Monk
 
     async def run() -> None:
         device = _make_heater(transport)
-        with transport.patch_establish_connection():
+        if transport:
             device.restore_setting_temperature(27.5)
             device.restore_manual_power(800)
             device.restore_auto_default_temperature(22.5)
@@ -345,7 +348,7 @@ def test_scripted_heater_notifications_track_device_state(monkeypatch: pytest.Mo
 
     async def run() -> None:
         device = _make_heater(transport)
-        with transport.patch_establish_connection():
+        if transport:
             await device.query_status()
 
         assert device.last_heater_temperature_notification is not None
@@ -367,7 +370,7 @@ def test_scripted_heater_reported_setting_is_resent(monkeypatch: pytest.MonkeyPa
 
     async def run() -> None:
         device = _make_heater(transport)
-        with transport.patch_establish_connection():
+        if transport:
             await device.query_status()
             await device.set_power(400)
 
@@ -379,22 +382,22 @@ def test_scripted_heater_reported_setting_is_resent(monkeypatch: pytest.MonkeyPa
 
 def test_heater_notification_parsing_is_family_specific() -> None:
     """Heater frames only decode as heater notifications when the family is known."""
-    temperature = parse_notification(_heater_temp_frame(255, 250), heater=True)
+    temperature = parse_heater_notification(_heater_temp_frame(255, 250))
     assert isinstance(temperature, HeaterTemperatureNotification)
     assert temperature.setting_temperature_celsius == 25.5
     assert temperature.current_temperature_celsius == 25.0
 
-    status = parse_notification(_heater_status_frame(firmware=23, work_hours=120, alarms=0x40), heater=True)
+    status = parse_heater_notification(_heater_status_frame(firmware=23, work_hours=120, alarms=0x40))
     assert isinstance(status, HeaterStatusNotification)
     assert (status.firmware_version, status.work_time_hours, status.alarms) == (23, 120, 0x40)
 
-    # The 16-byte/0x0A frame is the LED runtime frame without the heater flag…
+    # The 16-byte/0x0A frame is the LED runtime frame without the heater codec.
     assert not isinstance(
-        parse_notification(_heater_status_frame(firmware=23, work_hours=120, alarms=0)),
+        parse_led_notification(_heater_status_frame(firmware=23, work_hours=120, alarms=0)),
         HeaterStatusNotification,
     )
-    # …and unknown heater frames are ignored instead of guessed at.
-    assert parse_notification(_heater_temp_frame(255, 250)[:10], heater=True) is None
+    # Unknown or truncated heater frames are ignored instead of guessed at.
+    assert parse_heater_notification(_heater_temp_frame(255, 250)[:10]) is None
     assert heater_alarm_names(0x01 | 0x40) == ("insufficient_water", "sensor_failure")
 
 
@@ -404,7 +407,7 @@ def test_heater_validates_before_touching_the_device() -> None:
 
     async def run() -> None:
         device = _make_heater(transport)
-        with transport.patch_establish_connection():
+        if transport:
             with pytest.raises(ValueError, match="temperature"):
                 await device.set_temperature(-5.0)
             with pytest.raises(ValueError, match="power"):

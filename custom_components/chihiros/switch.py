@@ -21,9 +21,9 @@ from .heater import (
     ChihirosHeaterBacklightSwitch,
     is_heater_capable,
 )
-from .models import ChihirosData
-from .runtime import ChihirosClient, has_led_feature, is_device_kind
-from .stirrer import ChihirosStirSwitch, is_stirrer_capable
+from .models import ChihirosData, StirrerChihirosData
+from .runtime import BaseChihirosClient, has_led_feature, is_device_kind
+from .stirrer import ChihirosStirSwitch
 from .vendor.chihiros_led_control.models import DeviceKind, LedFeature
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ async def async_setup_entry(
 def _accessory_switches(chihiros_data: ChihirosData) -> list[SwitchEntity]:
     """Build the switches of the stirrer and heater accessories."""
     entities: list[SwitchEntity] = []
-    if is_stirrer_capable(chihiros_data.device) and chihiros_data.stirrer_states:
+    if isinstance(chihiros_data, StirrerChihirosData):
         entities.extend(
             ChihirosStirSwitch(chihiros_data.device, chihiros_data, channel)
             for channel in range(len(chihiros_data.stirrer_states))
@@ -70,7 +70,7 @@ def _accessory_switches(chihiros_data: ChihirosData) -> list[SwitchEntity]:
     return entities
 
 
-def _vivid3_switches(device: ChihirosClient) -> list[SwitchEntity]:
+def _vivid3_switches(device: BaseChihirosClient) -> list[SwitchEntity]:
     """Build the VIVID III temperature-protection and indicator-LED switches."""
     return [
         ChihirosVivid3Switch(device, "temp_protect", "set_temp_protect", "Temperature Protection"),
@@ -87,7 +87,7 @@ class ChihirosAutoManualSwitch(
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        device: ChihirosClient,
+        device: BaseChihirosClient,
     ) -> None:
         """Initialize the switch."""
         super().__init__(coordinator)
@@ -136,7 +136,7 @@ class ChihirosVivid3Switch(SwitchEntity, RestoreEntity):
 
     def __init__(
         self,
-        device: ChihirosClient,
+        device: BaseChihirosClient,
         state_property: str,
         setter_name: str,
         name_suffix: str,

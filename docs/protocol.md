@@ -41,6 +41,23 @@ BLE failures, cancelled transactions, explicit `disconnect()` calls, and
 Home Assistant config-entry unloads tear the connection down immediately.
 The CLI also explicitly disconnects after each one-shot command.
 
+## Codec module layout
+
+The implementation is split by responsibility:
+
+- `chihiros_led_control.protocol.frame` provides frame construction, message
+  IDs, timestamps, and checksums.
+- `chihiros_led_control.protocol.notifications` provides parsed notification
+  data classes and passive notification dispatch.
+- `chihiros_led_control.protocol.led` contains LED commands and LED-family
+  notification parsing.
+- `chihiros_led_control.protocol.dosing`, `.stirrer`, and `.heater` contain
+  their family commands and notification codecs.
+
+Family drivers in `chihiros_led_control.devices` select the appropriate codec
+from the `DeviceModel.spec`; callers should import those modules directly
+instead of relying on a broad compatibility surface.
+
 ## Frame Format
 
 Commands are byte arrays with this structure:

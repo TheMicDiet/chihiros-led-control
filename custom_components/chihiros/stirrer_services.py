@@ -13,7 +13,7 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
 from .dosing import derive_first_setting, serialize_points
-from .models import ChihirosData
+from .models import StirrerChihirosData
 from .service_utils import (
     ATTR_WEEKDAYS,
     DEVICE_SELECTOR_SCHEMA,
@@ -22,9 +22,9 @@ from .service_utils import (
     parse_start_minutes,
     resolve_service_device,
 )
-from .stirrer import STIRRER_CHANNEL_MAX, is_stirrer_capable, stirrer_client
-from .vendor.chihiros_led_control.commands import (
-    DosingWorkPoint,
+from .stirrer import STIRRER_CHANNEL_MAX, stirrer_client
+from .vendor.chihiros_led_control.protocol.dosing import DosingWorkPoint
+from .vendor.chihiros_led_control.protocol.stirrer import (
     stirrer_dosage_for_minutes,
     validate_stirrer_work_points,
 )
@@ -82,7 +82,7 @@ def _parse_start_minutes(value: str | datetime.time) -> int:
     return parse_start_minutes(value)
 
 
-def _validate_channel(data: ChihirosData, channel: int) -> None:
+def _validate_channel(data: StirrerChihirosData, channel: int) -> None:
     """Reject channels the configured stirrer does not expose."""
     configured = len(data.stirrer_states)
     if channel >= configured:
@@ -116,7 +116,7 @@ def validate_stir_points(points: list[dict[str, Any]]) -> list[DosingWorkPoint]:
 async def _async_set_stir_schedule(hass: HomeAssistant, call: ServiceCall) -> None:
     """Program one stirrer channel in timer mode."""
     data = resolve_service_device(hass, call.data)
-    if not is_stirrer_capable(data.device):
+    if not isinstance(data, StirrerChihirosData):
         raise HomeAssistantError(f"{data.device.name} is not a magnetic stirrer")
     channel = int(call.data[ATTR_CHANNEL]) - 1
     _validate_channel(data, channel)
@@ -131,29 +131,24 @@ async def _async_set_stir_schedule(hass: HomeAssistant, call: ServiceCall) -> No
         active=active,
         is_first_setting=first_setting,
     )
-    if data.dosing_programming is not None:
-        # Record exactly what was sent (set_stir_schedule always sends
-        # dosingSet with a daily volume of 0 plus the timer frames), so the
-        # record is complete enough for a verbatim replay via
-        # _apply_channel_setup instead of a partial mode-without-points trap.
-        await data.dosing_programming.async_record(
-            channel,
-            {
-                "active": active,
-                "compensate": False,
-                "dose_per_day_ml": 0.0,
-                "frequency": frequency,
-                "mode": "timer",
-                "points": serialize_points(points),
-                "first_setting": first_setting,
-            },
-        )
+    await data.dosing_programming.async_record(
+        channel,
+        {
+            "active": active,
+            "compensate": False,
+            "dose_per_day_ml": 0.0,
+            "frequency": frequency,
+            "mode": "timer",
+            "points": serialize_points(points),
+            "first_setting": first_setting,
+        },
+    )
 
 
 async def _async_stir_for(hass: HomeAssistant, call: ServiceCall) -> None:
     """Stir one channel for a bounded duration (minutes + seconds)."""
     data = resolve_service_device(hass, call.data)
-    if not is_stirrer_capable(data.device):
+    if not isinstance(data, StirrerChihirosData):
         raise HomeAssistantError(f"{data.device.name} is not a magnetic stirrer")
     channel = int(call.data[ATTR_CHANNEL]) - 1
     _validate_channel(data, channel)

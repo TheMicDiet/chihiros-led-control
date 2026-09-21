@@ -29,7 +29,7 @@ from .dosing import (
 )
 from .fake import iter_enabled_fake_devices
 from .master_slave_services import async_mirror_pump_to_stirrer
-from .models import ChihirosData
+from .models import DosingChihirosData, StirrerChihirosData
 from .stirrer import is_stirrer_capable, set_stirrer_pre_run_entities_enabled
 from .vendor.chihiros_led_control import (
     ChihirosDevice,
@@ -281,9 +281,9 @@ class ChihirosOptionsFlow(OptionsFlowWithReload):
         data = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
         if data is None:
             return self.async_abort(reason="not_loaded")
-        if is_dosing_capable(data.device):
+        if isinstance(data, DosingChihirosData):
             return self._channel_count_step(CONF_PUMP_COUNT, PUMP_COUNT, PUMP_COUNT_OPTIONS, user_input)
-        if is_stirrer_capable(data.device):
+        if isinstance(data, StirrerChihirosData):
             return await self._async_stirrer_step(data, user_input)
         return self.async_abort(reason="no_options")
 
@@ -312,13 +312,17 @@ class ChihirosOptionsFlow(OptionsFlowWithReload):
         )
         return self.async_show_form(step_id="init", data_schema=data_schema)
 
-    async def _async_stirrer_step(self, data: ChihirosData, user_input: dict[str, Any] | None) -> ConfigFlowResult:
+    async def _async_stirrer_step(
+        self, data: StirrerChihirosData, user_input: dict[str, Any] | None
+    ) -> ConfigFlowResult:
         """Handle the stirrer channel-count + master-pump form."""
         if user_input is not None:
             return await self._async_apply_stirrer_options(user_input, data)
         return self._async_stirrer_form()
 
-    async def _async_apply_stirrer_options(self, user_input: dict[str, Any], data: ChihirosData) -> ConfigFlowResult:
+    async def _async_apply_stirrer_options(
+        self, user_input: dict[str, Any], data: StirrerChihirosData
+    ) -> ConfigFlowResult:
         """Persist the selected master link and mirror the pump programming.
 
         An omitted ``master_address`` field leaves the persisted link untouched
@@ -366,7 +370,7 @@ class ChihirosOptionsFlow(OptionsFlowWithReload):
         """Return the selectable master pumps as ``{address: label}`` plus unlink."""
         options = {UNLINKED_MASTER: "None (unlinked)"}
         for entry_id, candidate in self.hass.data.get(DOMAIN, {}).items():
-            if entry_id == self.config_entry.entry_id or not is_dosing_capable(candidate.device):
+            if entry_id == self.config_entry.entry_id or not isinstance(candidate, DosingChihirosData):
                 continue
             options[candidate.device.address] = f"{candidate.title} ({candidate.device.address})"
         if current_master != UNLINKED_MASTER and current_master not in options:
@@ -385,7 +389,7 @@ class ChihirosOptionsFlow(OptionsFlowWithReload):
     async def _async_mirror_new_master(
         self,
         master_address: str,
-        stirrer_data: ChihirosData,
+        stirrer_data: StirrerChihirosData,
         *,
         channel_count: int | None = None,
     ) -> None:
@@ -403,10 +407,10 @@ class ChihirosOptionsFlow(OptionsFlowWithReload):
                 ex,
             )
 
-    def _find_master(self, master_address: str) -> ChihirosData | None:
+    def _find_master(self, master_address: str) -> DosingChihirosData | None:
         """Return the loaded device data for a master address, if any."""
         target = master_address.upper()
         for candidate in self.hass.data.get(DOMAIN, {}).values():
-            if candidate.device.address.upper() == target:
+            if isinstance(candidate, DosingChihirosData) and candidate.device.address.upper() == target:
                 return candidate
         return None

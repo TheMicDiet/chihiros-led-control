@@ -19,18 +19,20 @@ try:
     from pytest_homeassistant_custom_component.common import MockConfigEntry
 
     import custom_components.chihiros as chihiros_integration
-    from custom_components.chihiros import (
-        ATTR_ADDRESS,
+    from custom_components.chihiros.const import DOMAIN
+    from custom_components.chihiros.fake import create_fake_device, is_fake_address
+    from custom_components.chihiros.runtime import ChihirosRuntime
+    from custom_components.chihiros.service_utils import ATTR_ADDRESS
+    from custom_components.chihiros.stirrer import STIRRER_CHANNEL_COUNT, is_stirrer_capable
+    from custom_components.chihiros.stirrer_services import (
         ATTR_CHANNEL,
         ATTR_STIR_POINTS,
         SERVICE_SET_STIR_SCHEDULE,
         SERVICE_STIR_FOR,
-        _validate_stir_points,
     )
-    from custom_components.chihiros.const import DOMAIN
-    from custom_components.chihiros.fake import create_fake_device, is_fake_address
-    from custom_components.chihiros.runtime import ChihirosRuntime
-    from custom_components.chihiros.stirrer import STIRRER_CHANNEL_COUNT, is_stirrer_capable
+    from custom_components.chihiros.stirrer_services import (
+        validate_stir_points as _validate_stir_points,
+    )
 
 except ImportError as err:
     pytest.skip(
@@ -38,7 +40,12 @@ except ImportError as err:
         allow_module_level=True,
     )
 
-from custom_components.chihiros.vendor.chihiros_led_control.models import MAG_STIRRER
+from custom_components.chihiros.vendor.chihiros_led_control.models import (
+    DOSING_PUMP,
+    MAG_STIRRER,
+    DeviceKind,
+    DeviceModel,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -67,6 +74,10 @@ class _TrackingStirrer:
     @property
     def name(self) -> str:
         return "DYMIXR-test"
+
+    @property
+    def device_kind(self) -> DeviceKind:
+        return self.model.device_kind
 
     @property
     def model_name(self) -> str:
@@ -500,8 +511,8 @@ async def test_validate_stir_points_unit() -> None:
 
 async def test_stirrer_capability_and_fake_device() -> None:
     """The stirrer capability check matches only Mag Stirrer models."""
-    assert is_stirrer_capable(SimpleNamespaceDevice("Mag Stirrer"))
-    assert not is_stirrer_capable(SimpleNamespaceDevice("Dosing Pump"))
+    assert is_stirrer_capable(SimpleNamespaceDevice(MAG_STIRRER))
+    assert not is_stirrer_capable(SimpleNamespaceDevice(DOSING_PUMP))
 
     fake_address = "FA:CE:C0:00:00:0F"
     assert is_fake_address(fake_address)
@@ -510,12 +521,21 @@ async def test_stirrer_capability_and_fake_device() -> None:
 
 
 class SimpleNamespaceDevice:
-    """Tiny device stand-in for capability checks."""
+    """Tiny typed device stand-in for capability checks."""
 
-    def __init__(self, model_name: str) -> None:
-        """Initialize the stand-in with a model name."""
-        self.model_name = model_name
-        self.name = model_name
+    def __init__(self, model: DeviceModel) -> None:
+        """Initialize the stand-in with typed model metadata."""
+        self.model = model
+
+    @property
+    def device_kind(self) -> DeviceKind:
+        """Return the typed family discriminator."""
+        return self.model.device_kind
+
+    @property
+    def name(self) -> str:
+        """Return the typed model name."""
+        return self.model.name
 
 
 @pytest.mark.parametrize("name", ["DYDOSE-abc", "DYMIXR-abc"])

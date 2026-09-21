@@ -32,10 +32,9 @@ from .const import CONF_MASTER_ADDRESS, DOMAIN
 from .dosing import (
     derive_first_setting,
     deserialize_points,
-    is_dosing_capable,
     serialize_points,
 )
-from .models import ChihirosData
+from .models import DosingChihirosData, StirrerChihirosData
 from .service_utils import (
     ATTR_ADDRESS,
     ATTR_DEVICE_ID,
@@ -47,14 +46,14 @@ from .service_utils import (
     parse_start_minutes,
     resolve_service_device,
 )
-from .stirrer import is_stirrer_capable, set_stirrer_pre_run_entities_enabled, stirrer_client
+from .stirrer import set_stirrer_pre_run_entities_enabled, stirrer_client
 from .stirrer_services import (
     ATTR_ACTIVE,
     ATTR_CHANNEL,
     ATTR_FIRST_SETTING,
     ATTR_FREQUENCY,
 )
-from .vendor.chihiros_led_control.commands import (
+from .vendor.chihiros_led_control.protocol.dosing import (
     DOSE_VOLUME_MAX_ML,
     DosingMode,
     DosingWorkPoint,
@@ -207,19 +206,19 @@ def _config_entry_for_address(hass: HomeAssistant, address: str) -> ConfigEntry 
     return None
 
 
-def _linked_stirrers(hass: HomeAssistant, master_address: str) -> list[ChihirosData]:
+def _linked_stirrers(hass: HomeAssistant, master_address: str) -> list[StirrerChihirosData]:
     """Return loaded stirrer entries whose persisted master is ``master_address``."""
-    slaves: list[ChihirosData] = []
+    slaves: list[StirrerChihirosData] = []
     for entry in hass.config_entries.async_entries(DOMAIN):
         if str(entry.data.get(ATTR_MASTER_ADDRESS, "")).upper() != master_address.upper():
             continue
         data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-        if data and is_stirrer_capable(data.device):
+        if isinstance(data, StirrerChihirosData):
             slaves.append(data)
     return slaves
 
 
-def _resolve_master(hass: HomeAssistant, call_data: dict[str, Any]) -> ChihirosData | None:
+def _resolve_master(hass: HomeAssistant, call_data: dict[str, Any]) -> DosingChihirosData | None:
     """Resolve the master pump from the service data, or None for unlink."""
     if call_data.get(ATTR_MASTER_DEVICE_ID):
         selector = {ATTR_DEVICE_ID: call_data[ATTR_MASTER_DEVICE_ID]}
@@ -230,21 +229,21 @@ def _resolve_master(hass: HomeAssistant, call_data: dict[str, Any]) -> ChihirosD
     else:
         return None
     master = resolve_service_device(hass, selector)
-    if not is_dosing_capable(master.device):
+    if not isinstance(master, DosingChihirosData):
         raise HomeAssistantError(f"{master.device.name} is not a dosing pump")
     return master
 
 
-def _ensure_programmable(data: ChihirosData) -> None:
-    """Raise unless the target is a dosing pump with a programming record."""
-    if not is_dosing_capable(data.device) or data.dosing_programming is None:
-        raise HomeAssistantError(f"{data.device.name} is not a dosing pump")
-
-
-def _validate_pump_channel(data: ChihirosData, channel: int) -> None:
-    """Reject channels the configured pump does not expose."""
-    if data.dosing_totals is None:
+def _ensure_programmable(data: object) -> None:
+    """Raise unless the target is a configured dosing-pump data record."""
+    if isinstance(data, DosingChihirosData):
         return
+    name = getattr(getattr(data, "device", None), "name", data)
+    raise HomeAssistantError(f"{name} is not a dosing pump")
+
+
+def _validate_pump_channel(data: DosingChihirosData, channel: int) -> None:
+    """Reject channels the configured pump does not expose."""
     if channel >= data.dosing_totals.pump_count:
         raise HomeAssistantError(f"{data.device.name} has {data.dosing_totals.pump_count} pump channels configured")
 
@@ -288,9 +287,8 @@ async def _apply_channel_setup(
 
 
 async def _replay_recorded_channels(
-    stirrer_data: ChihirosData,
+    stirrer_data: StirrerChihirosData,
     channels: dict[int, dict[str, Any]],
-    *,
     channel_count: int | None = None,
 ) -> list[int]:
     """Replay recorded pump channels, returning skipped 1-based channels."""
@@ -305,11 +303,11 @@ async def _replay_recorded_channels(
 
 
 async def async_mirror_pump_to_stirrer(
-    master_data: ChihirosData,
-    stirrer_data: ChihirosData,
+    master_data: DosingChihirosData,
+    stirrer_data: StirrerChihirosData,
+    channel_count: int | None = None,
     *,
     delay: bool | None = None,
-    channel_count: int | None = None,
 ) -> None:
     """Replay the pump's full recorded programming onto a stirrer (startAsSlave).
 
@@ -513,7 +511,7 @@ def _resolve_config_entry(hass: HomeAssistant, device: object) -> ConfigEntry | 
     return _config_entry_for_address(hass, str(address))
 
 
-def _require_config_entry(hass: HomeAssistant, data: ChihirosData) -> ConfigEntry:
+def _require_config_entry(hass: HomeAssistant, data: DosingChihirosData | StirrerChihirosData) -> ConfigEntry:
     """Return the config entry for a resolved device, raising when absent."""
     entry = _resolve_config_entry(hass, data.device)
     if entry is None:
@@ -521,10 +519,10 @@ def _require_config_entry(hass: HomeAssistant, data: ChihirosData) -> ConfigEntr
     return entry
 
 
-def _resolve_stirrer_target(hass: HomeAssistant, call: ServiceCall) -> tuple[ChihirosData, ConfigEntry]:
+def _resolve_stirrer_target(hass: HomeAssistant, call: ServiceCall) -> tuple[StirrerChihirosData, ConfigEntry]:
     """Resolve a stirrer service target and its config entry."""
     data = resolve_service_device(hass, call.data)
-    if not is_stirrer_capable(data.device):
+    if not isinstance(data, StirrerChihirosData):
         raise HomeAssistantError(f"{data.device.name} is not a magnetic stirrer")
     return data, _require_config_entry(hass, data)
 
@@ -552,7 +550,7 @@ async def _async_mirror_stirrer(hass: HomeAssistant, call: ServiceCall) -> None:
     if not master_address:
         raise HomeAssistantError(f"{data.device.name} has no master pump linked")
     master = resolve_service_device(hass, {ATTR_ADDRESS: master_address})
-    if not is_dosing_capable(master.device):
+    if not isinstance(master, DosingChihirosData):
         raise HomeAssistantError(f"Linked master {master.device.name} is not a dosing pump")
     await async_mirror_pump_to_stirrer(master, data, delay=call.data.get(ATTR_DELAY))
 

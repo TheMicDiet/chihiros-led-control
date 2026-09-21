@@ -27,7 +27,8 @@ from .const import DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData
-from .runtime import ChihirosClient
+from .runtime import LedChihirosClient, is_device_kind
+from .vendor.chihiros_led_control.models import DeviceKind
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +40,8 @@ async def async_setup_entry(
 ) -> None:
     """Set up the light platform for LEDBLE."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
+    if not is_device_kind(chihiros_data.device, DeviceKind.LED):
+        return
     _LOGGER.debug("Setup chihiros entry: %s", chihiros_data.device.address)
     channels = chihiros_data.device.colors
     has_rgb = "red" in channels and "green" in channels and "blue" in channels
@@ -86,7 +89,7 @@ class ChihirosLightEntity(
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        chihiros_device: ChihirosClient,
+        chihiros_device: LedChihirosClient,
         color: str,
     ) -> None:
         """Initialise the entity."""
@@ -182,7 +185,7 @@ class ChihirosRGBLightEntity(
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        chihiros_device: ChihirosClient,
+        chihiros_device: LedChihirosClient,
     ) -> None:
         """Initialise the entity."""
         super().__init__(coordinator)

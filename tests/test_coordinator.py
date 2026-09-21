@@ -39,16 +39,18 @@ except ImportError as err:
         allow_module_level=True,
     )
 
-from custom_components.chihiros.vendor.chihiros_led_control.models import RGB_CHANNELS, DeviceModel
-from custom_components.chihiros.vendor.chihiros_led_control.protocol import (
+from custom_components.chihiros.vendor.chihiros_led_control.models import RGB_CHANNELS, DeviceKind, DeviceModel, LedSpec
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.dosing import (
     DosingDailyNotification,
     DosingTotalsNotification,
+)
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.led import (
     FanStatusNotification,
-    ParsedNotification,
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
 )
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.notifications import ParsedNotification
 
 pytestmark = [
     pytest.mark.integration,
@@ -63,7 +65,7 @@ class _TrackingClient:
     """Minimal mock Chihiros client for coordinator tests."""
 
     def __init__(self) -> None:
-        self.model = DeviceModel("Test RGB", ("TEST-RGB",), RGB_CHANNELS)
+        self.model = DeviceModel("Test RGB", ("TEST-RGB",), LedSpec(RGB_CHANNELS))
         self.query_status_calls = 0
         self._callbacks: set[Callable[[ParsedNotification], None]] = set()
 
@@ -74,6 +76,10 @@ class _TrackingClient:
     @property
     def name(self) -> str:
         return "Test Chihiros"
+
+    @property
+    def device_kind(self) -> DeviceKind:
+        return self.model.device_kind
 
     @property
     def model_name(self) -> str:

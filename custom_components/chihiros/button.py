@@ -11,9 +11,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import async_trigger_dose_ml
 from .const import DOMAIN
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
-from .heater import ChihirosHeaterResetWorkTimeButton, is_heater_capable
-from .models import ChihirosData
-from .runtime import ChihirosClient
+from .heater import ChihirosHeaterResetWorkTimeButton
+from .models import ChihirosData, DosingChihirosData
+from .runtime import DosingChihirosClient, is_device_kind
+from .vendor.chihiros_led_control.models import DeviceKind
 
 
 async def async_setup_entry(
@@ -24,13 +25,13 @@ async def async_setup_entry(
     """Set up dosing pump and heater buttons."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
     entities: list[ButtonEntity] = []
-    if chihiros_data.dosing_totals:
+    if isinstance(chihiros_data, DosingChihirosData):
         entities.extend(
             ChihirosDosingButton(chihiros_data.device, chihiros_data, pump_idx)
             for pump_idx in range(chihiros_data.dosing_totals.pump_count)
         )
         entities.append(ChihirosCalibrationButton(chihiros_data))
-    if is_heater_capable(chihiros_data.device):
+    if is_device_kind(chihiros_data.device, DeviceKind.HEATER):
         entities.append(ChihirosHeaterResetWorkTimeButton(chihiros_data.coordinator, chihiros_data.device))
     if entities:
         async_add_entities(entities)
@@ -41,7 +42,7 @@ class ChihirosDosingButton(ButtonEntity):
 
     _attr_should_poll = False
 
-    def __init__(self, device: ChihirosClient, chihiros_data: ChihirosData, pump_idx: int) -> None:
+    def __init__(self, device: DosingChihirosClient, chihiros_data: DosingChihirosData, pump_idx: int) -> None:
         """Initialize the dosing button."""
         self._device = device
         self._chihiros_data = chihiros_data
@@ -64,7 +65,7 @@ class ChihirosCalibrationButton(ButtonEntity):
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, chihiros_data: ChihirosData) -> None:
+    def __init__(self, chihiros_data: DosingChihirosData) -> None:
         """Initialize the calibration wizard button."""
         self._chihiros_data = chihiros_data
         self._attr_name = chihiros_entity_name(chihiros_data.device, "Calibrate pump")

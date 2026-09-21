@@ -18,29 +18,33 @@ try:
     from pytest_homeassistant_custom_component.common import MockConfigEntry
 
     import custom_components.chihiros as chihiros_integration
-    from custom_components.chihiros import (
-        ATTR_ADDRESS,
-        ATTR_CHANNEL,
+    from custom_components.chihiros.const import DOMAIN
+    from custom_components.chihiros.dosing_services import ATTR_ML, ATTR_PUMP, SERVICE_DOSE_ML
+    from custom_components.chihiros.master_slave_services import (
         ATTR_MASTER_ADDRESS,
         ATTR_MODE,
         ATTR_POINTS,
         SERVICE_MIRROR_STIRRER,
         SERVICE_RESET_DOSING_CHANNEL,
         SERVICE_SET_CHANNEL_ACTIVE,
+        SERVICE_SET_DOSE_DELAY,
         SERVICE_SET_DOSING_SCHEDULE,
         SERVICE_SET_STIRRER_MASTER,
-        _build_work_points,
     )
-    from custom_components.chihiros.const import DOMAIN
+    from custom_components.chihiros.master_slave_services import (
+        build_work_points as _build_work_points,
+    )
     from custom_components.chihiros.runtime import ChihirosRuntime
+    from custom_components.chihiros.service_utils import ATTR_ADDRESS
+    from custom_components.chihiros.stirrer_services import ATTR_CHANNEL
 except ImportError as err:
     pytest.skip(
         f"Home Assistant test group is not installed or is incompatible: {err}",
         allow_module_level=True,
     )
 
-from custom_components.chihiros.vendor.chihiros_led_control.commands import DosingMode
-from custom_components.chihiros.vendor.chihiros_led_control.models import DOSING_PUMP, MAG_STIRRER
+from custom_components.chihiros.vendor.chihiros_led_control.models import DOSING_PUMP, MAG_STIRRER, DeviceKind
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.dosing import DosingMode
 
 pytestmark = [
     pytest.mark.integration,
@@ -73,6 +77,10 @@ class _TrackingPump:
     @property
     def name(self) -> str:
         return "DYDOSE-test"
+
+    @property
+    def device_kind(self) -> DeviceKind:
+        return self.model.device_kind
 
     @property
     def model_name(self) -> str:
@@ -277,8 +285,6 @@ async def test_set_stirrer_master_replays_recorded_dose_delay(
     linking a stirrer after enabling the pump's dose delay silently turned the
     flag off on the stirrer instead of replaying the recorded value.
     """
-    from custom_components.chihiros import SERVICE_SET_DOSE_DELAY
-
     pump, stirrer = await _setup_pair(hass, monkeypatch)
     await hass.async_block_till_done()
 
@@ -602,8 +608,6 @@ async def test_multi_slave_mirror_collects_failures(hass: HomeAssistant, monkeyp
 
 async def test_set_dose_delay_records_and_mirrors(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
     """The dose-delay flag is recorded and mirrored to the linked stirrer."""
-    from custom_components.chihiros import SERVICE_SET_DOSE_DELAY
-
     pump, stirrer = await _setup_pair(hass, monkeypatch)
     await hass.async_block_till_done()
 
@@ -636,8 +640,6 @@ async def test_manual_dose_broadcasts_verbatim_frame(hass: HomeAssistant, monkey
     App parity: tempDosing applies the same broadcast ternary as startWork
     (slave linked -> device: null, DOSING_CONTROL.md §5 @ 0xa62d78).
     """
-    from custom_components.chihiros import ATTR_ML, ATTR_PUMP, SERVICE_DOSE_ML
-
     pump, stirrer = await _setup_pair(hass, monkeypatch)
     await hass.async_block_till_done()
 

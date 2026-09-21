@@ -1,4 +1,4 @@
-"""Integration to integrate Keymitt BLE devices with Home Assistant."""
+"""Coordinator for passive Chihiros Bluetooth notifications."""
 
 from __future__ import annotations
 
@@ -7,24 +7,23 @@ from collections.abc import Callable
 from typing import Any
 
 from homeassistant.components import bluetooth
-from homeassistant.components.bluetooth.passive_update_coordinator import (
-    PassiveBluetoothDataUpdateCoordinator,
-)
+from homeassistant.components.bluetooth.passive_update_coordinator import PassiveBluetoothDataUpdateCoordinator
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 
-from .runtime import ChihirosClient
-from .vendor.chihiros_led_control.protocol import (
-    DosingDailyNotification,
-    DosingTotalsNotification,
-    FanStatusNotification,
+from .runtime import BaseChihirosClient
+from .vendor.chihiros_led_control.protocol.dosing import DosingDailyNotification, DosingTotalsNotification
+from .vendor.chihiros_led_control.protocol.heater import (
     HeaterStatusNotification,
     HeaterTemperatureNotification,
-    ParsedNotification,
+    heater_alarm_names,
+)
+from .vendor.chihiros_led_control.protocol.led import (
+    FanStatusNotification,
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
-    heater_alarm_names,
 )
+from .vendor.chihiros_led_control.protocol.notifications import ParsedNotification
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 ATTR_FIRMWARE_VERSION = "firmware_version"
@@ -58,14 +57,13 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
     def __init__(
         self,
         hass: HomeAssistant,
-        client: ChihirosClient,
+        client: BaseChihirosClient,
         address: str,
         always_available: bool = False,
     ) -> None:
         """Initialize."""
-        self.api: ChihirosClient = client
+        self.api: BaseChihirosClient = client
         self.data: dict[str, Any] = {}
-        self._device_address = address
         self._auto_mode = False
         self._heater_mode = HEATER_MODE_MANUAL
         self._heater_temperature_update_id = 0

@@ -65,14 +65,9 @@ class HeaterSpec:
 DeviceSpec: TypeAlias = LedSpec | DosingPumpSpec | MagStirrerSpec | HeaterSpec
 
 
-@dataclass(frozen=True, init=False)
+@dataclass(frozen=True)
 class DeviceModel:
-    """Static product identity and discriminated device specification.
-
-    ``color_channels`` and the derived capability properties remain read-only
-    views for callers that consumed the pre-profile metadata API. New code
-    should use ``spec`` and ``device_kind``.
-    """
+    """Static product identity and discriminated device specification."""
 
     name: str
     advertised_codes: tuple[str, ...]
@@ -80,46 +75,10 @@ class DeviceModel:
     needs_device_type: bool = False
     fallback: bool = False
 
-    def __init__(
-        self,
-        name: str,
-        advertised_codes: tuple[str, ...],
-        spec_or_channels: DeviceSpec | Mapping[str, int],
-        needs_device_type: bool = False,
-        fallback: bool = False,
-        *,
-        has_fan: bool = False,
-        min_fan_speed: int = 0,
-        is_vivid3: bool = False,
-        sea_led_family: bool = False,
-        is_heater: bool = False,
-    ) -> None:
-        """Create metadata, accepting legacy keyword spelling during migration."""
-        if isinstance(spec_or_channels, (LedSpec, DosingPumpSpec, MagStirrerSpec, HeaterSpec)):
-            spec = spec_or_channels
-        elif is_heater:
-            spec = HeaterSpec()
-        elif name == "Dosing Pump":
-            spec = DosingPumpSpec()
-        elif name == "Mag Stirrer":
-            spec = MagStirrerSpec()
-        else:
-            features = frozenset(
-                feature
-                for feature, enabled in (
-                    (LedFeature.FAN, has_fan),
-                    (LedFeature.TEMPERATURE_PROTECTION, is_vivid3),
-                    (LedFeature.INDICATOR_LED, is_vivid3),
-                )
-                if enabled
-            )
-            protocol = LedProtocol.SEA_LED if sea_led_family else LedProtocol.BLE_LED
-            spec = LedSpec(spec_or_channels, protocol, features, min_fan_speed)
-        object.__setattr__(self, "name", name)
-        object.__setattr__(self, "advertised_codes", advertised_codes)
-        object.__setattr__(self, "spec", spec)
-        object.__setattr__(self, "needs_device_type", needs_device_type)
-        object.__setattr__(self, "fallback", fallback)
+    def __post_init__(self) -> None:
+        """Reject untyped metadata at the profile boundary."""
+        if not isinstance(self.spec, (LedSpec, DosingPumpSpec, MagStirrerSpec, HeaterSpec)):
+            raise TypeError("spec must be a LedSpec, DosingPumpSpec, MagStirrerSpec, or HeaterSpec")
 
     @property
     def device_kind(self) -> DeviceKind:
@@ -138,29 +97,9 @@ class DeviceModel:
         return self.spec.channels if isinstance(self.spec, LedSpec) else MappingProxyType({})
 
     @property
-    def has_fan(self) -> bool:
-        """Return whether this LED exposes fan controls."""
-        return isinstance(self.spec, LedSpec) and LedFeature.FAN in self.spec.features
-
-    @property
     def min_fan_speed(self) -> int:
         """Return the minimum supported fan speed."""
         return self.spec.min_fan_speed if isinstance(self.spec, LedSpec) else 0
-
-    @property
-    def is_vivid3(self) -> bool:
-        """Return whether this profile exposes VIVID III-only controls."""
-        return isinstance(self.spec, LedSpec) and LedFeature.TEMPERATURE_PROTECTION in self.spec.features
-
-    @property
-    def sea_led_family(self) -> bool:
-        """Return whether LED auto points use SeaLed encoding."""
-        return isinstance(self.spec, LedSpec) and self.spec.protocol is LedProtocol.SEA_LED
-
-    @property
-    def is_heater(self) -> bool:
-        """Return whether this profile is a heater."""
-        return isinstance(self.spec, HeaterSpec)
 
 
 def __getattr__(name: str):

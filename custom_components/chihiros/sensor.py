@@ -39,8 +39,8 @@ from .coordinator import (
 from .dosing import DosingCalibrationTracker, DosingDailyTotals
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .heater import ChihirosHeaterAlarmSensor, is_heater_capable
-from .models import ChihirosData
-from .runtime import ChihirosClient, has_led_feature
+from .models import ChihirosData, DosingChihirosData
+from .runtime import BaseChihirosClient, DosingChihirosClient, has_led_feature
 from .vendor.chihiros_led_control.models import LedFeature
 
 _LOGGER = logging.getLogger(__name__)
@@ -107,7 +107,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up notification sensors for Chihiros LED Control."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
-    if chihiros_data.dosing_totals:
+    if isinstance(chihiros_data, DosingChihirosData):
         totals = chihiros_data.dosing_totals
         entities: list[SensorEntity] = []
         for pump_idx in range(totals.pump_count):
@@ -120,16 +120,11 @@ async def async_setup_entry(
             entities.append(
                 ChihirosDosingLifetimeCyclesSensor(chihiros_data.coordinator, chihiros_data.device, totals, pump_idx)
             )
-            if chihiros_data.dosing_calibration:
-                entities.append(
-                    ChihirosDosingLastCalibrationSensor(
-                        chihiros_data.coordinator,
-                        chihiros_data.device,
-                        totals,
-                        chihiros_data.dosing_calibration,
-                        pump_idx,
-                    )
+            entities.append(
+                ChihirosDosingLastCalibrationSensor(
+                    chihiros_data.coordinator, chihiros_data.device, totals, chihiros_data.dosing_calibration, pump_idx
                 )
+            )
         async_add_entities(entities)
         hass.async_create_task(_async_request_initial_status(chihiros_data.coordinator))
         return
@@ -184,7 +179,7 @@ class ChihirosNotificationSensor(
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        device: ChihirosClient,
+        device: BaseChihirosClient,
         description: SensorEntityDescription,
         entity_category: EntityCategory | None = EntityCategory.DIAGNOSTIC,
     ) -> None:
@@ -255,7 +250,7 @@ class ChihirosDosingSensorBase(
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        device: ChihirosClient,
+        device: DosingChihirosClient,
         totals: DosingDailyTotals,
         pump_idx: int,
         unique_id_suffix: str,
@@ -298,7 +293,7 @@ class ChihirosDosingDailyTotalSensor(ChihirosDosingSensorBase):
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        device: ChihirosClient,
+        device: DosingChihirosClient,
         totals: DosingDailyTotals,
         pump_idx: int,
     ) -> None:
@@ -338,7 +333,7 @@ class ChihirosDosingLifetimeTotalSensor(ChihirosDosingSensorBase):
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        device: ChihirosClient,
+        device: DosingChihirosClient,
         totals: DosingDailyTotals,
         pump_idx: int,
     ) -> None:
@@ -377,7 +372,7 @@ class ChihirosDosingLifetimeCyclesSensor(ChihirosDosingSensorBase):
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        device: ChihirosClient,
+        device: DosingChihirosClient,
         totals: DosingDailyTotals,
         pump_idx: int,
     ) -> None:
@@ -407,7 +402,7 @@ class ChihirosDosingLastCalibrationSensor(ChihirosDosingSensorBase):
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        device: ChihirosClient,
+        device: DosingChihirosClient,
         totals: DosingDailyTotals,
         calibration: DosingCalibrationTracker,
         pump_idx: int,

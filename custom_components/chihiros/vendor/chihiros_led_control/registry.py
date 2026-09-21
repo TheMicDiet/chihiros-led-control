@@ -108,9 +108,7 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     HEATER,
 )
 
-GENERIC_MODELS_BY_DEVICE_TYPE = MappingProxyType(
-    {"white": GENERIC_WHITE, "rgb": GENERIC_RGB, "wrgb": GENERIC_WRGB}
-)
+GENERIC_MODELS_BY_DEVICE_TYPE = MappingProxyType({"white": GENERIC_WHITE, "rgb": GENERIC_RGB, "wrgb": GENERIC_WRGB})
 MODEL_BY_CODE = MappingProxyType({code: model for model in SUPPORTED_MODELS for code in model.advertised_codes})
 KNOWN_UNSUPPORTED_DEVICE_PREFIXES = ("DYAPRCO2", "DYCHIL", "DYCO2")
 
@@ -123,6 +121,8 @@ def iter_model_codes_by_specificity() -> tuple[tuple[str, DeviceModel], ...]:
 def is_known_unsupported_device(device_name: str | None) -> bool:
     """Return whether an advertised name belongs to a known unsupported family."""
     return bool(device_name and any(device_name.startswith(prefix) for prefix in KNOWN_UNSUPPORTED_DEVICE_PREFIXES))
+
+
 def detect_model(device_name: str | None) -> DeviceModel:
     """Detect a profile from an advertised device name."""
     if not device_name or is_known_unsupported_device(device_name):

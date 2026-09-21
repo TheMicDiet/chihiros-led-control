@@ -26,11 +26,11 @@ from .heater import (
     ChihirosHeaterTemperatureNumber,
     is_heater_capable,
 )
-from .models import ChihirosData
-from .runtime import ChihirosClient, has_led_feature
-from .stirrer import ChihirosStirPreRunNumber, ChihirosStirSpeedNumber, is_stirrer_capable
-from .vendor.chihiros_led_control.commands import MANUAL_DOSE_VOLUME_MAX_ML, MANUAL_DOSE_VOLUME_MIN_ML
+from .models import ChihirosData, DosingChihirosData, StirrerChihirosData
+from .runtime import DosingChihirosClient, LedChihirosClient, has_led_feature
+from .stirrer import ChihirosStirPreRunNumber, ChihirosStirSpeedNumber
 from .vendor.chihiros_led_control.models import LedFeature
+from .vendor.chihiros_led_control.protocol.dosing import MANUAL_DOSE_VOLUME_MAX_ML, MANUAL_DOSE_VOLUME_MIN_ML
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,24 +52,17 @@ async def async_setup_entry(
     """Set up number controls for the configured Chihiros device."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
     entities: list[NumberEntity] = []
-
-    if chihiros_data.dosing_totals:
+    if isinstance(chihiros_data, DosingChihirosData):
         entities.extend(
             ChihirosDosingVolumeNumber(chihiros_data.device, chihiros_data, pump_idx)
             for pump_idx in range(chihiros_data.dosing_totals.pump_count)
         )
-
     if has_led_feature(chihiros_data.device, LedFeature.FAN):
         entities.extend(
-            (
-                ChihirosFanStartTempNumber(chihiros_data.device),
-                ChihirosFanStopTempNumber(chihiros_data.device),
-            )
+            (ChihirosFanStartTempNumber(chihiros_data.device), ChihirosFanStopTempNumber(chihiros_data.device))
         )
-
     entities.extend(_stirrer_numbers(chihiros_data))
     entities.extend(_heater_numbers(chihiros_data))
-
     if entities:
         async_add_entities(entities)
 
@@ -90,7 +83,7 @@ def _heater_numbers(chihiros_data: ChihirosData) -> list[NumberEntity]:
 
 def _stirrer_numbers(chihiros_data: ChihirosData) -> list[NumberEntity]:
     """Build the speed and pre-run numbers for a magnetic stirrer."""
-    if not (is_stirrer_capable(chihiros_data.device) and chihiros_data.stirrer_states):
+    if not isinstance(chihiros_data, StirrerChihirosData):
         return []
     return [
         entity
@@ -111,7 +104,7 @@ class ChihirosDosingVolumeNumber(NumberEntity, RestoreEntity):
     _attr_native_unit_of_measurement = UnitOfVolume.MILLILITERS
     _attr_mode = NumberMode.BOX
 
-    def __init__(self, device: ChihirosClient, chihiros_data: ChihirosData, pump_idx: int) -> None:
+    def __init__(self, device: DosingChihirosClient, chihiros_data: DosingChihirosData, pump_idx: int) -> None:
         """Initialize the dose volume number."""
         self._device = device
         self._chihiros_data = chihiros_data
@@ -155,7 +148,7 @@ class ChihirosFanTempNumberBase(NumberEntity, RestoreEntity):
 
     _partner_unique_id_suffix = ""
 
-    def __init__(self, device: ChihirosClient) -> None:
+    def __init__(self, device: LedChihirosClient) -> None:
         """Initialize the fan temperature number."""
         self._device = device
         self._restored_value: float | None = None
@@ -244,7 +237,7 @@ class ChihirosFanTempNumberBase(NumberEntity, RestoreEntity):
 class ChihirosFanStartTempNumber(ChihirosFanTempNumberBase):
     """Number entity for the VIVID3 fan auto-mode start temperature."""
 
-    def __init__(self, device: ChihirosClient) -> None:
+    def __init__(self, device: LedChihirosClient) -> None:
         """Initialize the fan start temperature number."""
         super().__init__(device)
         self._attr_name = chihiros_entity_name(device, "Fan start temp")
@@ -271,7 +264,7 @@ class ChihirosFanStartTempNumber(ChihirosFanTempNumberBase):
 class ChihirosFanStopTempNumber(ChihirosFanTempNumberBase):
     """Number entity for the VIVID3 fan auto-mode stop temperature."""
 
-    def __init__(self, device: ChihirosClient) -> None:
+    def __init__(self, device: LedChihirosClient) -> None:
         """Initialize the fan stop temperature number."""
         super().__init__(device)
         self._attr_name = chihiros_entity_name(device, "Fan stop temp")

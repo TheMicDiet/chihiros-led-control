@@ -11,32 +11,50 @@ pytest.importorskip("homeassistant", reason="Home Assistant test group is not in
 
 from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.chihiros import (
-    ATTR_ADDRESS,
-    ATTR_BRIGHTNESS,
-    ATTR_END,
-    ATTR_ENTRY_ID,
-    ATTR_LEVELS,
-    ATTR_RAMP_UP_MINUTES,
-    ATTR_START,
-    ATTR_WEEKDAYS,
-    _async_add_schedule_period,
-    _async_refresh_status,
-    _async_replace_schedule,
-    _ensure_light_device,
-    _resolve_service_device,
-    _validate_auto_curve,
-    _validate_schedule_period,
-    _validate_schedule_periods,
-)
 from custom_components.chihiros.const import DOMAIN
 from custom_components.chihiros.coordinator import _notification_to_debug_dict, _schedule_point_to_dict
 from custom_components.chihiros.discovery import ChihirosDiscovery, discovery_title
 from custom_components.chihiros.dosing import is_dosing_capable
 from custom_components.chihiros.fake import FAKE_DEVICES, create_fake_device
-from custom_components.chihiros.schedule_services import SET_AUTO_CURVE_SCHEMA
-from custom_components.chihiros.vendor.chihiros_led_control.models import DOSING_PUMP
-from custom_components.chihiros.vendor.chihiros_led_control.protocol import (
+from custom_components.chihiros.schedule_services import (
+    ATTR_BRIGHTNESS,
+    ATTR_END,
+    ATTR_LEVELS,
+    ATTR_RAMP_UP_MINUTES,
+    ATTR_START,
+    ATTR_WEEKDAYS,
+    SET_AUTO_CURVE_SCHEMA,
+)
+from custom_components.chihiros.schedule_services import (
+    async_add_schedule_period as _async_add_schedule_period,
+)
+from custom_components.chihiros.schedule_services import (
+    async_refresh_status as _async_refresh_status,
+)
+from custom_components.chihiros.schedule_services import (
+    async_replace_schedule as _async_replace_schedule,
+)
+from custom_components.chihiros.schedule_services import (
+    ensure_light_device as _ensure_light_device,
+)
+from custom_components.chihiros.schedule_services import (
+    validate_auto_curve as _validate_auto_curve,
+)
+from custom_components.chihiros.schedule_services import (
+    validate_schedule_period as _validate_schedule_period,
+)
+from custom_components.chihiros.schedule_services import (
+    validate_schedule_periods as _validate_schedule_periods,
+)
+from custom_components.chihiros.service_utils import (
+    ATTR_ADDRESS,
+    ATTR_ENTRY_ID,
+)
+from custom_components.chihiros.service_utils import (
+    resolve_service_device as _resolve_service_device,
+)
+from custom_components.chihiros.vendor.chihiros_led_control.models import DOSING_PUMP, DeviceKind, LedFeature, LedSpec
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.led import (
     FanStatusNotification,
     RuntimeNotification,
     SchedulePoint,
@@ -111,11 +129,11 @@ def test_set_auto_curve_schema_coerces_channel_keys() -> None:
         SET_AUTO_CURVE_SCHEMA({"curve": {0: [[480]]}})
 
 
-def test_dosing_capability_uses_model_name_or_name() -> None:
-    """Dosing detection supports runtime clients and model objects."""
-    assert is_dosing_capable(SimpleNamespace(model_name=DOSING_PUMP.name))
+def test_dosing_capability_uses_typed_device_kind() -> None:
+    """Dosing detection uses the vendored device-family discriminator."""
+    assert is_dosing_capable(SimpleNamespace(device_kind=DeviceKind.DOSING_PUMP))
     assert is_dosing_capable(DOSING_PUMP)
-    assert not is_dosing_capable(SimpleNamespace(name="A light"))
+    assert not is_dosing_capable(SimpleNamespace(device_kind=DeviceKind.LED))
 
 
 def test_resolve_service_device_by_entry_address_or_single_entry() -> None:
@@ -269,7 +287,11 @@ def test_schedule_and_notification_debug_conversion() -> None:
 @pytest.mark.asyncio
 async def test_fake_fan_device_publishes_fan_status() -> None:
     """The fan-equipped fake device behaves like the fan client surface."""
-    fan_device_info = next(device for device in FAKE_DEVICES if device.model.has_fan)
+    fan_device_info = next(
+        device
+        for device in FAKE_DEVICES
+        if isinstance(device.model.spec, LedSpec) and LedFeature.FAN in device.model.spec.features
+    )
     device = create_fake_device(fan_device_info.address)
     notifications: list[object] = []
     device.add_notification_callback(notifications.append)
@@ -289,7 +311,7 @@ async def test_fake_fan_device_publishes_fan_status() -> None:
 async def test_fake_heater_device_reports_its_state() -> None:
     """The development roster covers the heater, whose states arrive as notifications."""
     by_code = {code: info for info in FAKE_DEVICES for code in info.model.advertised_codes}
-    assert by_code["DYHET"].model.is_heater
+    assert by_code["DYHET"].model.device_kind.value == "heater"
     device = create_fake_device(by_code["DYHET"].address)
 
     await device.query_status()

@@ -31,8 +31,8 @@ except ImportError as err:
         allow_module_level=True,
     )
 
-from custom_components.chihiros.vendor.chihiros_led_control.models import RGB_CHANNELS, DeviceModel
-from custom_components.chihiros.vendor.chihiros_led_control.protocol import ParsedNotification
+from custom_components.chihiros.vendor.chihiros_led_control.models import RGB_CHANNELS, DeviceKind, DeviceModel, LedSpec
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.notifications import ParsedNotification
 
 pytestmark = [
     pytest.mark.integration,
@@ -74,7 +74,7 @@ class _FailingQueryClient:
     """Minimal client whose query_status always fails."""
 
     def __init__(self) -> None:
-        self.model = DeviceModel("Test RGB", ("TEST-RGB",), RGB_CHANNELS)
+        self.model = DeviceModel("Test RGB", ("TEST-RGB",), LedSpec(RGB_CHANNELS))
         self._callbacks: set[Callable[[ParsedNotification], None]] = set()
 
     @property
@@ -84,6 +84,10 @@ class _FailingQueryClient:
     @property
     def name(self) -> str:
         return "Test Chihiros"
+
+    @property
+    def device_kind(self) -> DeviceKind:
+        return self.model.device_kind
 
     @property
     def model_name(self) -> str:

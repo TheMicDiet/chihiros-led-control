@@ -18,6 +18,12 @@ from .registry import (
     is_known_unsupported_device,
 )
 
+_DEVICE_DRIVERS = {
+    DosingPumpSpec: ChihirosDosingPump,
+    MagStirrerSpec: ChihirosMagStirrer,
+    HeaterSpec: ChihirosHeater,
+}
+
 
 def needs_device_type(device_name: str | None) -> bool:
     """Return whether a device needs a user-selected generic type."""
@@ -53,14 +59,8 @@ def create_device(
     if is_known_unsupported_device(ble_device.name):
         raise UnsupportedDeviceError(f"Unsupported Chihiros device: {ble_device.name}")
     resolved_model = resolve_model(ble_device.name, model, device_type)
-    spec_type = type(resolved_model.spec)
-    if spec_type is HeaterSpec:
-        return ChihirosHeater(ble_device, resolved_model, advertisement_data)
-    if spec_type is MagStirrerSpec:
-        return ChihirosMagStirrer(ble_device, resolved_model, advertisement_data)
-    if spec_type is DosingPumpSpec:
-        return ChihirosDosingPump(ble_device, resolved_model, advertisement_data)
-    return ChihirosDevice(ble_device, resolved_model, advertisement_data)
+    driver = _DEVICE_DRIVERS.get(type(resolved_model.spec), ChihirosDevice)
+    return driver(ble_device, resolved_model, advertisement_data)
 
 
 async def get_device_from_address(device_address: str, device_type: str | None = None):

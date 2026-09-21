@@ -10,9 +10,15 @@ from __future__ import annotations
 
 import pytest
 
-from chihiros_led_control import commands
-from chihiros_led_control.commands import DosingMode, DosingWorkPoint
-from chihiros_led_control.protocol import DosingDailyNotification, DosingTotalsNotification
+from chihiros_led_control.protocol import dosing as commands
+from chihiros_led_control.protocol import stirrer as stirrer_protocol
+from chihiros_led_control.protocol.dosing import DosingMode, DosingWorkPoint
+from chihiros_led_control.protocol.notifications import DosingDailyNotification, DosingTotalsNotification
+from chihiros_led_control.protocol.stirrer import (
+    stirrer_dosage_for_minutes,
+    stirrer_minutes_for_dosage,
+    validate_stirrer_work_points,
+)
 
 MSG_ID = (0, 6)
 
@@ -38,9 +44,9 @@ def test_encode_dose_volume_ml_matches_app_volume_change() -> None:
 
 
 def test_stirrer_runtime_dosage_round_trip() -> None:
-    """Stir minutes convert to dosage at 0.6 mL/min and back."""
-    assert commands.stirrer_dosage_for_minutes(10) == pytest.approx(6.0)
-    assert commands.stirrer_minutes_for_dosage(6.0) == pytest.approx(10.0)
+    """Stirrer dosage and duration conversions round-trip."""
+    assert stirrer_dosage_for_minutes(10) == pytest.approx(6.0)
+    assert stirrer_minutes_for_dosage(6.0) == pytest.approx(10.0)
 
 
 def test_create_dosing_set_command_payload() -> None:
@@ -201,30 +207,30 @@ def test_general_temp_run_command_layout() -> None:
 def test_stirrer_work_points_use_inclusive_non_cyclic_intervals() -> None:
     """Stirrer validation matches the app's duration-derived interval checks."""
     points = [
-        DosingWorkPoint(8, 0, volume_ml=commands.stirrer_dosage_for_minutes(5)),
-        DosingWorkPoint(8, 5, volume_ml=commands.stirrer_dosage_for_minutes(1)),
+        DosingWorkPoint(8, 0, volume_ml=stirrer_dosage_for_minutes(5)),
+        DosingWorkPoint(8, 5, volume_ml=stirrer_dosage_for_minutes(1)),
     ]
     with pytest.raises(ValueError, match="overlap"):
-        commands.validate_stirrer_work_points(points)
+        validate_stirrer_work_points(points)
 
     midnight_points = [
-        DosingWorkPoint(0, 0, volume_ml=commands.stirrer_dosage_for_minutes(1)),
-        DosingWorkPoint(23, 59, volume_ml=commands.stirrer_dosage_for_minutes(1)),
+        DosingWorkPoint(0, 0, volume_ml=stirrer_dosage_for_minutes(1)),
+        DosingWorkPoint(23, 59, volume_ml=stirrer_dosage_for_minutes(1)),
     ]
-    commands.validate_stirrer_work_points(midnight_points)
+    validate_stirrer_work_points(midnight_points)
 
 
 def test_stirrer_pre_second_command_layout() -> None:
     """StirrerPreSecond is (0xA5, 42, [channel, sec_hi, sec_lo, speed])."""
-    frame = commands.create_stirrer_pre_second_command(MSG_ID, 0, 90, 40)
+    frame = stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 90, 40)
     assert frame[5] == 42
     assert _payload(frame) == [0, 0, 90, 40]
-    long_run = commands.create_stirrer_pre_second_command(MSG_ID, 3, 999, 100)
+    long_run = stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 3, 999, 100)
     assert _payload(long_run) == [3, 3, 231, 100]
     with pytest.raises(ValueError, match="999"):
-        commands.create_stirrer_pre_second_command(MSG_ID, 0, 1000, 40)
+        stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 1000, 40)
     with pytest.raises(ValueError, match="speed"):
-        commands.create_stirrer_pre_second_command(MSG_ID, 0, 90, 101)
+        stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 90, 101)
 
 
 def test_parse_captured_firmware_reply_frames() -> None:
@@ -235,7 +241,7 @@ def test_parse_captured_firmware_reply_frames() -> None:
     positions as the 0x5B 0x1E/0x22 frames; the trailing checksum byte sits
     outside the channel region.
     """
-    from chihiros_led_control.protocol import parse_notification
+    from chihiros_led_control.protocol.dosing import parse_notification
 
     today_frame = bytes.fromhex("5b 01 0a 00 01 22 02 58 08 04 01 53 00 c3 7f")
     parsed = parse_notification(today_frame)
@@ -248,10 +254,10 @@ def test_parse_captured_firmware_reply_frames() -> None:
 
 
 def test_dosing_frames_are_not_reserved_byte_escaped() -> None:
-    """Dosing payloads pass bytes verbatim: a 90-byte payload value stays 0x5A."""
-    frame = commands.create_stirrer_pre_second_command(MSG_ID, 0, 90, commands.STIRRER_SPEED_DEFAULT)
+    """Stirrer duration bytes are sent verbatim without reserved-byte escaping."""
+    frame = stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 90, stirrer_protocol.STIRRER_SPEED_DEFAULT)
     assert frame[8] == 0x5A  # 90 seconds, unescaped
     # The checksum stays valid.
-    from chihiros_led_control.protocol import calculate_checksum
+    from chihiros_led_control.protocol.frame import calculate_checksum
 
     assert calculate_checksum(frame[:-1]) == frame[-1]
