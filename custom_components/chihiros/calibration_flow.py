@@ -191,7 +191,7 @@ async def _async_run_test_dose(hass: HomeAssistant, chihiros_data: DosingChihiro
     daily totals (the app's ``addExtraDosing``) and broadcast to linked
     stirrers, exactly like the app's manual dose.
     """
-    from . import async_trigger_dose_ml
+    from .dosing_services import async_trigger_dose_ml
 
     await async_trigger_dose_ml(hass, chihiros_data, pump_idx, TEST_DOSE_ML)
 

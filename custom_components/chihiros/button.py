@@ -8,8 +8,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import async_trigger_dose_ml
 from .const import DOMAIN
+from .dosing_services import async_trigger_dose_ml
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .heater import ChihirosHeaterResetWorkTimeButton
 from .models import ChihirosData, DosingChihirosData
