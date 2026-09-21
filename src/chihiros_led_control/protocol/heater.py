@@ -70,6 +70,16 @@ def create_heater_set_command(
     return create_command_encoding(90, 43, msg_id, parameters, avoid_reserved_byte=False)
 
 
+def create_switch_to_manual_mode_command(msg_id: tuple[int, int]) -> bytearray:
+    """Create the common manual-mode frame used before heater writes."""
+    return create_command_encoding(90, 5, msg_id, [11, 255, 255])
+
+
+def create_query_status_command(msg_id: tuple[int, int]) -> bytearray:
+    """Create the common status-query frame used by heater clients."""
+    return create_command_encoding(90, 4, msg_id, [1])
+
+
 def create_heater_auto_mode_command(msg_id: tuple[int, int]) -> bytearray:
     """Create the heater's ``switchToAuto()`` frame ``(0x5A, 5, [3, 255, 255])``."""
     return create_command_encoding(90, 5, msg_id, [3, 255, 255], avoid_reserved_byte=False)
@@ -198,7 +208,8 @@ __all__ = [
     "HEATER_BACKLIGHT_TRAILER",
     "split_heater_temperature",
     "encode_heater_power_watts",
-    "create_heater_set_command",
+    "create_switch_to_manual_mode_command",
+    "create_query_status_command",
     "create_heater_auto_mode_command",
     "create_heater_scene_command",
     "create_heater_auto_heating_command",

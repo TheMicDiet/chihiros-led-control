@@ -9,7 +9,6 @@ from bleak.backends.scanner import AdvertisementData
 
 from ..models import DeviceModel
 from ..protocol import heater as commands
-from ..protocol import led
 from ..protocol.heater import heater_alarm_names
 from ..protocol.notifications import HeaterStatusNotification, HeaterTemperatureNotification, ParsedNotification
 from ..registry import HEATER
@@ -42,6 +41,10 @@ class ChihirosHeater(BaseChihirosDevice):
         self.last_heater_temperature_notification: HeaterTemperatureNotification | None = None
         self.last_heater_status_notification: HeaterStatusNotification | None = None
 
+    def _parse_notification(self, data: bytes | bytearray) -> ParsedNotification | None:
+        """Parse heater temperature and status notifications."""
+        return commands.parse_notification(data)
+
     def _record_notification(self, parsed: ParsedNotification) -> None:
         """Record a notification, folding the reported setting temperature in.
 
@@ -51,7 +54,10 @@ class ChihirosHeater(BaseChihirosDevice):
         """
         super()._record_notification(parsed)
         if isinstance(parsed, HeaterTemperatureNotification):
+            self.last_heater_temperature_notification = parsed
             self._setting_temperature = parsed.setting_temperature_celsius
+        elif isinstance(parsed, HeaterStatusNotification):
+            self.last_heater_status_notification = parsed
 
     @property
     def setting_temperature_celsius(self) -> float:
@@ -235,7 +241,7 @@ class ChihirosHeater(BaseChihirosDevice):
     async def _set_manual_state_locked(self, temperature_c: float, power_watts: int) -> None:
         """Set and track both manual values while holding the state lock."""
         commands_to_send = [
-            led.create_switch_to_manual_mode_command(self.get_next_msg_id()),
+            commands.create_switch_to_manual_mode_command(self.get_next_msg_id()),
             commands.create_heater_set_command(
                 self.get_next_msg_id(),
                 auto=False,
@@ -261,12 +267,12 @@ class ChihirosHeater(BaseChihirosDevice):
 
     async def set_manual_mode(self) -> None:
         """Switch the heater to manual mode without changing its state."""
-        cmd = led.create_switch_to_manual_mode_command(self.get_next_msg_id())
+        cmd = commands.create_switch_to_manual_mode_command(self.get_next_msg_id())
         await self._send_command(cmd, 3)
 
     async def query_status(self) -> None:
         """Request the heater's temperature/status notification snapshot."""
-        cmd = led.create_query_status_command(self.get_next_msg_id())
+        cmd = commands.create_query_status_command(self.get_next_msg_id())
         await self._send_command(cmd, 3, notification_wait=STATUS_NOTIFICATION_WAIT)
 
 

@@ -14,12 +14,8 @@ from chihiros_led_control.factory import (
     needs_device_type,
     resolve_model,
 )
-from chihiros_led_control.models import (
-    FALLBACK,
-    DeviceKind,
-    LedFeature,
-    LedProtocol,
-)
+from chihiros_led_control.models import DeviceKind, LedFeature, LedProtocol
+from chihiros_led_control.registry import FALLBACK
 
 
 class FakeBLEDevice:

@@ -118,14 +118,10 @@ class FakeDosingDevice(FakeBaseDevice):
         )
 
     def _dosing_totals_notification(self) -> DosingTotalsNotification:
-        return DosingTotalsNotification(
-            tuple(round(volume * 1000) for volume in self._dosed_ml), raw=b""
-        )
+        return DosingTotalsNotification(tuple(round(volume * 1000) for volume in self._dosed_ml), raw=b"")
 
     def _dosing_daily_notification(self) -> DosingDailyNotification:
-        return DosingDailyNotification(
-            tuple(round(volume * 1000) for volume in self._dosed_ml), raw=b""
-        )
+        return DosingDailyNotification(tuple(round(volume * 1000) for volume in self._dosed_ml), raw=b"")
 
 
 __all__ = ["FakeDosingDevice"]

@@ -2,27 +2,16 @@
 
 from __future__ import annotations
 
+import datetime
 import logging
 from collections.abc import Callable, Sequence
 
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
-from ..models import DeviceKind, DeviceModel, DosingPumpSpec, HeaterSpec, LedFeature, LedSpec, MagStirrerSpec
-from ..protocol import dosing as dosing_protocol
-from ..protocol import heater as heater_protocol
-from ..protocol import led as led_protocol
-from ..protocol.frame import next_message_id
-from ..protocol.notifications import (
-    DosingDailyNotification,
-    DosingTotalsNotification,
-    FanStatusNotification,
-    HeaterStatusNotification,
-    HeaterTemperatureNotification,
-    ParsedNotification,
-    RuntimeNotification,
-    ScheduleSnapshotNotification,
-)
+from ..models import DeviceKind, DeviceModel
+from ..protocol.frame import create_command_encoding, encode_timestamp, next_message_id
+from ..protocol.notifications import ParsedNotification
 from ..registry import FALLBACK
 from ..transport import BleTransport, ChihirosTransport
 
@@ -30,44 +19,6 @@ DEFAULT_ATTEMPTS = 3
 COMMAND_NOTIFICATION_WAIT = 0.5
 STATUS_NOTIFICATION_WAIT = 1.0
 NotificationCallback = Callable[[ParsedNotification], None]
-
-_LAST_NOTIFICATION_FIELDS: dict[type, tuple[str, str, tuple[str, ...]]] = {
-    RuntimeNotification: (
-        "last_runtime_notification",
-        "Runtime notification received; firmware=%s runtime_minutes=%s",
-        ("firmware_version", "runtime_minutes"),
-    ),
-    FanStatusNotification: (
-        "last_fan_status_notification",
-        "Fan status notification received; firmware=%s fan_rpm=%s temperature_celsius=%s",
-        ("firmware_version", "fan_rpm", "temperature_celsius"),
-    ),
-    ScheduleSnapshotNotification: (
-        "last_schedule_snapshot_notification",
-        "Schedule snapshot notification received; firmware=%s points=%s",
-        ("firmware_version", "points"),
-    ),
-    DosingTotalsNotification: (
-        "last_dosing_totals_notification",
-        "Dosing totals notification received; total_dosed_ul=%s",
-        ("total_dosed_ul",),
-    ),
-    DosingDailyNotification: (
-        "last_dosing_daily_notification",
-        "Dosing daily notification received; dose_use_in_day_ul=%s",
-        ("dose_use_in_day_ul",),
-    ),
-    HeaterTemperatureNotification: (
-        "last_heater_temperature_notification",
-        "Heater temperature notification received; setting=%s current=%s",
-        ("setting_temperature_celsius", "current_temperature_celsius"),
-    ),
-    HeaterStatusNotification: (
-        "last_heater_status_notification",
-        "Heater status notification received; firmware=%s work_time_hours=%s alarms=0x%02x",
-        ("firmware_version", "work_time_hours", "alarms"),
-    ),
-}
 
 
 class BaseChihirosDevice:
@@ -88,13 +39,6 @@ class BaseChihirosDevice:
         self._advertisement_data = advertisement_data
         self._msg_id = next_message_id()
         self._notification_callbacks: set[NotificationCallback] = set()
-        self.last_runtime_notification: RuntimeNotification | None = None
-        self.last_fan_status_notification: FanStatusNotification | None = None
-        self.last_schedule_snapshot_notification: ScheduleSnapshotNotification | None = None
-        self.last_dosing_totals_notification: DosingTotalsNotification | None = None
-        self.last_dosing_daily_notification: DosingDailyNotification | None = None
-        self.last_heater_temperature_notification: HeaterTemperatureNotification | None = None
-        self.last_heater_status_notification: HeaterStatusNotification | None = None
         self.transport: ChihirosTransport = transport or BleTransport(
             ble_device,
             advertisement_data,
@@ -192,22 +136,15 @@ class BaseChihirosDevice:
         self._logger.debug("%s: Sending commands %s", self.name, [item.hex() for item in commands_to_send])
         await self.transport.send(commands_to_send, attempts=attempts, notification_wait=notification_wait)
 
+    def _parse_notification(self, data: bytes | bytearray) -> ParsedNotification | None:
+        """Parse a raw notification using the selected family codec."""
+        return None
+
     def _notification_handler(self, _sender: object, data: bytearray) -> None:
-        """Parse raw notifications with the selected family codec."""
-        spec = self.model.spec
-        if isinstance(spec, HeaterSpec):
-            parsed = heater_protocol.parse_notification(data)
-        elif isinstance(spec, (DosingPumpSpec, MagStirrerSpec)):
-            parsed = dosing_protocol.parse_notification(data)
-        else:
-            parsed = led_protocol.parse_notification(data, self.model.color_channels)
+        """Dispatch a parsed family notification to subscribers."""
+        parsed = self._parse_notification(data)
         if parsed is None:
             self._logger.debug("%s: Notification received: %s", self.name, data.hex())
-            return
-        if isinstance(parsed, FanStatusNotification) and (
-            not isinstance(spec, LedSpec) or LedFeature.FAN not in spec.features
-        ):
-            self._logger.debug("%s: Ignoring fan readout frame on non-fan model %s", self.name, self.model.name)
             return
         self._record_notification(parsed)
         self._notify_callbacks(parsed)
@@ -215,9 +152,9 @@ class BaseChihirosDevice:
     async def _connection_prelude(self) -> Sequence[bytes]:
         """Build the startup batch lazily for a newly established connection."""
         prelude = [
-            led_protocol.create_base_auth_command(self.get_next_msg_id()),
-            led_protocol.create_set_time_command(self.get_next_msg_id()),
-            led_protocol.create_set_time_command(self.get_next_msg_id()),
+            create_command_encoding(90, 4, self.get_next_msg_id(), [1]),
+            create_command_encoding(90, 9, self.get_next_msg_id(), encode_timestamp(datetime.datetime.now())),
+            create_command_encoding(90, 9, self.get_next_msg_id(), encode_timestamp(datetime.datetime.now())),
         ]
         self._logger.debug(
             "%s: Sending connection prelude %s",
@@ -227,14 +164,8 @@ class BaseChihirosDevice:
         return prelude
 
     def _record_notification(self, parsed: ParsedNotification) -> None:
-        """Store a parsed notification on its last-seen attribute and log it."""
-        attribute, message, field_names = _LAST_NOTIFICATION_FIELDS[type(parsed)]
-        setattr(self, attribute, parsed)
-        self._logger.debug(
-            "%s: %s",
-            self.name,
-            message % tuple(getattr(parsed, field_name) for field_name in field_names),
-        )
+        """Log a parsed notification; family drivers own persistent state."""
+        self._logger.debug("%s: %s", self.name, type(parsed).__name__)
 
     def _notify_callbacks(self, notification: ParsedNotification) -> None:
         """Notify subscribers about parsed device notifications."""

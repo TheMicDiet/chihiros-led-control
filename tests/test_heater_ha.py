@@ -45,11 +45,12 @@ except ImportError as err:
         allow_module_level=True,
     )
 
-from custom_components.chihiros.vendor.chihiros_led_control.models import HEATER, DeviceKind
+from custom_components.chihiros.vendor.chihiros_led_control.models import DeviceKind
 from custom_components.chihiros.vendor.chihiros_led_control.protocol.heater import (
     HeaterStatusNotification,
     HeaterTemperatureNotification,
 )
+from custom_components.chihiros.vendor.chihiros_led_control.registry import HEATER
 
 pytestmark = [
     pytest.mark.integration,

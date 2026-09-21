@@ -10,9 +10,9 @@ from typer.testing import CliRunner
 from chihiros_led_control import cli
 from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
 from chihiros_led_control.factory import create_device, detect_model
-from chihiros_led_control.models import DOSING_PUMP, MAG_STIRRER
 from chihiros_led_control.protocol.dosing import DosingMode, DosingWorkPoint
 from chihiros_led_control.protocol.stirrer import stirrer_dosage_for_minutes
+from chihiros_led_control.registry import DOSING_PUMP, MAG_STIRRER
 from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
 
 RUNNER = CliRunner()
@@ -434,38 +434,3 @@ def test_doser_cli_rejects_bad_input(monkeypatch: pytest.MonkeyPatch) -> None:
     assert bad_point.exit_code != 0 and "HH:MM:ML" in bad_point.output
     assert bad_calibrate.exit_code != 0
     assert wrong_device.exit_code != 0 and "not a dosing pump" in wrong_device.output
-
-
-def test_scripted_program_channel_is_one_transaction(monkeypatch: pytest.MonkeyPatch) -> None:
-    """program_channel batches active + daily + schedule frames in one session."""
-    transport = ScriptedTransport(name="DYMIXR-test")
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = _make_stirrer(transport)
-        if transport:
-            await device.program_channel(
-                1,
-                active=True,
-                compensate=False,
-                dose_per_day_ml=60.0,
-                frequency=127,
-                is_first_setting=True,
-                mode=DosingMode.TIMER,
-                points=[DosingWorkPoint(8, 0, volume_ml=2.5), DosingWorkPoint(20, 30, volume_ml=1.0)],
-            )
-
-        # All four frames go out in a single _send_command transaction: the
-        # sequence shares one message-id run and one connection (prelude
-        # frames from the connection setup are filtered out). Timer mode
-        # batches both points into ONE (0xA5, 21) frame (flush only when the
-        # accumulator exceeds 50 bytes).
-        command_frames = [frame for frame in transport.writes if frame[5] in (32, 27, 21)]
-        modes = [frame[5] for frame in command_frames]
-        assert modes == [32, 27, 21]
-        daily = command_frames[1]
-        assert list(daily[6:-1]) == [1, 127, 1, 0, 2, 88]  # 60.0 mL -> 600 tenths
-        schedule = command_frames[2]
-        assert list(schedule[6:-1]) == [1, 3, 8, 0, 0, 25, 20, 30, 0, 10]
-
-    asyncio.run(run())

@@ -6,9 +6,6 @@ from dataclasses import dataclass
 from typing import TypeAlias
 
 from ..vendor.chihiros_led_control.models import (
-    DOSING_PUMP,
-    HEATER,
-    MAG_STIRRER,
     RGB_CHANNELS,
     WHITE_CHANNELS,
     WRGB_CHANNELS,
@@ -19,6 +16,7 @@ from ..vendor.chihiros_led_control.models import (
     LedProtocol,
     LedSpec,
 )
+from ..vendor.chihiros_led_control.registry import DOSING_PUMP, HEATER, MAG_STIRRER
 from .base import FakeBaseDevice
 from .dosing import FakeDosingDevice
 from .heater import FakeHeaterDevice

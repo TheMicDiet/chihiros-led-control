@@ -10,6 +10,12 @@ from bleak.backends.scanner import AdvertisementData
 
 from ..models import DeviceModel, LedFeature, LedSpec
 from ..protocol import led as commands
+from ..protocol.notifications import (
+    FanStatusNotification,
+    ParsedNotification,
+    RuntimeNotification,
+    ScheduleSnapshotNotification,
+)
 from ..registry import FALLBACK
 from ..transport import ChihirosTransport
 from ..weekday_encoding import WeekdaySelect, encode_selected_weekdays
@@ -34,6 +40,47 @@ class ChihirosDevice(BaseChihirosDevice):
         self._fan_stop_temp = 33
         self._temp_protect = False
         self._bluetooth_led = False
+        self.last_runtime_notification: RuntimeNotification | None = None
+        self.last_fan_status_notification: FanStatusNotification | None = None
+        self.last_schedule_snapshot_notification: ScheduleSnapshotNotification | None = None
+
+    def _parse_notification(self, data: bytes | bytearray) -> ParsedNotification | None:
+        """Parse LED and accessory notifications."""
+        parsed = commands.parse_notification(data, self.model.color_channels)
+        if isinstance(parsed, FanStatusNotification) and (
+            not isinstance(self.model.spec, LedSpec) or LedFeature.FAN not in self.model.spec.features
+        ):
+            self._logger.debug("%s: Ignoring fan readout frame on non-fan model %s", self.name, self.model.name)
+            return None
+        return parsed
+
+    def _record_notification(self, parsed: ParsedNotification) -> None:
+        """Store the last LED notification and log its values."""
+        if isinstance(parsed, RuntimeNotification):
+            self.last_runtime_notification = parsed
+            self._logger.debug(
+                "%s: Runtime notification received; firmware=%s runtime_minutes=%s",
+                self.name,
+                parsed.firmware_version,
+                parsed.runtime_minutes,
+            )
+        elif isinstance(parsed, FanStatusNotification):
+            self.last_fan_status_notification = parsed
+            self._logger.debug(
+                "%s: Fan status notification received; firmware=%s fan_rpm=%s temperature_celsius=%s",
+                self.name,
+                parsed.firmware_version,
+                parsed.fan_rpm,
+                parsed.temperature_celsius,
+            )
+        elif isinstance(parsed, ScheduleSnapshotNotification):
+            self.last_schedule_snapshot_notification = parsed
+            self._logger.debug(
+                "%s: Schedule snapshot notification received; firmware=%s points=%s",
+                self.name,
+                parsed.firmware_version,
+                parsed.points,
+            )
 
     @property
     def colors(self) -> dict[str, int]:

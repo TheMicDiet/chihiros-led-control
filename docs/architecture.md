@@ -62,7 +62,11 @@ from chihiros_led_control.protocol import dosing, heater, led, stirrer
 `protocol.frame` owns framing, message IDs, and checksums. `protocol.notifications`
 owns notification value objects and the parsed-notification union. `protocol.led`,
 `.dosing`, `.stirrer`, and `.heater` own family command and parser behavior. The
-old monolithic client and codec modules are not compatibility entry points.
+base driver owns only identity, transport submission, lifecycle, and notification
+dispatch hooks; family drivers own parsing and persistent notification state.
+Shared dosing wire builders support stirrer scheduling and master/slave replay
+without making the stirrer a dosing-pump client. The old monolithic client and
+codec modules are not compatibility entry points.
 
 Home Assistant development fakes are organized under
 `custom_components/chihiros/fake/`, with separate LED, dosing, stirrer, and

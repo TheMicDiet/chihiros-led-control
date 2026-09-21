@@ -102,27 +102,6 @@ class DeviceModel:
         return self.spec.min_fan_speed if isinstance(self.spec, LedSpec) else 0
 
 
-def __getattr__(name: str):
-    """Lazily expose registry declarations during the package cutover."""
-    if name in {
-        "DOSING_PUMP",
-        "FALLBACK",
-        "GENERIC_MODELS_BY_DEVICE_TYPE",
-        "GENERIC_RGB",
-        "GENERIC_WHITE",
-        "GENERIC_WRGB",
-        "HEATER",
-        "MAG_STIRRER",
-        "MODEL_BY_CODE",
-        "SUPPORTED_MODELS",
-        "iter_model_codes_by_specificity",
-    }:
-        from . import registry
-
-        return getattr(registry, name)
-    raise AttributeError(name)
-
-
 WHITE_CHANNELS = MappingProxyType({"white": 0})
 RGB_CHANNELS = MappingProxyType({"red": 0, "green": 1, "blue": 2})
 WRGB_CHANNELS = MappingProxyType({"white": 3, "red": 0, "green": 1, "blue": 2})

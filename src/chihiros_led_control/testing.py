@@ -42,7 +42,8 @@ from .const import (
     UART_TX_CHAR_UUID,
 )
 from .exceptions import CharacteristicMissingError
-from .models import DOSING_PUMP, FALLBACK, HEATER, MAG_STIRRER, DeviceModel
+from .models import DeviceModel
+from .registry import DOSING_PUMP, FALLBACK, HEATER, MAG_STIRRER
 from .transport import BATCH_WRITE_DELAY, PreludeCallback, pair_notify_characteristic
 
 NotificationHandler = Callable[[object, bytearray], None]

@@ -66,32 +66,5 @@ class FakeStirrerDevice(FakeBaseDevice):
         await asyncio.sleep(0)
         self.dosing_programming_calls.append({"kind": "delay", "enabled": enabled})
 
-    async def program_channel(
-        self,
-        channel: int,
-        *,
-        active: bool,
-        compensate: bool = False,
-        dose_per_day_ml: float | None = None,
-        frequency: int = 127,
-        is_first_setting: bool = True,
-        mode: object = None,
-        points: Sequence[object] = (),
-    ) -> None:
-        await asyncio.sleep(0)
-        self.dosing_programming_calls.append(
-            {
-                "kind": "program",
-                "channel": channel,
-                "active": active,
-                "compensate": compensate,
-                "ml": dose_per_day_ml,
-                "frequency": frequency,
-                "first_setting": is_first_setting,
-                "mode": getattr(mode, "name", None),
-                "points": tuple(points),
-            }
-        )
-
 
 __all__ = ["FakeStirrerDevice"]

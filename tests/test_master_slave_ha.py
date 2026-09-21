@@ -43,8 +43,9 @@ except ImportError as err:
         allow_module_level=True,
     )
 
-from custom_components.chihiros.vendor.chihiros_led_control.models import DOSING_PUMP, MAG_STIRRER, DeviceKind
+from custom_components.chihiros.vendor.chihiros_led_control.models import DeviceKind
 from custom_components.chihiros.vendor.chihiros_led_control.protocol.dosing import DosingMode
+from custom_components.chihiros.vendor.chihiros_led_control.registry import DOSING_PUMP, MAG_STIRRER
 
 pytestmark = [
     pytest.mark.integration,

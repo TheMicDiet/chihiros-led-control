@@ -10,7 +10,6 @@ from typer.testing import CliRunner
 from chihiros_led_control import cli
 from chihiros_led_control.devices import ChihirosDevice, ChihirosHeater
 from chihiros_led_control.factory import create_device, detect_model
-from chihiros_led_control.models import HEATER
 from chihiros_led_control.protocol.heater import (
     HeaterStatusNotification,
     HeaterTemperatureNotification,
@@ -26,6 +25,7 @@ from chihiros_led_control.protocol.heater import (
     parse_notification as parse_heater_notification,
 )
 from chihiros_led_control.protocol.led import parse_notification as parse_led_notification
+from chihiros_led_control.registry import HEATER
 from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
 
 RUNNER = CliRunner()

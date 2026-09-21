@@ -10,7 +10,8 @@ from typer.testing import CliRunner
 
 from chihiros_led_control import cli
 from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump
-from chihiros_led_control.models import DOSING_PUMP, WHITE_CHANNELS, DeviceModel, LedSpec
+from chihiros_led_control.models import WHITE_CHANNELS, DeviceModel, LedSpec
+from chihiros_led_control.registry import DOSING_PUMP
 
 
 class FakeBLEDevice:

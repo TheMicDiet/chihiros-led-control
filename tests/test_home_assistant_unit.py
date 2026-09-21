@@ -53,12 +53,13 @@ from custom_components.chihiros.service_utils import (
 from custom_components.chihiros.service_utils import (
     resolve_service_device as _resolve_service_device,
 )
-from custom_components.chihiros.vendor.chihiros_led_control.models import DOSING_PUMP, DeviceKind, LedFeature, LedSpec
+from custom_components.chihiros.vendor.chihiros_led_control.models import DeviceKind, LedFeature, LedSpec
 from custom_components.chihiros.vendor.chihiros_led_control.protocol.led import (
     FanStatusNotification,
     RuntimeNotification,
     SchedulePoint,
 )
+from custom_components.chihiros.vendor.chihiros_led_control.registry import DOSING_PUMP
 
 pytestmark = pytest.mark.unit
 

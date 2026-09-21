@@ -5,11 +5,33 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ..protocol import dosing as commands
+from ..protocol.notifications import DosingDailyNotification, DosingTotalsNotification, ParsedNotification
 from .base import STATUS_NOTIFICATION_WAIT, BaseChihirosDevice
 
 
 class ChihirosDosingPump(BaseChihirosDevice):
     """Concrete BLE client for a Chihiros dosing pump."""
+
+    def _parse_notification(self, data: bytes | bytearray) -> ParsedNotification | None:
+        """Parse dosing-pump counter notifications."""
+        return commands.parse_notification(data)
+
+    def _record_notification(self, parsed: ParsedNotification) -> None:
+        """Store the last dosing notification and log its values."""
+        if isinstance(parsed, DosingTotalsNotification):
+            self.last_dosing_totals_notification = parsed
+            self._logger.debug(
+                "%s: Dosing totals notification received; total_dosed_ul=%s",
+                self.name,
+                parsed.total_dosed_ul,
+            )
+        elif isinstance(parsed, DosingDailyNotification):
+            self.last_dosing_daily_notification = parsed
+            self._logger.debug(
+                "%s: Dosing daily notification received; dose_use_in_day_ul=%s",
+                self.name,
+                parsed.dose_use_in_day_ul,
+            )
 
     async def query_status(self) -> None:
         """Request lifetime and daily dosing counters in app order."""

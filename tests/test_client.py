@@ -12,8 +12,6 @@ from bleak_retry_connector import BleakError
 
 from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
 from chihiros_led_control.models import (
-    DOSING_PUMP,
-    MAG_STIRRER,
     RGB_CHANNELS,
     WHITE_CHANNELS,
     WRGB_CHANNELS,
@@ -30,6 +28,7 @@ from chihiros_led_control.protocol.notifications import (
     RuntimeNotification,
     ScheduleSnapshotNotification,
 )
+from chihiros_led_control.registry import DOSING_PUMP, MAG_STIRRER
 from chihiros_led_control.testing import ScriptedTransport
 
 
@@ -220,13 +219,12 @@ def _fast_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove notification and batch pacing delays from scripted sessions."""
     from chihiros_led_control import testing as testing_module
     from chihiros_led_control.devices import base as device_base
-    from chihiros_led_control.devices import dosing, led, stirrer
+    from chihiros_led_control.devices import dosing, led
 
     monkeypatch.setattr(device_base, "COMMAND_NOTIFICATION_WAIT", 0.0)
     monkeypatch.setattr(device_base, "STATUS_NOTIFICATION_WAIT", 0.0)
     monkeypatch.setattr(dosing, "STATUS_NOTIFICATION_WAIT", 0.0)
     monkeypatch.setattr(led, "STATUS_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(stirrer, "STATUS_NOTIFICATION_WAIT", 0.0)
     monkeypatch.setattr(testing_module, "BATCH_WRITE_DELAY", 0.0)
 
 
