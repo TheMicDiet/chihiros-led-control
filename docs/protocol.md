@@ -80,7 +80,7 @@ parameters, and checksums:
 - If the calculated checksum would be `0x5a`, the message ID is incremented and
   the frame is rebuilt.
 
-This repository implements those rules in `src/chihiros_led_control/protocol.py`.
+This repository implements those rules in `src/chihiros_led_control/protocol/frame.py`.
 
 ## Checksum
 

@@ -32,29 +32,26 @@ roster assertion in `tests/test_home_assistant_unit.py`.
 
 ## Scripted BLE transport
 
-`src/chihiros_led_control/testing.py` replaces the real Bluetooth transport
-with an in-memory GATT connection, so the **real** `ChihirosDevice` client runs
-its full connect flow (characteristic resolution, notification subscription,
-connection prelude), command encoding, retry logic, and notification parsing
-against scripted bytes.
+`src/chihiros_led_control/testing.py` provides an injectable in-memory
+`ChihirosTransport`, so the real family driver runs its connect flow,
+command encoding, retry logic, and notification parsing against scripted
+bytes.
 
 ```python
 import asyncio
 
-from chihiros_led_control.client import ChihirosDevice
+from chihiros_led_control import ChihirosDevice
 from chihiros_led_control.models import WHITE_CHANNELS, DeviceModel
 from chihiros_led_control.testing import ScriptedTransport
-
 
 async def run() -> None:
     transport = ScriptedTransport()
     # Reply to the auth/status command with a runtime notification frame.
     transport.expect(90, 4, [1], respond=[bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")])
     device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
-    with transport.patch_establish_connection():
-        await device.query_status()
-        # Successful commands reuse the connection until it goes idle.
-        await device.disconnect()
+    await device.query_status()
+    # Successful commands reuse the connection until it goes idle.
+    await device.disconnect()
     print(device.last_runtime_notification)
     print([command.hex() for command in transport.writes])
 

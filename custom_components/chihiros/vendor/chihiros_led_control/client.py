@@ -30,7 +30,7 @@ from .const import (
     UART_TX_CHAR_UUID,
 )
 from .exceptions import CharacteristicMissingError
-from .models import FALLBACK, HEATER, DeviceModel
+from .models import DeviceKind, DeviceModel, HeaterSpec, LedFeature, LedSpec
 from .protocol import (
     DosingDailyNotification,
     DosingTotalsNotification,
@@ -44,6 +44,8 @@ from .protocol import (
     next_message_id,
     parse_notification,
 )
+from .registry import FALLBACK, HEATER
+from .transport import BleTransport, ChihirosTransport
 from .weekday_encoding import WeekdaySelect, encode_selected_weekdays
 
 DEFAULT_ATTEMPTS = 3
@@ -120,13 +122,13 @@ def _pair_notify_characteristic(
 class ChihirosDevice:
     """Concrete BLE client for a Chihiros LED device."""
 
-    _logger: logging.Logger
-
     def __init__(
         self,
         ble_device: BLEDevice,
         model: DeviceModel = FALLBACK,
         advertisement_data: AdvertisementData | None = None,
+        *,
+        transport: ChihirosTransport | None = None,
     ) -> None:
         """Create a device client."""
         self._ble_device = ble_device
@@ -155,6 +157,7 @@ class ChihirosDevice:
         self.last_dosing_totals_notification: DosingTotalsNotification | None = None
         self.last_dosing_daily_notification: DosingDailyNotification | None = None
         self.loop = asyncio.get_running_loop()
+        self.transport: ChihirosTransport = transport or BleTransport(self._send_frames)
 
     def set_log_level(self, level: int | str) -> None:
         """Set log level."""
@@ -168,6 +171,7 @@ class ChihirosDevice:
         """Update the BLE device and advertisement data."""
         self._ble_device = ble_device
         self._advertisement_data = advertisement_data
+        self.transport.update_device(ble_device, advertisement_data)
 
     @property
     def current_msg_id(self) -> tuple[int, int]:
@@ -188,6 +192,11 @@ class ChihirosDevice:
     def model_codes(self) -> tuple[str, ...]:
         """Return the model codes."""
         return self.model.advertised_codes
+
+    @property
+    def device_kind(self) -> DeviceKind:
+        """Return the stable profile family discriminator."""
+        return self.model.device_kind
 
     @property
     def colors(self) -> dict[str, int]:
@@ -321,7 +330,7 @@ class ChihirosDevice:
         Values below the model's minimum are clamped to it (the app clamps the
         VIVID III to 25 %). Manual speed leaves temperature auto mode.
         """
-        if not self.model.has_fan:
+        if not isinstance(self.model.spec, LedSpec) or LedFeature.FAN not in self.model.spec.features:
             raise ValueError(f"Model does not support fan control: {self.model.name}")
         if speed_percent < 0 or speed_percent > 100:
             raise ValueError("Fan speed must be between 0 and 100 percent")
@@ -337,7 +346,7 @@ class ChihirosDevice:
         Matches the vendor app's ``LedInfo::setFanAuto()`` frame; the fan then
         starts/stops from the configured start/stop temperatures.
         """
-        if not self.model.has_fan:
+        if not isinstance(self.model.spec, LedSpec) or LedFeature.FAN not in self.model.spec.features:
             raise ValueError(f"Model does not support fan control: {self.model.name}")
         cmd = commands.create_fan_auto_mode_command(self.get_next_msg_id())
         await self._send_command(cmd, 3)
@@ -345,7 +354,7 @@ class ChihirosDevice:
 
     async def set_fan_start_stop_temp(self, start_temp: int, stop_temp: int) -> None:
         """Set the VIVID3 fan start/stop temperatures used by auto mode."""
-        if not self.model.has_fan:
+        if not isinstance(self.model.spec, LedSpec) or LedFeature.FAN not in self.model.spec.features:
             raise ValueError(f"Model does not support fan control: {self.model.name}")
         cmd = commands.create_vivid3_fan_start_stop_temp_command(
             self.get_next_msg_id(),
@@ -362,7 +371,10 @@ class ChihirosDevice:
         Matches the vendor app's ``Vivid3Info::tempProtect()`` frame. The device
         sends no acknowledgement, so the new state is tracked optimistically.
         """
-        if not self.model.is_vivid3:
+        if (
+            not isinstance(self.model.spec, LedSpec)
+            or LedFeature.TEMPERATURE_PROTECTION not in self.model.spec.features
+        ):
             raise ValueError(f"Model does not support temperature protection: {self.model.name}")
         cmd = commands.create_vivid3_temp_protect_command(self.get_next_msg_id(), enabled)
         await self._send_command(cmd, 3)
@@ -374,7 +386,7 @@ class ChihirosDevice:
         Matches the vendor app's ``Vivid3Info::setLed()`` frame. The device
         sends no acknowledgement, so the new state is tracked optimistically.
         """
-        if not self.model.is_vivid3:
+        if not isinstance(self.model.spec, LedSpec) or LedFeature.INDICATOR_LED not in self.model.spec.features:
             raise ValueError(f"Model does not support the indicator LED switch: {self.model.name}")
         cmd = commands.create_vivid3_bluetooth_led_command(self.get_next_msg_id(), enabled)
         await self._send_command(cmd, 3)
@@ -464,7 +476,7 @@ class ChihirosDevice:
             channel,
             minutes,
             level,
-            sea_led_family=self.model.sea_led_family,
+            protocol=self.model.spec.protocol,
         )
         await self._send_command(cmd, 3)
 
@@ -485,7 +497,7 @@ class ChihirosDevice:
                     channel,
                     minutes,
                     level,
-                    sea_led_family=self.model.sea_led_family,
+                    protocol=self.model.spec.protocol,
                 )
             )
             for channel, minutes, level in points
@@ -511,6 +523,10 @@ class ChihirosDevice:
         cmd = commands.create_switch_to_manual_mode_command(self.get_next_msg_id())
         await self._send_command(cmd, 3)
 
+    async def _send_frames(self, frames: Sequence[bytes]) -> None:
+        """Send frames for the transport adapter without family semantics."""
+        await self._send_command_transaction(list(frames), 0)
+
     async def _send_command(
         self,
         command: list[bytes] | bytes | bytearray,
@@ -526,11 +542,14 @@ class ChihirosDevice:
         attempts = DEFAULT_ATTEMPTS if retry is None else retry
         if attempts < 1:
             raise ValueError("retry must be at least 1")
-        self._logger.debug("%s: Sending commands %s", self.name, [item.hex() for item in commands_to_send])
-        if self._operation_lock.locked():
-            self._logger.debug("%s: Operation already in progress, waiting; RSSI: %s", self.name, self.rssi)
         if notification_wait is None:
             notification_wait = COMMAND_NOTIFICATION_WAIT
+        self._logger.debug("%s: Sending commands %s", self.name, [item.hex() for item in commands_to_send])
+        if not isinstance(self.transport, BleTransport):
+            await self.transport.send(commands_to_send, attempts=attempts, notification_wait=notification_wait)
+            return
+        if self._operation_lock.locked():
+            self._logger.debug("%s: Operation already in progress, waiting; RSSI: %s", self.name, self.rssi)
         async with self._operation_lock:
             await self._send_command_locked(commands_to_send, attempts, notification_wait)
 
@@ -596,11 +615,13 @@ class ChihirosDevice:
 
     def _notification_handler(self, _sender: BleakGATTCharacteristic, data: bytearray) -> None:
         """Handle notification responses."""
-        parsed = parse_notification(data, self.model.color_channels, heater=self.model.is_heater)
+        parsed = parse_notification(data, self.model.color_channels, heater=isinstance(self.model.spec, HeaterSpec))
         if parsed is None:
             self._logger.debug("%s: Notification received: %s", self.name, data.hex())
             return
-        if isinstance(parsed, FanStatusNotification) and not self.model.has_fan:
+        if isinstance(parsed, FanStatusNotification) and (
+            not isinstance(self.model.spec, LedSpec) or LedFeature.FAN not in self.model.spec.features
+        ):
             # 0x5B/0x0B fan readout: ignore it on models without a fan.
             self._logger.debug("%s: Ignoring fan readout frame on non-fan model %s", self.name, self.model.name)
             return
@@ -806,6 +827,8 @@ class ChihirosDevice:
         self._logger.debug("%s: Disconnecting", self.name)
         async with self._operation_lock:
             await self._execute_disconnect()
+        if self.transport is not self:
+            await self.transport.disconnect()
 
     async def _execute_disconnect(self) -> None:
         """Execute disconnection."""

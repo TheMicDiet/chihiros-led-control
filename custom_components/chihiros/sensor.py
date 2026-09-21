@@ -40,9 +40,11 @@ from .dosing import DosingCalibrationTracker, DosingDailyTotals
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .heater import ChihirosHeaterAlarmSensor, is_heater_capable
 from .models import ChihirosData
-from .runtime import ChihirosClient
+from .runtime import ChihirosClient, has_led_feature
+from .vendor.chihiros_led_control.models import LedFeature
 
 _LOGGER = logging.getLogger(__name__)
+
 MAX_SENSOR_STATE_LENGTH = 255
 
 
@@ -148,7 +150,7 @@ def _accessory_sensors(chihiros_data: ChihirosData) -> list[SensorEntity]:
     """Build the fan and heater sensors of a device."""
     coordinator = chihiros_data.coordinator
     entities: list[SensorEntity] = []
-    if chihiros_data.device.model.has_fan:
+    if has_led_feature(chihiros_data.device, LedFeature.FAN):
         entities.extend(
             ChihirosNotificationSensor(coordinator, chihiros_data.device, description, entity_category=None)
             for description in FAN_SENSOR_DESCRIPTIONS

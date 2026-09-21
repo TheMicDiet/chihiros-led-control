@@ -1,26 +1,23 @@
 """Scripted BLE transport for exercising the device client without hardware.
 
-The scripted transport replaces ``chihiros_led_control.client.establish_connection``
-with an in-memory GATT connection. Command frames written by the real
-``ChihirosDevice`` are recorded and matched against registered rules; matching
-rules deliver notification frames through the normal notification handler, so
-message-id sequencing, the connection prelude, notification parsing, and retry
-logic all run against scripted bytes.
+The scripted transport implements ``ChihirosTransport`` directly. Command
+frames written by a family device are recorded and matched against registered
+rules; matching rules deliver notification frames through the normal
+notification handler, so message-id sequencing, the connection prelude,
+notification parsing, and retry logic run against scripted bytes.
 
 Example::
 
     import asyncio
 
-    from chihiros_led_control.client import ChihirosDevice
+    from chihiros_led_control import ChihirosDevice
     from chihiros_led_control.models import WHITE_CHANNELS, DeviceModel
-    from chihiros_led_control.testing import ScriptedTransport
 
     async def run() -> None:
         transport = ScriptedTransport()
         transport.expect(90, 4, [1], respond=[bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")])
         device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
-        with transport.patch_establish_connection():
-            await device.query_status()
+        await device.query_status()
         print(device.last_runtime_notification)
         print([command.hex() for command in transport.writes])
 
@@ -29,6 +26,7 @@ Example::
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -242,7 +240,7 @@ class _ScriptedBleClient:
 
 
 class ScriptedTransport:
-    """Bundle a scripted responder, GATT client, and ``establish_connection`` stand-in."""
+    """In-memory transport implementing the production transport protocol."""
 
     def __init__(
         self,
@@ -262,6 +260,7 @@ class ScriptedTransport:
         self.responder = ScriptedResponder()
         self.connections = 0
         self._client = _ScriptedBleClient(self.responder, include_notify=notify_characteristics)
+        self._device: Any | None = None
 
     @property
     def writes(self) -> list[bytes]:
@@ -280,16 +279,68 @@ class ScriptedTransport:
         """Register a scripted reply for matching command frames."""
         self.responder.expect(cmd_id, cmd_mode, params, respond=respond, fail=fail)
 
-    def make_device(self, model: DeviceModel = FALLBACK) -> _client_module.ChihirosDevice:
-        """Create a device client bound to this scripted transport.
+    def make_device(self, model: DeviceModel = FALLBACK):
+        """Create an LED client bound directly to this transport."""
+        device = _client_module.ChihirosDevice(
+            ScriptedBLEDevice(self.name, self.address),
+            model,
+            transport=self,
+        )
+        self._device = device
+        return device
 
-        Must be called inside a running asyncio loop (like the real client).
-        """
-        return _client_module.ChihirosDevice(ScriptedBLEDevice(self.name, self.address), model)
+    def make_pump(self, model: DeviceModel = DOSING_PUMP):
+        """Create a dosing pump client bound directly to this transport."""
+        device = _client_module.ChihirosDosingPump(
+            ScriptedBLEDevice(self.name, self.address),
+            model,
+            transport=self,
+        )
+        self._device = device
+        return device
 
-    def make_pump(self, model: DeviceModel = DOSING_PUMP) -> _client_module.ChihirosDosingPump:
-        """Create a dosing pump client bound to this scripted transport."""
-        return _client_module.ChihirosDosingPump(ScriptedBLEDevice(self.name, self.address), model)
+    async def _ensure_scripted_connected(self) -> None:
+        """Connect and configure the device when the session is idle."""
+        if self._device is None:
+            raise RuntimeError("Create a scripted device before sending frames")
+        if self._device._is_connected():
+            return
+        self._device._expected_disconnect = False
+        self._device._unexpected_disconnect.clear()
+        self._client.attach(self._device._disconnected)
+        self.connections += 1
+        await self._device._configure_client(self._client)
+
+    async def _send_once(self, frames: Sequence[bytes], notification_wait: float) -> None:
+        """Write one scripted transaction."""
+        await self._ensure_scripted_connected()
+        await self._device._execute_command_locked(list(frames))
+        if notification_wait:
+            await asyncio.sleep(notification_wait)
+
+    async def send(self, frames: Sequence[bytes], *, attempts: int, notification_wait: float) -> None:
+        """Connect lazily, run the prelude once, and write a frame batch."""
+        if self._device is None:
+            raise RuntimeError("Create a scripted device before sending frames")
+        for attempt in range(attempts):
+            try:
+                await self._send_once(frames, notification_wait)
+                return
+            except BleakError:
+                await self._device._execute_disconnect()
+                if attempt + 1 == attempts:
+                    raise
+
+    async def disconnect(self) -> None:
+        """Disconnect the active scripted GATT session."""
+        if self._device is not None:
+            await self._device._execute_disconnect()
+
+    def update_device(self, ble_device: object, advertisement_data: object) -> None:
+        """Record the latest device identity for protocol conformance."""
+        del advertisement_data
+        self.name = getattr(ble_device, "name", self.name)
+        self.address = getattr(ble_device, "address", self.address)
 
     async def connect(
         self,

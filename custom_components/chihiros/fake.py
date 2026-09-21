@@ -24,7 +24,10 @@ from .vendor.chihiros_led_control.models import (
     WHITE_CHANNELS,
     WRGB_CHANNELS,
     X300_CHANNELS,
+    DeviceKind,
     DeviceModel,
+    LedFeature,
+    LedSpec,
 )
 from .vendor.chihiros_led_control.protocol import (
     DosingDailyNotification,
@@ -240,6 +243,11 @@ class FakeChihirosDevice:
         return self.model.name
 
     @property
+    def device_kind(self):
+        """Return the fake profile family discriminator."""
+        return self.model.device_kind
+
+    @property
     def colors(self) -> dict[str, int]:
         """Return supported fake color channels."""
         return dict(self.model.color_channels)
@@ -256,7 +264,7 @@ class FakeChihirosDevice:
     async def query_status(self) -> None:
         """Publish fake runtime and schedule notifications."""
         await asyncio.sleep(0)
-        if self.model.is_heater:
+        if self.model.device_kind is DeviceKind.HEATER:
             self._push_heater_notifications()
             return
         self.last_runtime_notification = RuntimeNotification(
@@ -324,7 +332,7 @@ class FakeChihirosDevice:
     async def set_fan_speed(self, speed_percent: int) -> None:
         """Set fake fan speed and publish a fake fan status notification."""
         await asyncio.sleep(0)
-        if not self.model.has_fan:
+        if not isinstance(self.model.spec, LedSpec) or LedFeature.FAN not in self.model.spec.features:
             raise ValueError(f"Model does not support fan control: {self.model.name}")
         if speed_percent < 0 or speed_percent > 100:
             raise ValueError("Fan speed must be between 0 and 100 percent")
@@ -342,14 +350,14 @@ class FakeChihirosDevice:
     async def set_fan_auto(self) -> None:
         """Switch the fake fan to temperature-controlled auto mode."""
         await asyncio.sleep(0)
-        if not self.model.has_fan:
+        if not isinstance(self.model.spec, LedSpec) or LedFeature.FAN not in self.model.spec.features:
             raise ValueError(f"Model does not support fan control: {self.model.name}")
         self._fan_auto = True
 
     async def set_fan_start_stop_temp(self, start_temp: int, stop_temp: int) -> None:
         """Store the fake fan auto-mode start/stop temperatures."""
         await asyncio.sleep(0)
-        if not self.model.has_fan:
+        if not isinstance(self.model.spec, LedSpec) or LedFeature.FAN not in self.model.spec.features:
             raise ValueError(f"Model does not support fan control: {self.model.name}")
         self._fan_start_temp = start_temp
         self._fan_stop_temp = stop_temp
@@ -357,14 +365,17 @@ class FakeChihirosDevice:
     async def set_temp_protect(self, enabled: bool) -> None:
         """Track the fake VIVID3 temperature-protection state optimistically."""
         await asyncio.sleep(0)
-        if not self.model.is_vivid3:
+        if (
+            not isinstance(self.model.spec, LedSpec)
+            or LedFeature.TEMPERATURE_PROTECTION not in self.model.spec.features
+        ):
             raise ValueError(f"Model does not support temperature protection: {self.model.name}")
         self._temp_protect = enabled
 
     async def set_bluetooth_led(self, enabled: bool) -> None:
         """Track the fake VIVID3 indicator-LED state optimistically."""
         await asyncio.sleep(0)
-        if not self.model.is_vivid3:
+        if not isinstance(self.model.spec, LedSpec) or LedFeature.INDICATOR_LED not in self.model.spec.features:
             raise ValueError(f"Model does not support the indicator LED switch: {self.model.name}")
         self._bluetooth_led = enabled
 

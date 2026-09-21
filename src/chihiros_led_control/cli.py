@@ -12,7 +12,6 @@ from rich import print
 from rich.table import Table
 from typing_extensions import Annotated
 
-from .client import ChihirosDevice, ChihirosDosingPump, ChihirosHeater, ChihirosMagStirrer
 from .commands import (
     DOSE_VOLUME_MAX_ML,
     HEATER_MAX_POWER_WATTS,
@@ -25,7 +24,9 @@ from .commands import (
     stirrer_dosage_for_minutes,
     validate_stirrer_work_points,
 )
+from .devices import ChihirosDevice, ChihirosDosingPump, ChihirosHeater, ChihirosMagStirrer
 from .factory import detect_model, get_device_from_address
+from .models import DeviceKind
 from .weekday_encoding import WeekdaySelect, encode_selected_weekdays
 
 app = typer.Typer()
@@ -59,7 +60,7 @@ def _run_dosing_func(device_address: str, command: DosingDeviceCommand) -> None:
     async def _async_func() -> None:
         dev = await get_device_from_address(device_address)
         try:
-            if not isinstance(dev, ChihirosDosingPump) or isinstance(dev, ChihirosMagStirrer):
+            if getattr(dev, "device_kind", None) is not DeviceKind.DOSING_PUMP:
                 raise typer.BadParameter(f"{dev.name} is not a dosing pump")
             await command(dev)
         finally:
@@ -74,7 +75,7 @@ def _run_stirrer_func(device_address: str, command: StirrerDeviceCommand) -> Non
     async def _async_func() -> None:
         dev = await get_device_from_address(device_address)
         try:
-            if not isinstance(dev, ChihirosMagStirrer):
+            if getattr(dev, "device_kind", None) is not DeviceKind.MAG_STIRRER:
                 raise typer.BadParameter(f"{dev.name} is not a magnetic stirrer")
             await command(dev)
         finally:
@@ -89,7 +90,7 @@ def _run_heater_func(device_address: str, command: HeaterDeviceCommand) -> None:
     async def _async_func() -> None:
         dev = await get_device_from_address(device_address)
         try:
-            if not isinstance(dev, ChihirosHeater):
+            if getattr(dev, "device_kind", None) is not DeviceKind.HEATER:
                 raise typer.BadParameter(f"{dev.name} is not a heater")
             await command(dev)
         finally:

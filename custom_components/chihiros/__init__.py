@@ -54,7 +54,7 @@ from .master_slave_services import (
     build_work_points as _build_work_points,
 )
 from .models import ChihirosData, StirrerChannelState
-from .runtime import resolve_chihiros_runtime
+from .runtime import is_device_kind, resolve_chihiros_runtime
 from .schedule_services import (
     ATTR_BRIGHTNESS,
     ATTR_CURVE,
@@ -127,6 +127,7 @@ from .stirrer_services import (
     async_remove_stirrer_service,
 )
 from .stirrer_services import validate_stir_points as _validate_stir_points
+from .vendor.chihiros_led_control.models import DeviceKind
 
 __all__ = [
     "ATTR_ACTIVE",
@@ -286,8 +287,7 @@ def _async_update_services(hass: HomeAssistant) -> None:
 
 
 def _has_light_devices(hass: HomeAssistant) -> bool:
-    """Return whether any configured device supports light services."""
-    return any(data.device.colors for data in hass.data.get(DOMAIN, {}).values())
+    return any(is_device_kind(data.device, DeviceKind.LED) for data in hass.data.get(DOMAIN, {}).values())
 
 
 def _has_dosing_devices(hass: HomeAssistant) -> bool:

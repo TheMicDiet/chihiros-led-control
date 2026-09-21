@@ -43,11 +43,12 @@ from .coordinator import (
     ChihirosDataUpdateCoordinator,
 )
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
-from .runtime import ChihirosClient, HeaterChihirosClient
+from .runtime import ChihirosClient, HeaterChihirosClient, is_device_kind
 from .vendor.chihiros_led_control.commands import (
     HEATER_MAX_POWER_WATTS,
     HEATER_MAX_TEMPERATURE_C,
 )
+from .vendor.chihiros_led_control.models import DeviceKind
 
 # The wire carries power as watts ÷ 10, so 10 W is the finest settable step.
 HEATER_POWER_STEP_WATTS = 10
@@ -57,8 +58,7 @@ HEATER_TEMPERATURE_STEP_C = 0.5
 
 def is_heater_capable(device: object) -> bool:
     """Return whether a runtime client or model is a Chihiros heater."""
-    model = getattr(device, "model", device)
-    return bool(getattr(model, "is_heater", False))
+    return is_device_kind(device, DeviceKind.HEATER)
 
 
 def heater_client(device: object) -> HeaterChihirosClient:

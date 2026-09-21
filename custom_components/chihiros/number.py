@@ -27,9 +27,10 @@ from .heater import (
     is_heater_capable,
 )
 from .models import ChihirosData
-from .runtime import ChihirosClient
+from .runtime import ChihirosClient, has_led_feature
 from .stirrer import ChihirosStirPreRunNumber, ChihirosStirSpeedNumber, is_stirrer_capable
 from .vendor.chihiros_led_control.commands import MANUAL_DOSE_VOLUME_MAX_ML, MANUAL_DOSE_VOLUME_MIN_ML
+from .vendor.chihiros_led_control.models import LedFeature
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ async def async_setup_entry(
             for pump_idx in range(chihiros_data.dosing_totals.pump_count)
         )
 
-    if chihiros_data.device.model.has_fan:
+    if has_led_feature(chihiros_data.device, LedFeature.FAN):
         entities.extend(
             (
                 ChihirosFanStartTempNumber(chihiros_data.device),

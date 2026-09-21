@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 
+from .models import LedProtocol
 from .protocol import create_command_encoding, encode_timestamp
 
 AUTO_SETTING_PARAMETER_COUNT = 14
@@ -494,14 +495,9 @@ def _validate_auto_point_parameters(channel: int, minutes: int, level: int) -> N
         raise ValueError("Level must be between 0 and 100")
 
 
-def _auto_point_parameters(channel: int, minutes: int, level: int, *, sea_led_family: bool) -> list[int]:
-    """Encode the auto-curve point payload for a model family.
-
-    SeaLed devices use ``[channel, hour, minute, level]``; BleLed/NewBleLed
-    devices use ``[channel, 30-min-slot, level]`` with the app's rounding rule
-    (a remainder above 14 minutes advances to the next slot, up to 96 slots
-    for 48-hour cross-day curves).
-    """
+def _auto_point_parameters(channel: int, minutes: int, level: int, *, protocol: LedProtocol | bool) -> list[int]:
+    """Encode an auto-curve point for the selected LED protocol."""
+    sea_led_family = protocol is LedProtocol.SEA_LED or protocol is True
     if sea_led_family:
         hour, minute = divmod(minutes, 60)
         return [channel, hour, minute, level]
@@ -517,15 +513,14 @@ def create_auto_point_command(
     minutes: int,
     level: int,
     *,
-    sea_led_family: bool,
+    protocol: LedProtocol | None = None,
+    sea_led_family: bool | None = None,
 ) -> bytearray:
     """Create one auto-curve point (``0x5A, 6``) for a Commander/LED device.
 
-    Time encoding depends on the model family (see ``models.sea_led_family``
-    and docs/protocol.md): SeaLed devices use ``[channel, hour, minute,
-    level]``; BleLed/NewBleLed devices use ``[channel, 30-min-slot, level]``
-    with the app's rounding rule (a remainder above 14 minutes advances to the
-    next slot, up to 96 slots for 48-hour cross-day curves).
+    Time encoding depends on the selected ``LedProtocol``: SeaLed devices use
+    ``[channel, hour, minute, level]``; BleLed/NewBleLed devices use
+    ``[channel, 30-min-slot, level]`` with the app's rounding rule.
 
     ``minutes`` is minutes since midnight (0..1439; up to
     :data:`AUTO_POINT_MAX_MINUTES` for cross-day curves), ``level`` is 0..100.
@@ -533,7 +528,8 @@ def create_auto_point_command(
     escape parameter bytes).
     """
     _validate_auto_point_parameters(channel, minutes, level)
-    parameters = _auto_point_parameters(channel, minutes, level, sea_led_family=sea_led_family)
+    selected_protocol = protocol if protocol is not None else bool(sea_led_family)
+    parameters = _auto_point_parameters(channel, minutes, level, protocol=selected_protocol)
     return create_command_encoding(90, 6, msg_id, parameters, avoid_reserved_byte=False)
 
 

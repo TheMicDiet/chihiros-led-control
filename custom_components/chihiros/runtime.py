@@ -18,7 +18,7 @@ from .dosing import entry_pump_count
 from .fake import create_fake_device, fake_devices_enabled, is_fake_address
 from .vendor.chihiros_led_control import create_device, needs_device_type
 from .vendor.chihiros_led_control.exceptions import UnsupportedDeviceError
-from .vendor.chihiros_led_control.models import DeviceModel
+from .vendor.chihiros_led_control.models import DeviceKind, DeviceModel, LedFeature, LedSpec
 from .vendor.chihiros_led_control.protocol import (
     FanStatusNotification,
     ParsedNotification,
@@ -28,6 +28,21 @@ from .vendor.chihiros_led_control.protocol import (
 from .vendor.chihiros_led_control.weekday_encoding import WeekdaySelect
 
 NotificationCallback = Callable[[ParsedNotification], None]
+
+
+def is_device_kind(device: object, kind: DeviceKind) -> bool:
+    """Return whether a real, fake, or test client belongs to a family."""
+    candidate = getattr(device, "device_kind", None)
+    if candidate is None:
+        candidate = getattr(getattr(device, "model", None), "device_kind", None)
+    return candidate is kind or candidate == kind or candidate == kind.value
+
+
+def has_led_feature(device: object, feature: LedFeature) -> bool:
+    """Return whether an LED profile advertises an optional feature."""
+    model = getattr(device, "model", None)
+    spec = getattr(model, "spec", None)
+    return isinstance(spec, LedSpec) and feature in spec.features
 
 
 class DosingChihirosClient(Protocol):

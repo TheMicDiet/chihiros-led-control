@@ -22,8 +22,9 @@ from .heater import (
     is_heater_capable,
 )
 from .models import ChihirosData
-from .runtime import ChihirosClient
+from .runtime import ChihirosClient, has_led_feature, is_device_kind
 from .stirrer import ChihirosStirSwitch, is_stirrer_capable
+from .vendor.chihiros_led_control.models import DeviceKind, LedFeature
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ async def async_setup_entry(
     """Set up the switch platform for Chihiros LED Control."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
     entities = _accessory_switches(chihiros_data)
-    if not chihiros_data.device.colors:
+    if not is_device_kind(chihiros_data.device, DeviceKind.LED):
         if entities:
             async_add_entities(entities)
         return
@@ -46,7 +47,7 @@ async def async_setup_entry(
             chihiros_data.device,
         )
     )
-    if chihiros_data.device.model.is_vivid3:
+    if has_led_feature(chihiros_data.device, LedFeature.TEMPERATURE_PROTECTION):
         entities.extend(_vivid3_switches(chihiros_data.device))
     async_add_entities(entities)
 
