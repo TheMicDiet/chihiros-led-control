@@ -41,9 +41,13 @@ HeaterDeviceCommand = Callable[[ChihirosHeater], Awaitable[None]]
 
 
 def _run_device_func(device_address: str, command: DeviceCommand) -> None:
+    """Run an LED-only command, rejecting every other device family."""
+
     async def _async_func() -> None:
         dev = await get_device_from_address(device_address)
         try:
+            if getattr(dev, "device_kind", None) is not DeviceKind.LED:
+                raise typer.BadParameter(f"{dev.name} is not a light")
             await command(dev)
         finally:
             await dev.disconnect()

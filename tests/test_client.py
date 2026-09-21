@@ -749,6 +749,14 @@ def test_set_fan_speed_clamps_below_model_minimum() -> None:
     assert [command[6] for command in sent_commands] == [25, 0, 30]
 
 
+def test_dosing_notification_state_starts_empty() -> None:
+    """Dosing notification attributes exist before the first device reply."""
+    device = ChihirosDosingPump(FakeBLEDevice(), DOSING_PUMP)  # type: ignore[arg-type]
+
+    assert device.last_dosing_totals_notification is None
+    assert device.last_dosing_daily_notification is None
+
+
 def test_scripted_dosing_totals_notification_is_stored_and_published(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

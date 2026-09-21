@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 
 from chihiros_led_control import cli
 from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump
-from chihiros_led_control.models import WHITE_CHANNELS, DeviceModel, LedSpec
+from chihiros_led_control.models import WHITE_CHANNELS, DeviceKind, DeviceModel, LedSpec
 from chihiros_led_control.registry import DOSING_PUMP
 
 
@@ -27,6 +27,7 @@ class TrackingCliDevice:
     """Small async device stand-in for CLI command tests."""
 
     name = "Test Light"
+    device_kind = DeviceKind.LED
 
     def __init__(self) -> None:
         """Initialize recorded calls."""
@@ -122,6 +123,22 @@ def test_cli_disconnects_device_when_command_fails(monkeypatch: pytest.MonkeyPat
         cli._run_device_func(TEST_ADDRESS, failing_command)
 
     assert device.disconnects == 1
+
+
+def test_light_cli_rejects_non_led_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Top-level light commands fail clearly for non-LED devices."""
+    device = ChihirosDosingPump(FakeBLEDevice(address=TEST_ADDRESS), DOSING_PUMP)  # type: ignore[arg-type]
+
+    async def get_device_from_address(address: str) -> ChihirosDosingPump:
+        assert address == TEST_ADDRESS
+        return device
+
+    monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
+
+    result = RUNNER.invoke(cli.app, ["turn-on", TEST_ADDRESS])
+
+    assert result.exit_code != 0
+    assert "not a light" in result.output
 
 
 def test_turn_off_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> None:

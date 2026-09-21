@@ -28,6 +28,8 @@ class ChihirosDosingPump(BaseChihirosDevice):
     ) -> None:
         """Create a dosing-pump client."""
         super().__init__(ble_device, model, advertisement_data, transport=transport)
+        self.last_dosing_totals_notification: DosingTotalsNotification | None = None
+        self.last_dosing_daily_notification: DosingDailyNotification | None = None
 
     def _parse_notification(self, data: bytes | bytearray) -> ParsedNotification | None:
         """Parse dosing-pump counter notifications."""
