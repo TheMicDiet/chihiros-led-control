@@ -9,7 +9,7 @@ import asyncio
 from collections.abc import Sequence
 
 from ..dosing import normalize_pump_count
-from ..vendor.chihiros_led_control.protocol.dosing import DosingDailyNotification, DosingTotalsNotification
+from ..vendor.chihiros_led_control.protocol.notifications import DosingDailyNotification, DosingTotalsNotification
 from .base import FakeBaseDevice
 
 

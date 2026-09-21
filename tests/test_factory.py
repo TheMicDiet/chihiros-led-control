@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from chihiros_led_control.devices import ChihirosDosingPump
+from chihiros_led_control import ChihirosDosingPump, ChihirosMagStirrer
 from chihiros_led_control.exceptions import UnsupportedDeviceError
 from chihiros_led_control.factory import (
     create_device,
@@ -25,6 +25,12 @@ class FakeBLEDevice:
         """Create a fake BLE device."""
         self.name = name
         self.address = "AA:BB:CC:DD:EE:FF"
+
+
+def test_direct_family_constructors_use_matching_metadata() -> None:
+    """Public family constructors default to their matching device profiles."""
+    assert ChihirosDosingPump(FakeBLEDevice()).device_kind is DeviceKind.DOSING_PUMP  # type: ignore[arg-type]
+    assert ChihirosMagStirrer(FakeBLEDevice()).device_kind is DeviceKind.MAG_STIRRER  # type: ignore[arg-type]
 
 
 def test_detect_model_wrgb2_generation_split() -> None:

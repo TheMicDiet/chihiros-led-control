@@ -20,12 +20,16 @@ from .fake import create_fake_device, fake_devices_enabled, is_fake_address
 from .vendor.chihiros_led_control import create_device, needs_device_type
 from .vendor.chihiros_led_control.exceptions import UnsupportedDeviceError
 from .vendor.chihiros_led_control.models import DeviceKind, DeviceModel, LedFeature, LedSpec
-from .vendor.chihiros_led_control.protocol.led import (
+from .vendor.chihiros_led_control.protocol.notifications import (
+    DosingDailyNotification,
+    DosingTotalsNotification,
     FanStatusNotification,
+    HeaterStatusNotification,
+    HeaterTemperatureNotification,
+    ParsedNotification,
     RuntimeNotification,
     ScheduleSnapshotNotification,
 )
-from .vendor.chihiros_led_control.protocol.notifications import ParsedNotification
 from .vendor.chihiros_led_control.weekday_encoding import WeekdaySelect
 
 NotificationCallback = Callable[[ParsedNotification], None]
@@ -48,9 +52,6 @@ class BaseChihirosClient(Protocol):
     """Common identity, notification, status, and lifecycle operations."""
 
     model: DeviceModel
-    last_runtime_notification: RuntimeNotification | None
-    last_fan_status_notification: FanStatusNotification | None
-    last_schedule_snapshot_notification: ScheduleSnapshotNotification | None
 
     @property
     def device_kind(self) -> DeviceKind:
@@ -80,6 +81,10 @@ class BaseChihirosClient(Protocol):
 
 class LedChihirosClient(BaseChihirosClient, Protocol):
     """Home Assistant-facing LED client surface."""
+
+    last_runtime_notification: RuntimeNotification | None
+    last_fan_status_notification: FanStatusNotification | None
+    last_schedule_snapshot_notification: ScheduleSnapshotNotification | None
 
     @property
     def colors(self) -> Mapping[str, int]:
@@ -152,6 +157,9 @@ class LedChihirosClient(BaseChihirosClient, Protocol):
 class DosingChihirosClient(BaseChihirosClient, Protocol):
     """Home Assistant-facing dosing pump client surface."""
 
+    last_dosing_totals_notification: DosingTotalsNotification | None
+    last_dosing_daily_notification: DosingDailyNotification | None
+
     async def dose_ml(self, pump_idx: int, volume_ml: float) -> bytes: ...
 
     async def reset_channel(self, channel: int) -> bytes: ...
@@ -214,6 +222,9 @@ class StirrerChihirosClient(BaseChihirosClient, Protocol):
 class HeaterChihirosClient(BaseChihirosClient, Protocol):
     """Home Assistant-facing heater client surface."""
 
+    last_heater_temperature_notification: HeaterTemperatureNotification | None
+    last_heater_status_notification: HeaterStatusNotification | None
+
     @property
     def setting_temperature_celsius(self) -> float: ...
 
@@ -273,11 +284,14 @@ class HeaterChihirosClient(BaseChihirosClient, Protocol):
     async def reset_work_time(self) -> None: ...
 
 
+ChihirosClient = LedChihirosClient | DosingChihirosClient | StirrerChihirosClient | HeaterChihirosClient
+
+
 @dataclass(frozen=True)
 class ChihirosRuntime:
     """Resolved runtime device data for a config entry."""
 
-    client: BaseChihirosClient
+    client: ChihirosClient
     address: str
     always_available: bool = False
 

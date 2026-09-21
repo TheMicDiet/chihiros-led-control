@@ -28,6 +28,23 @@ HEATER_BACKLIGHT_ON_LEVEL = 100
 HEATER_BACKLIGHT_OFF_LEVEL = 200
 HEATER_BACKLIGHT_TRAILER = 127
 
+HEATER_ALARM_BITS = MappingProxyType(
+    {
+        "insufficient_water": 0x01,
+        "power_too_low": 0x02,
+        "water_overheat": 0x04,
+        "needs_cleaning": 0x08,
+        "exceeds_protection_temperature": 0x10,
+        "heating_failure": 0x20,
+        "sensor_failure": 0x40,
+    }
+)
+
+
+def heater_alarm_names(alarms: int) -> tuple[str, ...]:
+    """Return human-readable alarm names for a heater alarm bitmap."""
+    return tuple(name for name, bit in HEATER_ALARM_BITS.items() if alarms & bit)
+
 
 def split_heater_temperature(temperature_c: float) -> tuple[int, int]:
     """Encode a heater temperature as the wire ``[whole, hundredths]`` byte pair.
@@ -156,24 +173,6 @@ def create_heater_backlight_command(msg_id: tuple[int, int], *, enabled: bool) -
     return create_command_encoding(165, 56, msg_id, [level] * 4 + [HEATER_BACKLIGHT_TRAILER], avoid_reserved_byte=False)
 
 
-HEATER_ALARM_BITS = MappingProxyType(
-    {
-        "insufficient_water": 0x01,
-        "power_too_low": 0x02,
-        "water_overheat": 0x04,
-        "needs_cleaning": 0x08,
-        "exceeds_protection_temperature": 0x10,
-        "heating_failure": 0x20,
-        "sensor_failure": 0x40,
-    }
-)
-
-
-def heater_alarm_names(alarms: int) -> tuple[str, ...]:
-    """Return human-readable alarm names for an alarm bitmap."""
-    return tuple(name for name, bit in HEATER_ALARM_BITS.items() if alarms & bit)
-
-
 def parse_notification(data: bytes | bytearray):
     """Parse heater temperature/status notifications, or return ``None``."""
     if len(data) < 7 or data[0] != 0x5B:
@@ -206,6 +205,7 @@ __all__ = [
     "HEATER_BACKLIGHT_ON_LEVEL",
     "HEATER_BACKLIGHT_OFF_LEVEL",
     "HEATER_BACKLIGHT_TRAILER",
+    "HEATER_ALARM_BITS",
     "split_heater_temperature",
     "encode_heater_power_watts",
     "create_switch_to_manual_mode_command",
@@ -218,9 +218,6 @@ __all__ = [
     "create_heater_calibrate_command",
     "create_heater_reset_work_time_command",
     "create_heater_backlight_command",
-    "HEATER_ALARM_BITS",
     "heater_alarm_names",
     "parse_notification",
-    "HeaterStatusNotification",
-    "HeaterTemperatureNotification",
 ]

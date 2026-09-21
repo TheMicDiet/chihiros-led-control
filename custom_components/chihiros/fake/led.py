@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from ..vendor.chihiros_led_control.models import LedFeature, LedSpec
-from ..vendor.chihiros_led_control.protocol.led import (
+from ..vendor.chihiros_led_control.protocol.notifications import (
     FanStatusNotification,
     RuntimeNotification,
     SchedulePoint,

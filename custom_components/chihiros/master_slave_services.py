@@ -316,7 +316,7 @@ async def async_mirror_pump_to_stirrer(
     the record.
     """
     tracker = master_data.dosing_programming
-    if tracker is None or not tracker.channels:
+    if not tracker.channels:
         raise HomeAssistantError(
             f"No channel programming recorded for {master_data.device.name}; "
             "program the pump with set_dosing_schedule first"

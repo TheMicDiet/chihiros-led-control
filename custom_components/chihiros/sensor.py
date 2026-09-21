@@ -38,7 +38,7 @@ from .coordinator import (
 )
 from .dosing import DosingCalibrationTracker, DosingDailyTotals
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
-from .heater import ChihirosHeaterAlarmSensor, is_heater_capable
+from .heater import ChihirosHeaterAlarmSensor, heater_client, is_heater_capable
 from .models import ChihirosData, DosingChihirosData
 from .runtime import BaseChihirosClient, DosingChihirosClient, has_led_feature
 from .vendor.chihiros_led_control.models import LedFeature
@@ -151,11 +151,12 @@ def _accessory_sensors(chihiros_data: ChihirosData) -> list[SensorEntity]:
             for description in FAN_SENSOR_DESCRIPTIONS
         )
     if is_heater_capable(chihiros_data.device):
+        device = heater_client(chihiros_data.device)
         entities.extend(
-            ChihirosNotificationSensor(coordinator, chihiros_data.device, description, entity_category=None)
+            ChihirosNotificationSensor(coordinator, device, description, entity_category=None)
             for description in HEATER_SENSOR_DESCRIPTIONS
         )
-        entities.append(ChihirosHeaterAlarmSensor(coordinator, chihiros_data.device))
+        entities.append(ChihirosHeaterAlarmSensor(coordinator, device))
     return entities
 
 

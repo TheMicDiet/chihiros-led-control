@@ -11,7 +11,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN
 from .dosing_services import async_trigger_dose_ml
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
-from .heater import ChihirosHeaterResetWorkTimeButton
+from .heater import ChihirosHeaterResetWorkTimeButton, heater_client
 from .models import ChihirosData, DosingChihirosData
 from .runtime import DosingChihirosClient, is_device_kind
 from .vendor.chihiros_led_control.models import DeviceKind
@@ -32,7 +32,12 @@ async def async_setup_entry(
         )
         entities.append(ChihirosCalibrationButton(chihiros_data))
     if is_device_kind(chihiros_data.device, DeviceKind.HEATER):
-        entities.append(ChihirosHeaterResetWorkTimeButton(chihiros_data.coordinator, chihiros_data.device))
+        entities.append(
+            ChihirosHeaterResetWorkTimeButton(
+                chihiros_data.coordinator,
+                heater_client(chihiros_data.device),
+            )
+        )
     if entities:
         async_add_entities(entities)
 

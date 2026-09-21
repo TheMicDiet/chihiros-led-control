@@ -11,19 +11,18 @@ from homeassistant.components.bluetooth.passive_update_coordinator import Passiv
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 
 from .runtime import BaseChihirosClient
-from .vendor.chihiros_led_control.protocol.dosing import DosingDailyNotification, DosingTotalsNotification
-from .vendor.chihiros_led_control.protocol.heater import (
+from .vendor.chihiros_led_control.protocol.heater import heater_alarm_names
+from .vendor.chihiros_led_control.protocol.notifications import (
+    DosingDailyNotification,
+    DosingTotalsNotification,
+    FanStatusNotification,
     HeaterStatusNotification,
     HeaterTemperatureNotification,
-    heater_alarm_names,
-)
-from .vendor.chihiros_led_control.protocol.led import (
-    FanStatusNotification,
+    ParsedNotification,
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
 )
-from .vendor.chihiros_led_control.protocol.notifications import ParsedNotification
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 ATTR_FIRMWARE_VERSION = "firmware_version"

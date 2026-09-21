@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
@@ -24,6 +25,7 @@ from .heater import (
     ChihirosHeaterPowerNumber,
     ChihirosHeaterProtectorNumber,
     ChihirosHeaterTemperatureNumber,
+    heater_client,
     is_heater_capable,
 )
 from .models import ChihirosData, DosingChihirosData, StirrerChihirosData
@@ -58,9 +60,8 @@ async def async_setup_entry(
             for pump_idx in range(chihiros_data.dosing_totals.pump_count)
         )
     if has_led_feature(chihiros_data.device, LedFeature.FAN):
-        entities.extend(
-            (ChihirosFanStartTempNumber(chihiros_data.device), ChihirosFanStopTempNumber(chihiros_data.device))
-        )
+        device = cast(LedChihirosClient, chihiros_data.device)
+        entities.extend((ChihirosFanStartTempNumber(device), ChihirosFanStopTempNumber(device)))
     entities.extend(_stirrer_numbers(chihiros_data))
     entities.extend(_heater_numbers(chihiros_data))
     if entities:
@@ -71,13 +72,14 @@ def _heater_numbers(chihiros_data: ChihirosData) -> list[NumberEntity]:
     """Build the manual, auto and configuration numbers for a heater."""
     if not is_heater_capable(chihiros_data.device):
         return []
+    device = heater_client(chihiros_data.device)
     return [
-        ChihirosHeaterTemperatureNumber(chihiros_data.coordinator, chihiros_data.device),
-        ChihirosHeaterPowerNumber(chihiros_data.coordinator, chihiros_data.device),
-        ChihirosHeaterAutoTemperatureNumber(chihiros_data.coordinator, chihiros_data.device),
-        ChihirosHeaterAutoPowerNumber(chihiros_data.coordinator, chihiros_data.device),
-        ChihirosHeaterProtectorNumber(chihiros_data.coordinator, chihiros_data.device),
-        ChihirosHeaterCalibrationNumber(chihiros_data.coordinator, chihiros_data.device),
+        ChihirosHeaterTemperatureNumber(chihiros_data.coordinator, device),
+        ChihirosHeaterPowerNumber(chihiros_data.coordinator, device),
+        ChihirosHeaterAutoTemperatureNumber(chihiros_data.coordinator, device),
+        ChihirosHeaterAutoPowerNumber(chihiros_data.coordinator, device),
+        ChihirosHeaterProtectorNumber(chihiros_data.coordinator, device),
+        ChihirosHeaterCalibrationNumber(chihiros_data.coordinator, device),
     ]
 
 

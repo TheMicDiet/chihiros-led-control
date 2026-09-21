@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from homeassistant.components.bluetooth.passive_update_coordinator import (
     PassiveBluetoothCoordinatorEntity,
@@ -34,11 +34,12 @@ async def async_setup_entry(
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
     if not has_led_feature(chihiros_data.device, LedFeature.FAN):
         return
+    device = cast(LedChihirosClient, chihiros_data.device)
     async_add_entities(
         [
             ChihirosFanEntity(
                 chihiros_data.coordinator,
-                chihiros_data.device,
+                device,
             )
         ]
     )

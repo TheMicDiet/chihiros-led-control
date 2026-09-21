@@ -4,12 +4,29 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from bleak.backends.device import BLEDevice
+from bleak.backends.scanner import AdvertisementData
+
+from ..models import DeviceModel
 from ..protocol import dosing, stirrer
+from ..registry import MAG_STIRRER
+from ..transport import ChihirosTransport
 from .base import BaseChihirosDevice
 
 
 class ChihirosMagStirrer(BaseChihirosDevice):
     """Concrete BLE client for a magnetic stirrer."""
+
+    def __init__(
+        self,
+        ble_device: BLEDevice,
+        model: DeviceModel = MAG_STIRRER,
+        advertisement_data: AdvertisementData | None = None,
+        *,
+        transport: ChihirosTransport | None = None,
+    ) -> None:
+        """Create a magnetic-stirrer client."""
+        super().__init__(ble_device, model, advertisement_data, transport=transport)
 
     async def send_frame(self, frame: bytes | bytearray) -> None:
         """Send a pre-built frame verbatim (master/slave broadcast replay).

@@ -9,7 +9,6 @@ from bleak.backends.scanner import AdvertisementData
 
 from ..models import DeviceModel
 from ..protocol import heater as commands
-from ..protocol.heater import heater_alarm_names
 from ..protocol.notifications import HeaterStatusNotification, HeaterTemperatureNotification, ParsedNotification
 from ..registry import HEATER
 from ..transport import ChihirosTransport
@@ -115,7 +114,7 @@ class ChihirosHeater(BaseChihirosDevice):
     def heater_alarms(self) -> tuple[str, ...]:
         """Return the names of the alarms in the last status frame."""
         notification = self.last_heater_status_notification
-        return heater_alarm_names(notification.alarms) if notification else ()
+        return commands.heater_alarm_names(notification.alarms) if notification else ()
 
     @property
     def firmware_version(self) -> int | None:

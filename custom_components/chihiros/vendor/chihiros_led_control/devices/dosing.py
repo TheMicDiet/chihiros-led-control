@@ -4,13 +4,30 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from bleak.backends.device import BLEDevice
+from bleak.backends.scanner import AdvertisementData
+
+from ..models import DeviceModel
 from ..protocol import dosing as commands
 from ..protocol.notifications import DosingDailyNotification, DosingTotalsNotification, ParsedNotification
+from ..registry import DOSING_PUMP
+from ..transport import ChihirosTransport
 from .base import STATUS_NOTIFICATION_WAIT, BaseChihirosDevice
 
 
 class ChihirosDosingPump(BaseChihirosDevice):
     """Concrete BLE client for a Chihiros dosing pump."""
+
+    def __init__(
+        self,
+        ble_device: BLEDevice,
+        model: DeviceModel = DOSING_PUMP,
+        advertisement_data: AdvertisementData | None = None,
+        *,
+        transport: ChihirosTransport | None = None,
+    ) -> None:
+        """Create a dosing-pump client."""
+        super().__init__(ble_device, model, advertisement_data, transport=transport)
 
     def _parse_notification(self, data: bytes | bytearray) -> ParsedNotification | None:
         """Parse dosing-pump counter notifications."""

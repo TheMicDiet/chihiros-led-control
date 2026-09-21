@@ -13,10 +13,9 @@ from ..vendor.chihiros_led_control.protocol.heater import (
     HEATER_DEFAULT_POWER_WATTS,
     HEATER_DEFAULT_PROTECTOR_TEMPERATURE_C,
     HEATER_DEFAULT_TEMPERATURE_C,
-    HeaterStatusNotification,
-    HeaterTemperatureNotification,
     heater_alarm_names,
 )
+from ..vendor.chihiros_led_control.protocol.notifications import HeaterStatusNotification, HeaterTemperatureNotification
 from .base import FakeBaseDevice
 
 
