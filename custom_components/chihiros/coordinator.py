@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth.passive_update_coordinator import PassiveBluetoothDataUpdateCoordinator
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.helpers.event import async_track_time_interval
 
 from .runtime import BaseChihirosClient
 from .vendor.chihiros_led_control.protocol.heater import heater_alarm_names
@@ -41,6 +43,8 @@ ATTR_HEATER_WORK_TIME_HOURS = "heater_work_time_hours"
 ATTR_HEATER_ALARMS = "heater_alarms"
 ATTR_HEATER_ALARM_BITS = "heater_alarm_bits"
 
+DOSING_STATUS_INTERVAL = timedelta(minutes=5)
+
 # The heater's mode is write-only — the device never reports whether it runs
 # its manual setpoints or the stored auto schedule — so the integration tracks
 # it and the entities restore it across restarts. ``manual`` matches the mode
@@ -70,6 +74,7 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         self.always_available = always_available
         self._remove_notification_callback = client.add_notification_callback(self._queue_notification)
         self._remove_bluetooth_callback: CALLBACK_TYPE | None = None
+        self._remove_dosing_refresh: CALLBACK_TYPE | None = None
         super().__init__(
             hass,
             _LOGGER,
@@ -121,9 +126,29 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
             return
         self._remove_bluetooth_callback = self.async_start()
 
+    @callback
+    def async_start_dosing_refresh(self) -> None:
+        """Refresh pump counters periodically even after doses made outside Home Assistant."""
+        if self._remove_dosing_refresh is None:
+            self._remove_dosing_refresh = async_track_time_interval(
+                self.hass, self._async_refresh_dosing_status, DOSING_STATUS_INTERVAL
+            )
+
+    async def _async_refresh_dosing_status(self, _now: datetime) -> None:
+        """Request both device counters without disrupting other Home Assistant updates."""
+        if self._closed:
+            return
+        try:
+            await self.async_request_status()
+        except Exception:
+            _LOGGER.debug("%s: Failed to refresh dosing counters", self.address, exc_info=True)
+
     def async_close(self) -> None:
         """Remove callbacks held by this coordinator."""
         self._closed = True
+        if self._remove_dosing_refresh is not None:
+            self._remove_dosing_refresh()
+            self._remove_dosing_refresh = None
         if self._remove_bluetooth_callback is not None:
             self._remove_bluetooth_callback()
             self._remove_bluetooth_callback = None

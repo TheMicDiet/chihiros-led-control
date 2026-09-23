@@ -78,6 +78,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = data
     _async_update_services(hass)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    if isinstance(data, DosingChihirosData):
+        coordinator.async_start_dosing_refresh()
     if isinstance(data, StirrerChihirosData) and entry.data.get(CONF_MASTER_ADDRESS):
         set_stirrer_pre_run_entities_enabled(hass, runtime.address, len(data.stirrer_states), enabled=True)
     return True

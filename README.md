@@ -143,17 +143,20 @@ Known devices replace the previous period for a weekday when another one is
 written, so `set_schedule` accepts at most one period per weekday. After writing
 a schedule, enable the `Auto Mode` switch to run it.
 
-Dosing pumps expose one manual dose button, one dose-volume number control, and
-the following locally tracked sensors per pump channel:
+Dosing pumps expose one manual dose button and one dose-volume number control per
+channel. The main volume sensors are `dosed today` and `total ml`, read from the
+pump's status notifications. Status is requested at setup and every five minutes,
+so doses made outside Home Assistant appear after the next successful readout.
+Until the first readout, the sensors are unknown. `total ml` is
+`total_increasing` and can be used with Home Assistant's `utility_meter`.
 
-- `dosed today` (volume in mL, reset at local midnight)
-- `total ml` (cumulative lifetime volume, `total_increasing`)
-- `total cycles` (cumulative lifetime dose count, `total_increasing`)
+The locally tracked `HA manual doses today`, `HA manual dose total`, and
+`HA manual dose cycles` sensors are diagnostics. They count successful manual
+doses initiated by this integration and give immediate feedback, but do not
+include doses made elsewhere. Existing entity IDs are retained when upgrading.
+The channel's last-calibration timestamp is also a diagnostic sensor.
 
-The lifetime `total ml` and `total cycles` sensors are `total_increasing`, so they
-can be fed directly into the Home Assistant `utility_meter` to derive daily,
-weekly, monthly, or yearly consumption sensors. The first setup asks
-how many channels the pump has (2, 4, or 8; changeable later from the
+The first setup asks how many channels the pump has (2, 4, or 8; changeable later from the
 integration's Configure dialog). Manual doses can also be triggered
 from automations with `chihiros.dose_ml`:
 

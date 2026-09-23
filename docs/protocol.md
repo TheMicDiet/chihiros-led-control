@@ -585,11 +585,14 @@ Example lifetime frame (channels `0..1` = `105.5 mL`, `0 mL`):
 5b 10 10 00 01 1e 04 1f 00 00
 ```
 
-The Home Assistant integration stores these device-reported counters in the
-coordinator data and exposes them as attributes on the per-pump dosing sensors
-(`device_total_ml`, `device_dosed_today_ml`), so doses made from the pump or
-the vendor app are reflected even though the daily/lifetime sensors themselves
-stay locally tracked for immediate feedback.
+The Home Assistant integration stores both device-reported counters in the
+coordinator and exposes them as the primary per-pump `total ml` and `dosed today`
+sensors, as well as attributes (`device_total_ml`, `device_dosed_today_ml`) on the
+locally tracked diagnostics. It queries the pump at setup and every five minutes:
+external doses appear after the next successful readout, and values stay unknown
+until the first notification. The `HA manual dose total`, `HA manual doses today`,
+and `HA manual dose cycles` diagnostics count only successful manual doses
+initiated by Home Assistant and keep their previous entity IDs.
 
 ### Dosing Pump Schedules, Settings, and Calibration (2.8.59 app)
 

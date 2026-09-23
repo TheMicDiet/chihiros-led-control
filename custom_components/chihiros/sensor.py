@@ -10,6 +10,9 @@ from homeassistant.components.bluetooth.passive_update_coordinator import (
     PassiveBluetoothCoordinatorEntity,
 )
 from homeassistant.components.sensor import (
+    DOMAIN as SENSOR_DOMAIN,
+)
+from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
@@ -19,6 +22,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import REVOLUTIONS_PER_MINUTE, UnitOfTemperature, UnitOfTime, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -99,6 +103,18 @@ HEATER_SENSOR_DESCRIPTIONS = (
     ),
 )
 
+DOSING_DEVICE_SENSOR_DESCRIPTIONS = (
+    SensorEntityDescription(
+        key=ATTR_DOSING_DAILY_UL,
+        name="Dosed today",
+    ),
+    SensorEntityDescription(
+        key=ATTR_DOSING_LIFETIME_UL,
+        name="Total ml",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+    ),
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -109,6 +125,7 @@ async def async_setup_entry(
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
     if isinstance(chihiros_data, DosingChihirosData):
         totals = chihiros_data.dosing_totals
+        _migrate_local_dosing_categories(hass, chihiros_data.coordinator.address, totals.pump_count)
         entities: list[SensorEntity] = []
         for pump_idx in range(totals.pump_count):
             entities.append(
@@ -116,6 +133,12 @@ async def async_setup_entry(
             )
             entities.append(
                 ChihirosDosingLifetimeTotalSensor(chihiros_data.coordinator, chihiros_data.device, totals, pump_idx)
+            )
+            entities.extend(
+                ChihirosDosingDeviceCounterSensor(
+                    chihiros_data.coordinator, chihiros_data.device, pump_idx, description
+                )
+                for description in DOSING_DEVICE_SENSOR_DESCRIPTIONS
             )
             entities.append(
                 ChihirosDosingLifetimeCyclesSensor(chihiros_data.coordinator, chihiros_data.device, totals, pump_idx)
@@ -139,6 +162,17 @@ async def async_setup_entry(
     )
     async_add_entities(_accessory_sensors(chihiros_data))
     hass.async_create_task(_async_request_initial_status(chihiros_data.coordinator))
+
+
+def _migrate_local_dosing_categories(hass: HomeAssistant, address: str, pump_count: int) -> None:
+    """Move existing local counters to Diagnostics without changing their entity IDs."""
+    registry = er.async_get(hass)
+    for pump_number in range(1, pump_count + 1):
+        for suffix in ("dosed_today", "total_ml", "total_cycles"):
+            unique_id = chihiros_unique_id(address, f"dosing_pump_{pump_number}_{suffix}")
+            entity_id = registry.async_get_entity_id(SENSOR_DOMAIN, DOMAIN, unique_id)
+            if entity_id is not None and registry.async_get(entity_id).entity_category is None:
+                registry.async_update_entity(entity_id, entity_category=EntityCategory.DIAGNOSTIC)
 
 
 def _accessory_sensors(chihiros_data: ChihirosData) -> list[SensorEntity]:
@@ -247,6 +281,7 @@ class ChihirosDosingSensorBase(
     """Shared base for locally tracked dosing counters."""
 
     _attr_should_poll = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(
         self,
@@ -306,7 +341,7 @@ class ChihirosDosingDailyTotalSensor(ChihirosDosingSensorBase):
             totals,
             pump_idx,
             f"dosing_pump_{pump_number}_dosed_today",
-            f"Pump {pump_number} dosed today",
+            f"Pump {pump_number} HA manual doses today",
         )
 
     @property
@@ -346,7 +381,7 @@ class ChihirosDosingLifetimeTotalSensor(ChihirosDosingSensorBase):
             totals,
             pump_idx,
             f"dosing_pump_{pump_number}_total_ml",
-            f"Pump {pump_number} total ml",
+            f"Pump {pump_number} HA manual dose total",
         )
 
     @property
@@ -361,6 +396,47 @@ class ChihirosDosingLifetimeTotalSensor(ChihirosDosingSensorBase):
         if device_value is None:
             return None
         return {"device_total_ml": device_value}
+
+
+class ChihirosDosingDeviceCounterSensor(
+    PassiveBluetoothCoordinatorEntity[ChihirosDataUpdateCoordinator],
+    SensorEntity,
+):
+    """Per-pump volume read from a device notification, not local dose history."""
+
+    _attr_should_poll = False
+    _attr_device_class = SensorDeviceClass.VOLUME
+    _attr_native_unit_of_measurement = UnitOfVolume.MILLILITERS
+    _attr_suggested_display_precision = 1
+
+    def __init__(
+        self,
+        coordinator: ChihirosDataUpdateCoordinator,
+        device: DosingChihirosClient,
+        pump_idx: int,
+        description: SensorEntityDescription,
+    ) -> None:
+        """Create a device-reported volume sensor for one pump."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._pump_idx = pump_idx
+        pump_number = pump_idx + 1
+        self._attr_name = chihiros_entity_name(device, f"Pump {pump_number} {description.name.lower()}")
+        self._attr_unique_id = chihiros_unique_id(coordinator.address, f"dosing_pump_{pump_number}_{description.key}")
+        self._attr_device_info = chihiros_device_info(device, coordinator.address)
+        self._attr_state_class = description.state_class
+
+    @property
+    def available(self) -> bool:
+        """Use the same Bluetooth availability as the locally tracked sensors."""
+        if self.coordinator.always_available:
+            return True
+        return super().available
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the device counter only after its notification arrives."""
+        return _dosing_ul_value(self.coordinator.data.get(self.entity_description.key), self._pump_idx)
 
 
 class ChihirosDosingLifetimeCyclesSensor(ChihirosDosingSensorBase):
@@ -385,7 +461,7 @@ class ChihirosDosingLifetimeCyclesSensor(ChihirosDosingSensorBase):
             totals,
             pump_idx,
             f"dosing_pump_{pump_number}_total_cycles",
-            f"Pump {pump_number} total cycles",
+            f"Pump {pump_number} HA manual dose cycles",
         )
 
     @property
