@@ -21,7 +21,7 @@ step is local-only (no wire frame) and has no HA equivalent.
 from __future__ import annotations
 
 import logging
-from typing import Any, cast
+from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlowResult
@@ -30,7 +30,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 
 from .const import DOMAIN
-from .models import ChihirosData
+from .models import DosingChihirosData
 from .runtime import DosingChihirosClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ MIN_MEASURED_VOLUME = 0.05
 MAX_MEASURED_VOLUME = 255.99
 
 
-def _find_entry_id(hass: HomeAssistant, chihiros_data: ChihirosData) -> str | None:
+def _find_entry_id(hass: HomeAssistant, chihiros_data: DosingChihirosData) -> str | None:
     """Return the config entry id a device data object is stored under."""
     for entry_id, candidate in hass.data.get(DOMAIN, {}).items():
         if candidate is chihiros_data:
@@ -72,7 +72,7 @@ def calibration_issue_id(entry_id: str) -> str:
     return f"{DOMAIN}_calibrate_{entry_id}"
 
 
-def async_start_calibration_issue(hass: HomeAssistant, chihiros_data: ChihirosData) -> None:
+def async_start_calibration_issue(hass: HomeAssistant, chihiros_data: DosingChihirosData) -> None:
     """Raise the repairs issue that opens the calibration wizard for one pump.
 
     Home Assistant never opens a config-flow dialog that was started outside
@@ -86,7 +86,7 @@ def async_start_calibration_issue(hass: HomeAssistant, chihiros_data: ChihirosDa
     Raises ``HomeAssistantError`` when the target is not a dosing pump or is
     not loaded.
     """
-    if not chihiros_data.dosing_totals:
+    if not isinstance(chihiros_data, DosingChihirosData):
         raise HomeAssistantError(f"{chihiros_data.device.name} is not a dosing pump")
     entry_id = _find_entry_id(hass, chihiros_data)
     if entry_id is None:
@@ -142,13 +142,13 @@ def _dose_unclear_schema() -> vol.Schema:
     )
 
 
-def _dosing_device(chihiros_data: ChihirosData) -> DosingChihirosClient:
-    """Return the runtime client cast to the dosing-pump surface."""
-    return cast("DosingChihirosClient", chihiros_data.device)
+def _dosing_device(chihiros_data: DosingChihirosData) -> DosingChihirosClient:
+    """Return the runtime client on the dosing-pump data surface."""
+    return chihiros_data.device
 
 
 async def _async_broadcast_calibration_frame(
-    hass: HomeAssistant, chihiros_data: ChihirosData, frame: bytes, action: str
+    hass: HomeAssistant, chihiros_data: DosingChihirosData, frame: bytes, action: str
 ) -> None:
     """Broadcast one calibration frame to linked stirrers, best effort only.
 
@@ -169,32 +169,29 @@ async def _async_broadcast_calibration_frame(
         )
 
 
-async def _async_send_calibration_run(hass: HomeAssistant, chihiros_data: ChihirosData, pump_idx: int) -> None:
+async def _async_send_calibration_run(hass: HomeAssistant, chihiros_data: DosingChihirosData, pump_idx: int) -> None:
     """Start the fixed 5 s timed calibration run (app's ``calibration(time: 5)``)."""
     frame = await _dosing_device(chihiros_data).calibrate_channel(pump_idx, seconds=CALIBRATION_RUN_SECONDS)
     await _async_broadcast_calibration_frame(hass, chihiros_data, frame, "calibration test dose")
 
 
 async def _async_submit_measured_volume(
-    hass: HomeAssistant, chihiros_data: ChihirosData, pump_idx: int, volume_ml: float
+    hass: HomeAssistant, chihiros_data: DosingChihirosData, pump_idx: int, volume_ml: float
 ) -> None:
     """Record the measured volume on the device and in the local tracker (app step 2)."""
     frame = await _dosing_device(chihiros_data).calibrate_channel(pump_idx, volume_ml=volume_ml)
     await _async_broadcast_calibration_frame(hass, chihiros_data, frame, "calibration")
-    if chihiros_data.dosing_calibration:
-        await chihiros_data.dosing_calibration.async_record(
-            pump_idx, seconds=CALIBRATION_RUN_SECONDS, volume_ml=volume_ml
-        )
+    await chihiros_data.dosing_calibration.async_record(pump_idx, seconds=CALIBRATION_RUN_SECONDS, volume_ml=volume_ml)
 
 
-async def _async_run_test_dose(hass: HomeAssistant, chihiros_data: ChihirosData, pump_idx: int) -> None:
+async def _async_run_test_dose(hass: HomeAssistant, chihiros_data: DosingChihirosData, pump_idx: int) -> None:
     """Run the fixed 4 mL test dose (app's ``tempDosing(4000)`` "Dose 4ml" button).
 
     Uses the manual-dose path so the volume is added to the locally tracked
     daily totals (the app's ``addExtraDosing``) and broadcast to linked
     stirrers, exactly like the app's manual dose.
     """
-    from . import async_trigger_dose_ml
+    from .dosing_services import async_trigger_dose_ml
 
     await async_trigger_dose_ml(hass, chihiros_data, pump_idx, TEST_DOSE_ML)
 
@@ -207,7 +204,7 @@ class DosingCalibrationFlowMixin:
     """
 
     _calibration_entry_id: str
-    _calibration_data: ChihirosData
+    _calibration_data: DosingChihirosData
     _calibration_pump: int
     # Step to jump to when the user chooses "continue" after an ambiguous
     # dose frame (measure after a failed run, accuracy after a failed test dose).
@@ -228,7 +225,7 @@ class DosingCalibrationFlowMixin:
         """Pick the pump channel to calibrate."""
         entry_id = self.context.get("entry_id") or getattr(self, "_calibration_entry_id", None)
         data = self.hass.data.get(DOMAIN, {}).get(entry_id) if entry_id else None
-        if data is None or data.dosing_totals is None:
+        if not isinstance(data, DosingChihirosData):
             self._async_dismiss_issue()
             return self.async_abort(reason="not_dosing_pump")
         self._calibration_entry_id = entry_id

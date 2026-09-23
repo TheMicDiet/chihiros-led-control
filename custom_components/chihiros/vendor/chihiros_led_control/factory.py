@@ -6,37 +6,23 @@ from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
-from .client import ChihirosDevice, ChihirosDosingPump, ChihirosHeater, ChihirosMagStirrer
+from .devices.dosing import ChihirosDosingPump
+from .devices.heater import ChihirosHeater
+from .devices.led import ChihirosDevice
+from .devices.stirrer import ChihirosMagStirrer
 from .exceptions import DeviceNotFound, UnsupportedDeviceError
-from .models import (
-    DOSING_PUMP,
-    FALLBACK,
+from .models import DeviceModel, DosingPumpSpec, HeaterSpec, MagStirrerSpec
+from .registry import (
     GENERIC_MODELS_BY_DEVICE_TYPE,
-    HEATER,
-    MAG_STIRRER,
-    DeviceModel,
-    iter_model_codes_by_specificity,
+    detect_model,
+    is_known_unsupported_device,
 )
 
-# These device families share the short prefixes used by supported LED models,
-# but are not LED controllers. Check them before prefix-based model detection so
-# they do not receive LED commands accidentally.
-KNOWN_UNSUPPORTED_DEVICE_PREFIXES = ("DYAPRCO2", "DYCHIL", "DYCO2")
-
-
-def is_known_unsupported_device(device_name: str | None) -> bool:
-    """Return whether a device name belongs to a known non-LED device family."""
-    return bool(device_name and any(device_name.startswith(prefix) for prefix in KNOWN_UNSUPPORTED_DEVICE_PREFIXES))
-
-
-def detect_model(device_name: str | None) -> DeviceModel:
-    """Detect a device model from a BLE advertised name."""
-    if not device_name or is_known_unsupported_device(device_name):
-        return FALLBACK
-    for advertised_code, model in iter_model_codes_by_specificity():
-        if device_name.startswith(advertised_code):
-            return model
-    return FALLBACK
+_DEVICE_DRIVERS = {
+    DosingPumpSpec: ChihirosDosingPump,
+    MagStirrerSpec: ChihirosMagStirrer,
+    HeaterSpec: ChihirosHeater,
+}
 
 
 def needs_device_type(device_name: str | None) -> bool:
@@ -68,24 +54,29 @@ def create_device(
     model: DeviceModel | None = None,
     device_type: str | None = None,
     advertisement_data: AdvertisementData | None = None,
-) -> ChihirosDevice:
-    """Create a device client for a BLE device."""
+):
+    """Create the family driver selected by the resolved profile."""
     if is_known_unsupported_device(ble_device.name):
         raise UnsupportedDeviceError(f"Unsupported Chihiros device: {ble_device.name}")
     resolved_model = resolve_model(ble_device.name, model, device_type)
-    if resolved_model == HEATER:
-        return ChihirosHeater(ble_device, resolved_model, advertisement_data)
-    if resolved_model == MAG_STIRRER:
-        return ChihirosMagStirrer(ble_device, resolved_model, advertisement_data)
-    if resolved_model == DOSING_PUMP:
-        return ChihirosDosingPump(ble_device, resolved_model, advertisement_data)
-    return ChihirosDevice(ble_device, resolved_model, advertisement_data)
+    driver = _DEVICE_DRIVERS.get(type(resolved_model.spec), ChihirosDevice)
+    return driver(ble_device, resolved_model, advertisement_data)
 
 
-async def get_device_from_address(device_address: str, device_type: str | None = None) -> ChihirosDevice:
+async def get_device_from_address(device_address: str, device_type: str | None = None):
     """Get a device client from a BLE address."""
     ble_dev = await BleakScanner.find_device_by_address(device_address)
     if ble_dev:
         return create_device(ble_dev, device_type=device_type)
-
     raise DeviceNotFound
+
+
+__all__ = [
+    "create_device",
+    "detect_model",
+    "get_device_from_address",
+    "is_known_unsupported_device",
+    "model_for_device_type",
+    "needs_device_type",
+    "resolve_model",
+]

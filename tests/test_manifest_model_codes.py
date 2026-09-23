@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from chihiros_led_control.models import SUPPORTED_MODELS
+from chihiros_led_control.registry import SUPPORTED_MODELS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "custom_components" / "chihiros" / "manifest.json"

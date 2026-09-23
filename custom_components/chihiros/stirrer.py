@@ -27,9 +27,9 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from .const import DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
-from .models import ChihirosData, StirrerChannelState
+from .models import StirrerChannelState, StirrerChihirosData
 from .runtime import StirrerChihirosClient
-from .vendor.chihiros_led_control.models import MAG_STIRRER
+from .vendor.chihiros_led_control.models import DeviceKind
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,7 +42,8 @@ STIRRER_CHANNEL_COUNT = STIRRER_CHANNEL_MAX
 
 def is_stirrer_capable(device: object) -> bool:
     """Return whether a runtime client or model is a magnetic stirrer."""
-    return getattr(device, "model_name", getattr(device, "name", None)) == MAG_STIRRER.name
+    candidate = getattr(device, "device_kind", None)
+    return candidate is DeviceKind.MAG_STIRRER or candidate == DeviceKind.MAG_STIRRER.value
 
 
 def stirrer_client(device: object) -> StirrerChihirosClient:
@@ -76,7 +77,7 @@ def set_stirrer_pre_run_entities_enabled(
         registry.async_update_entity(entity_id, disabled_by=desired_disabled_by)
 
 
-def _channel_states(chihiros_data: ChihirosData) -> list[StirrerChannelState]:
+def _channel_states(chihiros_data: StirrerChihirosData) -> list[StirrerChannelState]:
     """Return the per-channel state list for a configured stirrer."""
     if not chihiros_data.stirrer_states:
         raise HomeAssistantError(f"{chihiros_data.device.name} has no stirrer channels configured")
@@ -99,7 +100,7 @@ class ChihirosStirSwitch(
 
     _attr_should_poll = False
 
-    def __init__(self, device: object, chihiros_data: ChihirosData, channel: int) -> None:
+    def __init__(self, device: StirrerChihirosClient, chihiros_data: StirrerChihirosData, channel: int) -> None:
         """Initialize the stir switch for one channel."""
         super().__init__(chihiros_data.coordinator)
         self._device = device
@@ -168,7 +169,7 @@ class ChihirosStirNumberBase(
     _unique_id_suffix = ""
     _restart_when_running = False
 
-    def __init__(self, device: object, chihiros_data: ChihirosData, channel: int) -> None:
+    def __init__(self, device: StirrerChihirosClient, chihiros_data: StirrerChihirosData, channel: int) -> None:
         """Initialize the number for one stir channel."""
         super().__init__(chihiros_data.coordinator)
         self._device = device

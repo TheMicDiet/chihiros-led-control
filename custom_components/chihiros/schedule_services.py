@@ -12,8 +12,10 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN
 from .models import ChihirosData
+from .runtime import is_device_kind
 from .service_utils import DEVICE_SELECTOR_SCHEMA, resolve_service_device
-from .vendor.chihiros_led_control.commands import AUTO_POINT_MAX_MINUTES
+from .vendor.chihiros_led_control.models import DeviceKind
+from .vendor.chihiros_led_control.protocol.led import AUTO_POINT_MAX_MINUTES
 from .vendor.chihiros_led_control.schedule_validation import (
     find_duplicate_schedule_weekdays,
     normalize_schedule_weekdays,
@@ -190,7 +192,7 @@ def async_remove_schedule_services(hass: HomeAssistant) -> None:
 
 def ensure_light_device(chihiros_data: ChihirosData) -> None:
     """Validate that the selected service target is a light."""
-    if chihiros_data.dosing_totals:
+    if not is_device_kind(chihiros_data.device, DeviceKind.LED):
         raise HomeAssistantError(f"{chihiros_data.device.name} is not a light")
 
 

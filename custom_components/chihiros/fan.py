@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from homeassistant.components.bluetooth.passive_update_coordinator import (
     PassiveBluetoothCoordinatorEntity,
@@ -19,7 +19,8 @@ from .const import DOMAIN
 from .coordinator import ATTR_FAN_RPM, ChihirosDataUpdateCoordinator
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData
-from .runtime import ChihirosClient
+from .runtime import LedChihirosClient, has_led_feature
+from .vendor.chihiros_led_control.models import LedFeature
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,13 +32,14 @@ async def async_setup_entry(
 ) -> None:
     """Set up the fan platform for fan-equipped Chihiros devices."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
-    if not chihiros_data.device.model.has_fan:
+    if not has_led_feature(chihiros_data.device, LedFeature.FAN):
         return
+    device = cast(LedChihirosClient, chihiros_data.device)
     async_add_entities(
         [
             ChihirosFanEntity(
                 chihiros_data.coordinator,
-                chihiros_data.device,
+                device,
             )
         ]
     )
@@ -60,7 +62,7 @@ class ChihirosFanEntity(
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        chihiros_device: ChihirosClient,
+        chihiros_device: LedChihirosClient,
     ) -> None:
         """Initialize the fan entity."""
         super().__init__(coordinator)

@@ -4,19 +4,19 @@ from __future__ import annotations
 
 import datetime
 
-from chihiros_led_control import commands
-from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS
-from chihiros_led_control.protocol import (
+from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, LedProtocol
+from chihiros_led_control.protocol import dosing as dosing_commands
+from chihiros_led_control.protocol import led as commands
+from chihiros_led_control.protocol.dosing import parse_notification as parse_dosing_notification
+from chihiros_led_control.protocol.frame import calculate_checksum, create_command_encoding, next_message_id
+from chihiros_led_control.protocol.led import parse_notification as parse_led_notification
+from chihiros_led_control.protocol.notifications import (
     DosingDailyNotification,
     DosingTotalsNotification,
     FanStatusNotification,
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
-    calculate_checksum,
-    create_command_encoding,
-    next_message_id,
-    parse_notification,
 )
 
 SCHEDULE_SNAPSHOT_PREFIX = [
@@ -119,21 +119,21 @@ def test_base_auth_command_encoding() -> None:
 
 def test_dosing_auth_command_encoding() -> None:
     """Dosing auth commands use DEVICE auth data 4 and 5."""
-    assert commands.create_dose_auth_1_command((0, 4)) == bytearray([165, 1, 6, 0, 4, 4, 4, 3])
-    assert commands.create_dose_auth_2_command((0, 5)) == bytearray([165, 1, 6, 0, 5, 4, 5, 3])
+    assert dosing_commands.create_dose_auth_1_command((0, 4)) == bytearray([165, 1, 6, 0, 4, 4, 4, 3])
+    assert dosing_commands.create_dose_auth_2_command((0, 5)) == bytearray([165, 1, 6, 0, 5, 4, 5, 3])
 
 
 def test_manual_dose_command_encoding_large_volume() -> None:
     """Manual dose encoding supports 25.6 mL buckets for larger volumes."""
-    assert commands.split_dose_volume_ml(29.0) == (1, 34)
-    command = commands.create_manual_dose_command((0, 6), 2, 29.0)
+    assert dosing_commands.split_dose_volume_ml(29.0) == (1, 34)
+    command = dosing_commands.create_manual_dose_command((0, 6), 2, 29.0)
     assert command[6:-1] == bytearray([2, 0, 0, 1, 34])
 
 
 def test_manual_dose_command_preserves_reserved_volume_bytes() -> None:
     """Dosing frames preserve 0x5A in either volume byte."""
     for volume_ml, expected in ((9.0, (0, 90)), (25.6, (1, 0)), (34.6, (1, 90))):
-        command = commands.create_manual_dose_command((0, 6), 0, volume_ml)
+        command = dosing_commands.create_manual_dose_command((0, 6), 0, volume_ml)
         assert tuple(command[-3:-1]) == expected
 
 
@@ -168,9 +168,9 @@ def test_delete_auto_setting_command_matches_captured_frame() -> None:
     assert command == bytearray.fromhex("A5 01 13 00 17 19 02 1E 05 0A 01 7F FF FF FF FF FF FF FF FF 71")
 
 
-def test_auto_point_command_sea_led_family_uses_hour_minute_encoding() -> None:
+def test_auto_point_command_sea_led_protocol_uses_hour_minute_encoding() -> None:
     """SeaLed-family auto points encode [channel, hour, minute, level] (app's setSeaLedAutoCode)."""
-    command = commands.create_auto_point_command((0, 1), 2, 8 * 60 + 30, 80, sea_led_family=True)
+    command = commands.create_auto_point_command((0, 1), 2, 8 * 60 + 30, 80, protocol=LedProtocol.SEA_LED)
 
     # 0x5A, 6, [2, 8, 30, 80] with checksum over bytes 1..n-2
     assert command[0] == 0x5A
@@ -182,37 +182,43 @@ def test_auto_point_command_sea_led_family_uses_hour_minute_encoding() -> None:
 
 def test_auto_point_command_bleled_family_uses_30_minute_slots() -> None:
     """BleLed-family auto points encode [channel, 30-minute-slot, level] (app's setAutoCode)."""
-    command = commands.create_auto_point_command((0, 1), 3, 8 * 60 + 30, 60, sea_led_family=False)
+    command = commands.create_auto_point_command((0, 1), 3, 8 * 60 + 30, 60, protocol=LedProtocol.BLE_LED)
 
     # 8:30 is slot 17; 3-byte payload [3, 17, 60]
     assert command[6:-1] == bytearray([3, 17, 60])
 
     # 8:45 rounds up to slot 18 (remainder 15 > 14, matching the app's rule)
-    command = commands.create_auto_point_command((0, 1), 3, 8 * 60 + 45, 60, sea_led_family=False)
+    command = commands.create_auto_point_command((0, 1), 3, 8 * 60 + 45, 60, protocol=LedProtocol.BLE_LED)
     assert command[6:-1] == bytearray([3, 18, 60])
 
     # 8:44 stays in slot 17 (remainder 14 is not above the rounding threshold)
-    command = commands.create_auto_point_command((0, 1), 3, 8 * 60 + 44, 60, sea_led_family=False)
+    command = commands.create_auto_point_command((0, 1), 3, 8 * 60 + 44, 60, protocol=LedProtocol.BLE_LED)
     assert command[6:-1] == bytearray([3, 17, 60])
 
 
 def test_auto_point_command_slot_boundaries() -> None:
     """BleLed slot boundaries: midnight is slot 0, 23:59 wraps to slot 48, 48 h is slot 96."""
-    assert commands.create_auto_point_command((0, 1), 0, 0, 0, sea_led_family=False)[6:-1] == bytearray([0, 0, 0])
-    assert commands.create_auto_point_command((0, 1), 0, 1439, 0, sea_led_family=False)[6:-1] == bytearray([0, 48, 0])
-    assert commands.create_auto_point_command((0, 1), 0, 2880, 0, sea_led_family=False)[6:-1] == bytearray([0, 96, 0])
+    assert commands.create_auto_point_command((0, 1), 0, 0, 0, protocol=LedProtocol.BLE_LED)[6:-1] == bytearray(
+        [0, 0, 0]
+    )
+    assert commands.create_auto_point_command((0, 1), 0, 1439, 0, protocol=LedProtocol.BLE_LED)[6:-1] == bytearray(
+        [0, 48, 0]
+    )
+    assert commands.create_auto_point_command((0, 1), 0, 2880, 0, protocol=LedProtocol.BLE_LED)[6:-1] == bytearray(
+        [0, 96, 0]
+    )
 
 
-def test_auto_point_command_sea_led_family_hour_boundary() -> None:
+def test_auto_point_command_sea_led_protocol_hour_boundary() -> None:
     """SeaLed auto points wrap minutes into hour/minute fields (48 h → hour 48)."""
-    command = commands.create_auto_point_command((0, 1), 1, 2880, 90, sea_led_family=True)
+    command = commands.create_auto_point_command((0, 1), 1, 2880, 90, protocol=LedProtocol.SEA_LED)
 
     assert command[6:-1] == bytearray([1, 48, 0, 0x5A])
 
 
 def test_auto_point_command_sends_reserved_byte_verbatim() -> None:
     """Level 90 (0x5A) is sent verbatim: the 2.8.59 app's formatData does not escape payload bytes."""
-    command = commands.create_auto_point_command((0, 1), 1, 10 * 60, 90, sea_led_family=True)
+    command = commands.create_auto_point_command((0, 1), 1, 10 * 60, 90, protocol=LedProtocol.SEA_LED)
 
     assert command[6:-1] == bytearray([1, 10, 0, 0x5A])
 
@@ -226,7 +232,7 @@ def test_auto_point_command_validates_range() -> None:
         {"channel": 0, "minutes": 60, "level": 101},
     ):
         try:
-            commands.create_auto_point_command((0, 1), sea_led_family=False, **kwargs)
+            commands.create_auto_point_command((0, 1), protocol=LedProtocol.BLE_LED, **kwargs)
         except ValueError:
             continue
         raise AssertionError(f"Expected ValueError for {kwargs}")
@@ -235,7 +241,7 @@ def test_auto_point_command_validates_range() -> None:
 def test_parse_runtime_notification() -> None:
     """Runtime notifications expose firmware and runtime minutes."""
     frame = bytearray.fromhex("5b170a00010a01ffffffffff13888c")
-    notification = parse_notification(frame)
+    notification = parse_led_notification(frame)
 
     assert notification == RuntimeNotification(firmware_version=23, runtime_minutes=511, raw=bytes(frame))
 
@@ -247,20 +253,20 @@ def test_parse_runtime_notification_accepts_legacy_framing() -> None:
     bad_length[2] -= 1
     bad_checksum = bytearray(valid)
     bad_checksum[-1] ^= 1
-    assert parse_notification(bad_length) == RuntimeNotification(firmware_version=23, runtime_minutes=511)
-    assert parse_notification(bad_checksum) == RuntimeNotification(firmware_version=23, runtime_minutes=511)
+    assert parse_led_notification(bad_length) == RuntimeNotification(firmware_version=23, runtime_minutes=511)
+    assert parse_led_notification(bad_checksum) == RuntimeNotification(firmware_version=23, runtime_minutes=511)
 
 
 def test_parse_notification_rejects_short_or_unknown_frames() -> None:
     """Inbound frames still require the Chihiros header and mode fields."""
-    assert parse_notification(bytes([0x5B, 0, 2, 0, 0, 0, 0])) is None
-    assert parse_notification(bytes([0x00, 0, 3, 0, 0, 0, 0, 0])) is None
+    assert parse_led_notification(bytes([0x5B, 0, 2, 0, 0, 0, 0])) is None
+    assert parse_led_notification(bytes([0x00, 0, 3, 0, 0, 0, 0, 0])) is None
 
 
 def test_parse_fan_status_notification() -> None:
     """Fan status notifications expose firmware, fan RPM, and temperature."""
     frame = bytearray.fromhex("5b 1b 10 00 01 0b 02 58 19 00 01 00 00 00 00 00 48 22")
-    notification = parse_notification(frame)
+    notification = parse_led_notification(frame)
 
     assert notification == FanStatusNotification(
         firmware_version=27, fan_rpm=600, temperature_celsius=25, raw=bytes(frame)
@@ -272,15 +278,17 @@ def test_parse_fan_status_notification_tolerates_trailing_counter() -> None:
     running = bytearray.fromhex("5b 1b 10 00 01 0b 07 bc 19 00 01 00 00 00 00 00 57 22")
     idle = bytearray.fromhex("5b 1b 10 00 01 0b 00 1e 18 00 01 00 00 00 00 00 00 22")
 
-    assert parse_notification(running) == FanStatusNotification(
+    assert parse_led_notification(running) == FanStatusNotification(
         firmware_version=27, fan_rpm=1980, temperature_celsius=25
     )
-    assert parse_notification(idle) == FanStatusNotification(firmware_version=27, fan_rpm=30, temperature_celsius=24)
+    assert parse_led_notification(idle) == FanStatusNotification(
+        firmware_version=27, fan_rpm=30, temperature_celsius=24
+    )
 
 
 def test_parse_schedule_snapshot_notification_requires_channel_context() -> None:
     """Schedule snapshot notifications need model channel context."""
-    notification = parse_notification(
+    notification = parse_led_notification(
         bytearray(
             [
                 0x5B,
@@ -311,7 +319,7 @@ def test_parse_schedule_snapshot_notification_requires_channel_context() -> None
 
 def test_parse_schedule_snapshot_notification_for_single_channel_model() -> None:
     """Single-channel schedule snapshots use the model channel name."""
-    notification = parse_notification(
+    notification = parse_led_notification(
         framed([*SCHEDULE_SNAPSHOT_PREFIX, 0x08, 0x00, 0x32]),
         WHITE_CHANNELS,
     )
@@ -324,7 +332,7 @@ def test_parse_schedule_snapshot_notification_for_single_channel_model() -> None
 
 def test_parse_schedule_snapshot_notification_for_rgb_model() -> None:
     """RGB schedule snapshots apply each schedule level to all named channels."""
-    notification = parse_notification(
+    notification = parse_led_notification(
         framed(
             [
                 *SCHEDULE_SNAPSHOT_PREFIX,
@@ -350,7 +358,7 @@ def test_parse_schedule_snapshot_notification_for_rgb_model() -> None:
 
 def test_parse_schedule_snapshot_notification_for_true_wrgb_model() -> None:
     """True WRGB schedule snapshots apply each schedule level to all named channels."""
-    notification = parse_notification(
+    notification = parse_led_notification(
         framed(
             [
                 *SCHEDULE_SNAPSHOT_PREFIX,
@@ -385,7 +393,7 @@ def test_parse_captured_schedule_snapshot_notification_for_true_wrgb_model() -> 
         )
     )
 
-    notification = parse_notification(frame, WRGB_CHANNELS)
+    notification = parse_led_notification(frame, WRGB_CHANNELS)
 
     assert notification == ScheduleSnapshotNotification(
         firmware_version=21,
@@ -403,7 +411,7 @@ def test_parse_captured_schedule_snapshot_notification_for_true_wrgb_model() -> 
 
 def test_parse_schedule_snapshot_notification_skips_metadata_prefix() -> None:
     """Schedule snapshots skip status metadata before hour/minute/level data points."""
-    notification = parse_notification(
+    notification = parse_led_notification(
         framed(
             [
                 *SCHEDULE_SNAPSHOT_PREFIX,
@@ -438,7 +446,7 @@ def test_parse_schedule_snapshot_notification_skips_metadata_prefix() -> None:
 def test_parse_dosing_totals_notification() -> None:
     """Dosing lifetime totals use 0x5B header, mode 0x1E, 16-bit x100 uL counters."""
     frame = bytearray([0x5B, 0x10, 0x10, 0x00, 0x01, 0x1E, 0x04, 0x1F, 0x00, 0x00, 0x05, 0xDC, 0x00, 0x00])
-    notification = parse_notification(frame)
+    notification = parse_dosing_notification(frame)
 
     assert notification == DosingTotalsNotification(total_dosed_ul=(105500, 0, 150000, 0), raw=bytes(frame))
 
@@ -446,15 +454,15 @@ def test_parse_dosing_totals_notification() -> None:
 def test_parse_dosing_daily_notification() -> None:
     """Dosing dosed-today totals use 0x5B header, mode 0x22, 16-bit x100 uL counters."""
     frame = bytearray([0x5B, 0x10, 0x0E, 0x00, 0x01, 0x22, 0x00, 0x64, 0x01, 0x90])
-    notification = parse_notification(frame)
+    notification = parse_dosing_notification(frame)
 
     assert notification == DosingDailyNotification(dose_use_in_day_ul=(10000, 40000), raw=bytes(frame))
 
 
 def test_parse_dosing_notification_requires_minimum_length() -> None:
     """Dosing notifications without a full channel counter are ignored."""
-    assert parse_notification(bytearray([0x5B, 0, 0, 0, 0, 0x1E, 0])) is None
-    assert parse_notification(bytearray([0x5B, 0, 0, 0, 0, 0x22, 0])) is None
+    assert parse_dosing_notification(bytearray([0x5B, 0, 0, 0, 0, 0x1E, 0])) is None
+    assert parse_dosing_notification(bytearray([0x5B, 0, 0, 0, 0, 0x22, 0])) is None
 
 
 def test_parse_unknown_notification_modes_are_ignored() -> None:
@@ -463,8 +471,8 @@ def test_parse_unknown_notification_modes_are_ignored() -> None:
     ``0xB6`` is the Dart smi immediate of ``0x5B`` (never a real header), and
     ``0x5B``/``0x99`` is an unknown mode.
     """
-    assert parse_notification(bytearray([0xB6, 0, 0, 0, 0, 0x4A, 1, 2, 3, 4, 5, 6])) is None
-    assert parse_notification(bytearray([0x5B, 0, 0, 0, 0, 0x99, 1, 2, 3, 4, 5, 6])) is None
+    assert parse_led_notification(bytearray([0xB6, 0, 0, 0, 0, 0x4A, 1, 2, 3, 4, 5, 6])) is None
+    assert parse_led_notification(bytearray([0x5B, 0, 0, 0, 0, 0x99, 1, 2, 3, 4, 5, 6])) is None
 
 
 def test_switch_to_manual_mode_command_encoding() -> None:
@@ -474,11 +482,11 @@ def test_switch_to_manual_mode_command_encoding() -> None:
 
 def test_manual_dose_command_accepts_eight_channels() -> None:
     """Dosing pumps expose up to eight channels."""
-    command = commands.create_manual_dose_command((0, 6), 7, 2.0)
+    command = dosing_commands.create_manual_dose_command((0, 6), 7, 2.0)
     assert command[6] == 7
     for pump_idx in (-1, 8):
         try:
-            commands.create_manual_dose_command((0, 6), pump_idx, 2.0)
+            dosing_commands.create_manual_dose_command((0, 6), pump_idx, 2.0)
         except ValueError:
             continue
         raise AssertionError(f"Expected ValueError for pump index {pump_idx}")

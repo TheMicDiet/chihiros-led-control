@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any
+from typing import Any, cast
 
 from homeassistant.components.bluetooth.passive_update_coordinator import (
     PassiveBluetoothCoordinatorEntity,
@@ -27,7 +27,8 @@ from .const import DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData
-from .runtime import ChihirosClient
+from .runtime import LedChihirosClient, is_device_kind
+from .vendor.chihiros_led_control.models import DeviceKind
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,8 +40,11 @@ async def async_setup_entry(
 ) -> None:
     """Set up the light platform for LEDBLE."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
-    _LOGGER.debug("Setup chihiros entry: %s", chihiros_data.device.address)
-    channels = chihiros_data.device.colors
+    if not is_device_kind(chihiros_data.device, DeviceKind.LED):
+        return
+    device = cast(LedChihirosClient, chihiros_data.device)
+    _LOGGER.debug("Setup chihiros entry: %s", device.address)
+    channels = device.colors
     has_rgb = "red" in channels and "green" in channels and "blue" in channels
     # RGB/WRGB devices expose a single unified entity that writes every colour
     # channel in one BLE transaction, so per-channel entities are not created for
@@ -48,24 +52,24 @@ async def async_setup_entry(
     # colour models still get one brightness entity per channel.
     if not has_rgb:
         for color in channels:
-            _LOGGER.debug("Setup chihiros light entity: %s - %s", chihiros_data.device.address, color)
+            _LOGGER.debug("Setup chihiros light entity: %s - %s", device.address, color)
             async_add_entities(
                 [
                     ChihirosLightEntity(
                         chihiros_data.coordinator,
-                        chihiros_data.device,
+                        device,
                         color=color,
                     )
                 ]
             )
 
     if has_rgb:
-        _LOGGER.debug("Setup chihiros RGB light entity: %s", chihiros_data.device.address)
+        _LOGGER.debug("Setup chihiros RGB light entity: %s", device.address)
         async_add_entities(
             [
                 ChihirosRGBLightEntity(
                     chihiros_data.coordinator,
-                    chihiros_data.device,
+                    device,
                 )
             ]
         )
@@ -86,7 +90,7 @@ class ChihirosLightEntity(
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        chihiros_device: ChihirosClient,
+        chihiros_device: LedChihirosClient,
         color: str,
     ) -> None:
         """Initialise the entity."""
@@ -182,7 +186,7 @@ class ChihirosRGBLightEntity(
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        chihiros_device: ChihirosClient,
+        chihiros_device: LedChihirosClient,
     ) -> None:
         """Initialise the entity."""
         super().__init__(coordinator)

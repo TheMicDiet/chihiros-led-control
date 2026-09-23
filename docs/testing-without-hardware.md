@@ -5,8 +5,8 @@ library without owning any Chihiros device.
 
 ## Home Assistant fake devices
 
-`custom_components/chihiros/fake.py` provides in-memory devices that implement
-the full `ChihirosClient` surface. They appear in the integration's device
+`custom_components/chihiros/fake/` provides in-memory devices that implement
+family-specific fake device surfaces. They appear in the integration's device
 picker when `CHIHIROS_FAKE_DEVICES=1` (the default in the Docker compose
 setup; see [home-assistant-docker.md](home-assistant-docker.md)).
 
@@ -32,29 +32,31 @@ roster assertion in `tests/test_home_assistant_unit.py`.
 
 ## Scripted BLE transport
 
-`src/chihiros_led_control/testing.py` replaces the real Bluetooth transport
-with an in-memory GATT connection, so the **real** `ChihirosDevice` client runs
-its full connect flow (characteristic resolution, notification subscription,
-connection prelude), command encoding, retry logic, and notification parsing
-against scripted bytes.
+`src/chihiros_led_control/testing.py` provides `ScriptedTransport`, which
+supplies a scripted BLE client to the production `BleTransport`. Real family
+drivers and the production transport run connection setup, retries, locking,
+idle disconnect, command pacing, and notification parsing against scripted
+bytes.
 
 ```python
 import asyncio
 
-from chihiros_led_control.client import ChihirosDevice
-from chihiros_led_control.models import WHITE_CHANNELS, DeviceModel
-from chihiros_led_control.testing import ScriptedTransport
-
+from chihiros_led_control import ChihirosDevice
+from chihiros_led_control.models import DeviceModel, LedSpec, WHITE_CHANNELS
+from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
 
 async def run() -> None:
     transport = ScriptedTransport()
     # Reply to the auth/status command with a runtime notification frame.
     transport.expect(90, 4, [1], respond=[bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")])
-    device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
-    with transport.patch_establish_connection():
-        await device.query_status()
-        # Successful commands reuse the connection until it goes idle.
-        await device.disconnect()
+    device = ChihirosDevice(
+        ScriptedBLEDevice(transport.name, transport.address),
+        DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+        transport=transport,
+    )
+    await device.query_status()
+    # Successful commands reuse the connection until it goes idle.
+    await device.disconnect()
     print(device.last_runtime_notification)
     print([command.hex() for command in transport.writes])
 

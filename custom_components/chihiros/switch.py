@@ -1,7 +1,7 @@
 """Switch platform for Chihiros LED Control to toggle auto/manual mode."""
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from homeassistant.components.bluetooth.passive_update_coordinator import (
     PassiveBluetoothCoordinatorEntity,
@@ -19,11 +19,13 @@ from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_
 from .heater import (
     ChihirosHeaterAutoHeatingSwitch,
     ChihirosHeaterBacklightSwitch,
+    heater_client,
     is_heater_capable,
 )
-from .models import ChihirosData
-from .runtime import ChihirosClient
-from .stirrer import ChihirosStirSwitch, is_stirrer_capable
+from .models import ChihirosData, StirrerChihirosData
+from .runtime import LedChihirosClient, has_led_feature, is_device_kind
+from .stirrer import ChihirosStirSwitch
+from .vendor.chihiros_led_control.models import DeviceKind, LedFeature
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,40 +38,42 @@ async def async_setup_entry(
     """Set up the switch platform for Chihiros LED Control."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
     entities = _accessory_switches(chihiros_data)
-    if not chihiros_data.device.colors:
+    if not is_device_kind(chihiros_data.device, DeviceKind.LED):
         if entities:
             async_add_entities(entities)
         return
+    device = cast(LedChihirosClient, chihiros_data.device)
     entities.append(
         ChihirosAutoManualSwitch(
             chihiros_data.coordinator,
-            chihiros_data.device,
+            device,
         )
     )
-    if chihiros_data.device.model.is_vivid3:
-        entities.extend(_vivid3_switches(chihiros_data.device))
+    if has_led_feature(device, LedFeature.TEMPERATURE_PROTECTION):
+        entities.extend(_vivid3_switches(device))
     async_add_entities(entities)
 
 
 def _accessory_switches(chihiros_data: ChihirosData) -> list[SwitchEntity]:
     """Build the switches of the stirrer and heater accessories."""
     entities: list[SwitchEntity] = []
-    if is_stirrer_capable(chihiros_data.device) and chihiros_data.stirrer_states:
+    if isinstance(chihiros_data, StirrerChihirosData):
         entities.extend(
             ChihirosStirSwitch(chihiros_data.device, chihiros_data, channel)
             for channel in range(len(chihiros_data.stirrer_states))
         )
     if is_heater_capable(chihiros_data.device):
+        device = heater_client(chihiros_data.device)
         entities.extend(
             (
-                ChihirosHeaterAutoHeatingSwitch(chihiros_data.coordinator, chihiros_data.device),
-                ChihirosHeaterBacklightSwitch(chihiros_data.coordinator, chihiros_data.device),
+                ChihirosHeaterAutoHeatingSwitch(chihiros_data.coordinator, device),
+                ChihirosHeaterBacklightSwitch(chihiros_data.coordinator, device),
             )
         )
     return entities
 
 
-def _vivid3_switches(device: ChihirosClient) -> list[SwitchEntity]:
+def _vivid3_switches(device: LedChihirosClient) -> list[SwitchEntity]:
     """Build the VIVID III temperature-protection and indicator-LED switches."""
     return [
         ChihirosVivid3Switch(device, "temp_protect", "set_temp_protect", "Temperature Protection"),
@@ -86,7 +90,7 @@ class ChihirosAutoManualSwitch(
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        device: ChihirosClient,
+        device: LedChihirosClient,
     ) -> None:
         """Initialize the switch."""
         super().__init__(coordinator)
@@ -135,7 +139,7 @@ class ChihirosVivid3Switch(SwitchEntity, RestoreEntity):
 
     def __init__(
         self,
-        device: ChihirosClient,
+        device: LedChihirosClient,
         state_property: str,
         setter_name: str,
         name_suffix: str,

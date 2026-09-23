@@ -43,8 +43,9 @@ from .coordinator import (
     ChihirosDataUpdateCoordinator,
 )
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
-from .runtime import ChihirosClient, HeaterChihirosClient
-from .vendor.chihiros_led_control.commands import (
+from .runtime import HeaterChihirosClient, is_device_kind
+from .vendor.chihiros_led_control.models import DeviceKind
+from .vendor.chihiros_led_control.protocol.heater import (
     HEATER_MAX_POWER_WATTS,
     HEATER_MAX_TEMPERATURE_C,
 )
@@ -57,8 +58,7 @@ HEATER_TEMPERATURE_STEP_C = 0.5
 
 def is_heater_capable(device: object) -> bool:
     """Return whether a runtime client or model is a Chihiros heater."""
-    model = getattr(device, "model", device)
-    return bool(getattr(model, "is_heater", False))
+    return is_device_kind(device, DeviceKind.HEATER)
 
 
 def heater_client(device: object) -> HeaterChihirosClient:
@@ -76,7 +76,7 @@ class ChihirosHeaterEntity(PassiveBluetoothCoordinatorEntity[ChihirosDataUpdateC
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        device: ChihirosClient,
+        device: HeaterChihirosClient,
         unique_id_suffix: str,
         name_suffix: str,
     ) -> None:
@@ -114,7 +114,7 @@ class ChihirosHeaterNumber(ChihirosHeaterEntity, NumberEntity, RestoreEntity):
     def __init__(
         self,
         coordinator: ChihirosDataUpdateCoordinator,
-        device: ChihirosClient,
+        device: HeaterChihirosClient,
         unique_id_suffix: str,
         name_suffix: str,
     ) -> None:
@@ -191,7 +191,7 @@ class ChihirosHeaterTemperatureNumber(ChihirosHeaterNumber):
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_device_class = NumberDeviceClass.TEMPERATURE
 
-    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: HeaterChihirosClient) -> None:
         """Initialize the target temperature number."""
         super().__init__(coordinator, device, "heater_temperature", "Temperature")
         self._last_temperature_update_id = coordinator.heater_temperature_update_id
@@ -226,7 +226,7 @@ class ChihirosHeaterPowerNumber(ChihirosHeaterNumber):
     _attr_native_step = HEATER_POWER_STEP_WATTS
     _attr_native_unit_of_measurement = "W"
 
-    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: HeaterChihirosClient) -> None:
         """Initialize the power number."""
         super().__init__(coordinator, device, "heater_power", "Power")
 
@@ -264,7 +264,7 @@ class ChihirosHeaterAutoTemperatureNumber(ChihirosHeaterAutoDefaultNumber):
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_device_class = NumberDeviceClass.TEMPERATURE
 
-    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: HeaterChihirosClient) -> None:
         """Initialize the auto default temperature number."""
         super().__init__(coordinator, device, "heater_auto_temperature", "Auto temperature")
 
@@ -288,7 +288,7 @@ class ChihirosHeaterAutoPowerNumber(ChihirosHeaterAutoDefaultNumber):
     _attr_native_step = HEATER_POWER_STEP_WATTS
     _attr_native_unit_of_measurement = "W"
 
-    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: HeaterChihirosClient) -> None:
         """Initialize the auto default power number."""
         super().__init__(coordinator, device, "heater_auto_power", "Auto power")
 
@@ -312,7 +312,7 @@ class ChihirosHeaterProtectorNumber(ChihirosHeaterNumber):
     _attr_device_class = NumberDeviceClass.TEMPERATURE
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: HeaterChihirosClient) -> None:
         """Initialize the protection temperature number."""
         super().__init__(coordinator, device, "heater_protector_temperature", "Protection temperature")
 
@@ -340,7 +340,7 @@ class ChihirosHeaterCalibrationNumber(ChihirosHeaterNumber):
     _attr_entity_category = EntityCategory.CONFIG
     _attr_icon = "mdi:thermometer-check"
 
-    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: HeaterChihirosClient) -> None:
         """Initialize the calibration number."""
         super().__init__(coordinator, device, "heater_calibration_temperature", "Calibration temperature")
 
@@ -360,7 +360,7 @@ class ChihirosHeaterOptimisticSwitch(ChihirosHeaterEntity, SwitchEntity, Restore
     _unique_id_suffix = ""
     _name_suffix = ""
 
-    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: HeaterChihirosClient) -> None:
         """Initialize the heater switch."""
         super().__init__(coordinator, device, self._unique_id_suffix, self._name_suffix)
         self._restored_state: bool | None = None
@@ -437,7 +437,7 @@ class ChihirosHeaterModeSelect(ChihirosHeaterEntity, SelectEntity, RestoreEntity
 
     _attr_options = list(HEATER_MODES)
 
-    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: HeaterChihirosClient) -> None:
         """Initialize the mode select."""
         super().__init__(coordinator, device, "heater_mode", "Mode")
 
@@ -475,7 +475,7 @@ class ChihirosHeaterTemperatureUnitSelect(ChihirosHeaterEntity, SelectEntity, Re
     _attr_options = [UnitOfTemperature.CELSIUS, UnitOfTemperature.FAHRENHEIT]
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: HeaterChihirosClient) -> None:
         """Initialize the temperature unit select."""
         super().__init__(coordinator, device, "heater_temperature_unit", "Temperature unit")
         self._restored_option: str | None = None
@@ -511,7 +511,7 @@ class ChihirosHeaterResetWorkTimeButton(ChihirosHeaterEntity, ButtonEntity):
 
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: HeaterChihirosClient) -> None:
         """Initialize the runtime reset button."""
         super().__init__(coordinator, device, "heater_reset_work_time", "Reset runtime")
 
@@ -533,7 +533,7 @@ class ChihirosHeaterAlarmSensor(ChihirosHeaterEntity, SensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_icon = "mdi:alert-outline"
 
-    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: ChihirosClient) -> None:
+    def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: HeaterChihirosClient) -> None:
         """Initialize the alarm sensor."""
         super().__init__(coordinator, device, "heater_alarms", "Alarms")
 

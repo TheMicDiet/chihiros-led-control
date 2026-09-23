@@ -42,9 +42,11 @@ from custom_components.chihiros.vendor.chihiros_led_control.models import (
     RGB_CHANNELS,
     WHITE_CHANNELS,
     WRGB_CHANNELS,
+    DeviceKind,
     DeviceModel,
+    LedSpec,
 )
-from custom_components.chihiros.vendor.chihiros_led_control.protocol import ParsedNotification
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.notifications import ParsedNotification
 
 pytestmark = [
     pytest.mark.integration,
@@ -71,6 +73,10 @@ class _TrackingClient:
     @property
     def name(self) -> str:
         return "Test Chihiros"
+
+    @property
+    def device_kind(self) -> DeviceKind:
+        return self.model.device_kind
 
     @property
     def model_name(self) -> str:
@@ -100,8 +106,8 @@ class _TrackingClient:
         pass
 
 
-WRGB_MODEL = DeviceModel("WRGB II Pro", ("DYWPRO30",), WRGB_CHANNELS)
-WHITE_MODEL = DeviceModel("A II", ("DYNA2",), WHITE_CHANNELS)
+WRGB_MODEL = DeviceModel("WRGB II Pro", ("DYWPRO30",), LedSpec(WRGB_CHANNELS))
+WHITE_MODEL = DeviceModel("A II", ("DYNA2",), LedSpec(WHITE_CHANNELS))
 
 
 async def _setup(
@@ -184,7 +190,7 @@ async def test_rgb_turn_on_with_rgb_color(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Turning on with rgb_color sends all channels in one call."""
-    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
+    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))
     registry = er.async_get(hass)
     entity_id = registry.async_get_entity_id(LIGHT_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_rgb")
     assert entity_id is not None
@@ -211,7 +217,7 @@ async def test_rgb_turn_on_with_brightness_scales_all_channels(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Brightness scales each channel proportionally."""
-    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
+    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))
     registry = er.async_get(hass)
     entity_id = registry.async_get_entity_id(LIGHT_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_rgb")
     assert entity_id is not None
@@ -237,7 +243,7 @@ async def test_rgb_turn_on_without_color_defaults_to_white(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Turning on without a color sends full-brightness white."""
-    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
+    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))
     registry = er.async_get(hass)
     entity_id = registry.async_get_entity_id(LIGHT_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_rgb")
     assert entity_id is not None
@@ -259,7 +265,7 @@ async def test_rgb_turn_off_zeros_all_channels(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Turning off sends zero for all channels."""
-    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
+    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))
     registry = er.async_get(hass)
     entity_id = registry.async_get_entity_id(LIGHT_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_rgb")
     assert entity_id is not None
@@ -406,7 +412,7 @@ async def test_rgb_brightness_only_scales_default_white(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Brightness without color scales the default (255,255,255) RGB color."""
-    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
+    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))
     registry = er.async_get(hass)
     entity_id = _entity_id(registry, "rgb")
 
@@ -431,7 +437,7 @@ async def test_rgb_scale_channel_zero_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A 0 channel value stays 0 through the brightness scaling."""
-    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
+    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))
     registry = er.async_get(hass)
     entity_id = _entity_id(registry, "rgb")
 
@@ -454,7 +460,7 @@ async def test_rgb_toggle_off_on_restores_last_brightness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Turning on without brightness after a turn-off restores the last level."""
-    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
+    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))
     registry = er.async_get(hass)
     entity_id = _entity_id(registry, "rgb")
 
@@ -516,7 +522,7 @@ async def test_rgb_turn_on_set_brightness_failure_keeps_state_consistent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failed color change raises and keeps the previously applied state."""
-    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
+    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))
     registry = er.async_get(hass)
     entity_id = _entity_id(registry, "rgb")
 
@@ -553,7 +559,7 @@ async def test_rgb_turn_off_set_brightness_failure_keeps_state_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A BLE failure during turn_off raises HomeAssistantError and keeps the entity on."""
-    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
+    _entry, client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))
     registry = er.async_get(hass)
     entity_id = _entity_id(registry, "rgb")
 
@@ -745,7 +751,7 @@ async def test_rgb_entity_restores_color_and_brightness_from_last_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The unified RGB entity restores rgb_color and brightness on reload."""
-    entry, _client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
+    entry, _client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))
     registry = er.async_get(hass)
     entity_id = _entity_id(registry, "rgb")
 
@@ -825,7 +831,7 @@ async def test_rgb_entity_restore_off_state_when_last_state_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Restoring from an OFF last state keeps the entity off."""
-    entry, _client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
+    entry, _client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))
     registry = er.async_get(hass)
     entity_id = _entity_id(registry, "rgb")
 
@@ -848,7 +854,7 @@ async def test_rgb_entity_restore_without_color_keeps_default_color(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Restoring only brightness (no color attributes) keeps the default color."""
-    entry, _client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), RGB_CHANNELS))
+    entry, _client = await _setup(hass, monkeypatch, DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))
     registry = er.async_get(hass)
     entity_id = _entity_id(registry, "rgb")
 

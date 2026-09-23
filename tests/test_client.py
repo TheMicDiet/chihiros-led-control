@@ -3,31 +3,33 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+import logging
+from collections.abc import Callable
 from datetime import datetime
-from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 from bleak_retry_connector import BleakError
 
-from chihiros_led_control.client import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
-from chihiros_led_control.const import (
-    CUSTOM_NOTIFY_CHAR_UUID,
-    HM10_RX_CHAR_UUID,
-    UART_RX_CHAR_UUID,
-    UART_TX_CHAR_UUID,
+from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
+from chihiros_led_control.models import (
+    RGB_CHANNELS,
+    WHITE_CHANNELS,
+    WRGB_CHANNELS,
+    DeviceModel,
+    LedFeature,
+    LedProtocol,
+    LedSpec,
 )
-from chihiros_led_control.exceptions import CharacteristicMissingError
-from chihiros_led_control.models import DOSING_PUMP, RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel
-from chihiros_led_control.protocol import (
+from chihiros_led_control.protocol.frame import calculate_checksum
+from chihiros_led_control.protocol.notifications import (
     DosingDailyNotification,
     DosingTotalsNotification,
     FanStatusNotification,
     RuntimeNotification,
     ScheduleSnapshotNotification,
-    calculate_checksum,
 )
+from chihiros_led_control.registry import DOSING_PUMP, MAG_STIRRER
+from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
 
 
 class FakeBLEDevice:
@@ -52,7 +54,7 @@ def test_enable_auto_mode_sends_time_before_switch() -> None:
     sent_commands: list[bytes] = []
 
     async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))  # type: ignore[arg-type]
 
         async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
             del retry
@@ -72,7 +74,7 @@ def test_enable_auto_mode_uses_supplied_timestamp() -> None:
     sent_commands: list[bytes] = []
 
     async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))  # type: ignore[arg-type]
 
         async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
             del retry
@@ -94,7 +96,7 @@ def test_query_status_sends_runtime_status_query() -> None:
     notification_waits: list[float] = []
 
     async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))  # type: ignore[arg-type]
 
         async def capture_command(
             command: list[bytes] | bytes | bytearray,
@@ -117,14 +119,14 @@ def test_query_status_sends_runtime_status_query() -> None:
 
 def test_dosing_pump_status_queries_counters_in_app_order(monkeypatch: pytest.MonkeyPatch) -> None:
     """Dosing refresh batches lifetime/daily queries and waits for their replies."""
-    from chihiros_led_control import client as client_module
+    from chihiros_led_control.devices import dosing
 
     sent_commands: list[list[bytes]] = []
     notification_waits: list[float] = []
-    monkeypatch.setattr(client_module, "STATUS_NOTIFICATION_WAIT", 2.5)
+    monkeypatch.setattr(dosing, "STATUS_NOTIFICATION_WAIT", 2.5)
 
     async def run() -> None:
-        device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
+        device = ChihirosDosingPump(FakeBLEDevice(), DOSING_PUMP)  # type: ignore[arg-type]
 
         async def capture_command(
             command: list[bytes] | bytes | bytearray,
@@ -150,7 +152,7 @@ def test_mag_stirrer_status_refresh_is_fire_and_forget() -> None:
     sent_commands: list[bytes] = []
 
     async def run() -> None:
-        device = ChihirosMagStirrer(FakeBLEDevice(), DeviceModel("Mag Stirrer", (), {}))  # type: ignore[arg-type]
+        device = ChihirosMagStirrer(FakeBLEDevice(), MAG_STIRRER)  # type: ignore[arg-type]
 
         async def capture_command(
             command: list[bytes] | bytes | bytearray,
@@ -168,405 +170,266 @@ def test_mag_stirrer_status_refresh_is_fire_and_forget() -> None:
     assert sent_commands == []
 
 
-def test_dosing_pump_manual_dose_sends_auth_and_dose_batch() -> None:
-    """Manual dosing sends dose auth frames before the one-shot dose command."""
-    sent_batches: list[list[bytes]] = []
-    retry_attempts: list[int | None] = []
+def _fast_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove notification and batch pacing delays from scripted sessions."""
+    from chihiros_led_control import testing as testing_module
+    from chihiros_led_control.devices import base as device_base
+    from chihiros_led_control.devices import dosing, led
+
+    monkeypatch.setattr(device_base, "COMMAND_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(device_base, "STATUS_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(dosing, "STATUS_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(led, "STATUS_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(testing_module, "BATCH_WRITE_DELAY", 0.0)
+
+
+def _respond_once(frame: bytes) -> Callable[[bytes], list[bytes]]:
+    """Respond only to the first matching frame (the connection prelude)."""
+    delivered = False
+
+    def respond(_written: bytes) -> list[bytes]:
+        nonlocal delivered
+        if delivered:
+            return []
+        delivered = True
+        return [frame]
+
+    return respond
+
+
+def test_scripted_connection_reuse_runs_prelude_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two public commands reuse one physical connection and one prelude."""
+    transport = ScriptedTransport()
+    _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
-
-        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            assert isinstance(command, list)
-            sent_batches.append([bytes(item) for item in command])
-            retry_attempts.append(retry)
-
-        device._send_command = capture_command  # type: ignore[method-assign]
-
-        await device.dose_ml(1, 2.0)
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
+        await device.set_manual_mode()
+        await device.set_manual_mode()
 
     asyncio.run(run())
 
-    assert [command[5:7] for command in sent_batches[0]] == [bytes([4, 4]), bytes([4, 5]), bytes([27, 1])]
-    assert sent_batches[0][2][6:-1] == bytes([1, 0, 0, 0, 20])
-    assert retry_attempts == [1]
+    assert transport.connections == 1
+    assert [frame[5] for frame in transport.writes] == [4, 9, 9, 5, 5]
 
 
-def test_dosing_pump_calibration_retry_policy() -> None:
-    """A timed calibration run is never replayed; recording a volume is idempotent."""
-    retry_attempts: list[int | None] = []
+def test_scripted_idle_disconnect_closes_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An idle connection is closed by the transport before the next command."""
+    transport = ScriptedTransport()
+    _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
+        loop = asyncio.get_running_loop()
+        original_call_later = loop.call_later
 
-        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del command
-            retry_attempts.append(retry)
+        def run_timer_now(delay: float, callback: object, *args: object) -> asyncio.TimerHandle:
+            del delay
+            return original_call_later(0, callback, *args)  # type: ignore[arg-type]
 
-        device._send_command = capture_command  # type: ignore[method-assign]
-
-        await device.calibrate_channel(0, seconds=5)
-        await device.calibrate_channel(0, volume_ml=4.05)
+        monkeypatch.setattr(loop, "call_later", run_timer_now)
+        await device.set_manual_mode()
+        assert transport.is_connected
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not transport.is_connected
 
     asyncio.run(run())
 
-    assert retry_attempts == [1, 3]
+
+def test_scripted_concurrent_commands_are_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Concurrent public calls remain complete, ordered transport transactions."""
+    transport = ScriptedTransport()
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
+        await asyncio.gather(device.set_manual_mode(), device.set_manual_mode())
+
+    asyncio.run(run())
+
+    assert transport.connections == 1
+    assert [frame[5] for frame in transport.writes] == [4, 9, 9, 5, 5]
 
 
-def _recording_stub(name: str, events: list[str]) -> Callable[..., Awaitable[None]]:
-    """Create an async stub appending ``name`` to ``events`` when called."""
+def test_scripted_transient_failure_reconnects(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A transient write failure retries through a fresh physical connection."""
+    transport = ScriptedTransport()
+    calls = 0
 
-    async def stub(*_args: object) -> None:
-        events.append(name)
+    def flaky(_frame: bytes) -> list[bytes]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise BleakError("temporary")
+        if calls == 2:
+            return [bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")]
+        return []
 
-    return stub
+    transport.expect(90, 4, [1], respond=flaky)
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
+        await device.query_status()
+
+    asyncio.run(run())
+
+    assert transport.connections == 2
+    assert calls == 3
 
 
-def test_send_command_keeps_connection_after_command_batch() -> None:
-    """Successful command batches keep the BLE connection available for reuse."""
-    events: list[str] = []
+def test_scripted_missing_notify_characteristic_is_fire_and_forget(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A device without a notify endpoint still accepts public commands."""
+    transport = ScriptedTransport(notify_characteristics=False)
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
+        with caplog.at_level(logging.WARNING):
+            await device.query_status()
+        assert device.last_runtime_notification is None
+
+    asyncio.run(run())
+
+    assert transport.connections == 1
+    assert "No notify characteristic" in caplog.text
+
+
+def test_scripted_characteristic_pairing_delivers_notifications(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The family driver receives replies through the paired notify endpoint."""
+    transport = ScriptedTransport()
+    runtime_frame = bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")
+    transport.expect(90, 4, [1], respond=_respond_once(runtime_frame))
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
+        await device.query_status()
+        assert device.last_runtime_notification == RuntimeNotification(27, 511, runtime_frame)
+
+    asyncio.run(run())
+
+    assert transport.connections == 1
+    assert transport.writes[0][5] == 4
+
+
+def test_scripted_prelude_failure_disconnects_temporary_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed connection prelude does not leave a scripted session open."""
+    transport = ScriptedTransport()
+    transport.expect(90, 4, [1], fail=True)
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
+        with pytest.raises(BleakError, match="scripted write failure"):
+            await device.query_status()
+
+    asyncio.run(run())
+
+    assert transport.connections == 3
+    assert not transport.is_connected
+
+
+def test_scripted_batch_writes_keep_vendor_pacing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A public multi-frame command preserves the transport batch delay."""
+    from chihiros_led_control import testing as testing_module
+    from chihiros_led_control.devices import base as device_base
+
+    transport = ScriptedTransport()
+    monkeypatch.setattr(device_base, "COMMAND_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(testing_module, "BATCH_WRITE_DELAY", 0.5)
     sleeps: list[float] = []
 
-    async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+    async def capture_sleep(delay: float) -> None:
+        sleeps.append(delay)
 
-        async def ensure_connected() -> None:
-            events.append("connect")
-
-        async def execute_command(commands: list[bytes]) -> None:
-            events.append(f"send:{len(commands)}")
-
-        async def capture_sleep(delay: float) -> None:
-            sleeps.append(delay)
-
-        device._ensure_connected = ensure_connected  # type: ignore[method-assign]
-        device._execute_command_locked = execute_command  # type: ignore[method-assign]
-        device._execute_disconnect = _recording_stub("disconnect", events)  # type: ignore[method-assign]
-        original_sleep = asyncio.sleep
-        asyncio.sleep = capture_sleep  # type: ignore[method-assign]
-
-        try:
-            await device._send_command([b"\x01", b"\x02"])  # noqa: SLF001
-        finally:
-            asyncio.sleep = original_sleep  # type: ignore[method-assign]
-
-    asyncio.run(run())
-
-    assert events == ["connect", "send:2"]
-    assert sleeps == [0.5]
-
-
-def test_idle_disconnect_timer_ignores_stale_generation() -> None:
-    """A refreshed idle timer cannot tear down the current connection."""
+    monkeypatch.setattr(asyncio, "sleep", capture_sleep)
 
     async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
-        client = SimpleNamespace(is_connected=True)
-        device._client = client  # type: ignore[assignment]  # noqa: SLF001
-        device._schedule_disconnect_timer()  # noqa: SLF001
-        stale_generation = device._disconnect_timer_generation  # noqa: SLF001
-        device._schedule_disconnect_timer()  # noqa: SLF001
-        current_generation = device._disconnect_timer_generation  # noqa: SLF001
-        assert current_generation != stale_generation
-        device._disconnect_after_timeout(stale_generation, client)  # noqa: SLF001
-        assert device._disconnect_timer is not None  # noqa: SLF001
-
-        calls: list[tuple[int, object]] = []
-
-        async def timed_disconnect(generation: int, current_client: object) -> None:
-            calls.append((generation, current_client))
-
-        device._execute_timed_disconnect = timed_disconnect  # type: ignore[method-assign]
-        device._disconnect_after_timeout(current_generation, client)  # noqa: SLF001
-        await asyncio.sleep(0)
-        assert calls == [(current_generation, client)]
-        device._cancel_disconnect_timer()  # noqa: SLF001
-
-    asyncio.run(run())
-
-
-def test_concurrent_commands_serialize_operations() -> None:
-    """Concurrent callers cannot interleave their operations."""
-    events: list[str] = []
-
-    async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
-
-        async def connect() -> None:
-            events.append("connect")
-
-        async def write(commands: list[bytes]) -> None:
-            events.append(f"write:{commands[0].hex()}")
-            await asyncio.sleep(0)
-
-        async def disconnect() -> None:
-            events.append("disconnect")
-
-        device._ensure_connected = connect  # type: ignore[method-assign]
-        device._execute_command_locked = write  # type: ignore[method-assign]
-        device._execute_disconnect = disconnect  # type: ignore[method-assign]
-        await asyncio.gather(
-            device._send_command(b"\x01", retry=1, notification_wait=0),
-            device._send_command(b"\x02", retry=1, notification_wait=0),
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
         )
-
-    asyncio.run(run())
-    assert events == ["connect", "write:01", "connect", "write:02"]
-
-
-def _retry_write_stub(failures: int, writes: list[int]) -> Callable[[list[bytes]], Awaitable[None]]:
-    """Create an async write stub failing the first ``failures`` calls."""
-
-    async def write(_commands: list[bytes]) -> None:
-        writes[0] += 1
-        if writes[0] <= failures:
-            raise BleakError("temporary")
-
-    return write
-
-
-@pytest.mark.parametrize("failures", [1, 3])
-def test_transient_write_retry_reconnects_and_exhausts(failures: int) -> None:
-    """Every transient retry reconnects, while successful attempts remain open."""
-    connects = 0
-    disconnects = 0
-    writes = [0]
-
-    async def run() -> None:
-        nonlocal connects, disconnects
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
-
-        async def connect() -> None:
-            nonlocal connects
-            connects += 1
-
-        async def disconnect() -> None:
-            nonlocal disconnects
-            disconnects += 1
-
-        device._ensure_connected = connect  # type: ignore[method-assign]
-        device._execute_command_locked = _retry_write_stub(failures, writes)  # type: ignore[method-assign]
-        device._execute_disconnect = disconnect  # type: ignore[method-assign]
-        if failures == 3:
-            with pytest.raises(BleakError, match="temporary"):
-                await device._send_command(b"x", retry=3, notification_wait=0)
-        else:
-            await device._send_command(b"x", retry=3, notification_wait=0)
-
-    asyncio.run(run())
-    attempts = min(failures + 1, 3)
-    assert (connects, disconnects, writes[0]) == (attempts, min(failures, 3), attempts)
-
-
-def test_missing_characteristics_and_prelude_failure_clean_up_connection() -> None:
-    """Connection setup failures disconnect the temporary client and clear state."""
-
-    class FakeClient:
-        is_connected = True
-        services = SimpleNamespace(get_characteristic=lambda _uuid: None)
-
-        async def get_services(self) -> object:
-            return self.services
-
-        async def disconnect(self) -> None:
-            self.is_connected = False
-
-    async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
-        client = FakeClient()
-        with patch("chihiros_led_control.client.establish_connection", return_value=client):
-            with pytest.raises(CharacteristicMissingError):
-                await device._ensure_connected()  # noqa: SLF001
-        assert not client.is_connected
-        assert device._client is None  # noqa: SLF001
+        await device.set_brightness({"white": 40})
 
     asyncio.run(run())
 
-
-class _PreludeFailureClient:
-    """Fake client whose first write fails during the connection prelude."""
-
-    is_connected = True
-    services = SimpleNamespace(get_characteristic=lambda uuid: SimpleNamespace(uuid=uuid))
-    stopped = False
-
-    async def start_notify(self, *_args: object) -> None:
-        return None
-
-    async def write_gatt_char(self, *_args: object) -> None:
-        raise BleakError("prelude failed")
-
-    async def stop_notify(self, _char: object) -> None:
-        self.stopped = True
-
-    async def disconnect(self) -> None:
-        self.is_connected = False
+    assert sleeps == [0.5, 0.5, 0.5]
+    assert [frame[5] for frame in transport.writes] == [4, 9, 9, 5, 7]
 
 
-def _services_with(uuids: list[str]) -> SimpleNamespace:
-    """Fake service collection exposing one lowercase-UUID characteristic per entry."""
-    characteristics = {uuid.lower(): SimpleNamespace(uuid=uuid.lower()) for uuid in uuids}
-    return SimpleNamespace(get_characteristic=lambda uuid: characteristics.get(uuid.lower()))
-
-
-def test_notify_pairing_nordic_write_ignores_dfu_characteristic() -> None:
-    """Nordic UART devices subscribe to 6e400003 even when 8ec90003 (DFU) exists.
-
-    Regression test for issue #116: the WRGB II Slim exposes the Nordic Secure
-    DFU buttonless characteristic (8ec90003-…) next to the Nordic UART service;
-    a global preference for it subscribes to the wrong endpoint and the device
-    never sends notifications.
-    """
-
-    async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WRGB_CHANNELS))  # type: ignore[arg-type]
-        services = _services_with([UART_RX_CHAR_UUID, UART_TX_CHAR_UUID, CUSTOM_NOTIFY_CHAR_UUID])
-        resolved = device._resolve_characteristics(services)  # noqa: SLF001
-        assert resolved
-        assert device._write_char is not None  # noqa: SLF001
-        assert device._write_char.uuid == UART_RX_CHAR_UUID.lower()  # noqa: SLF001
-        assert device._read_char is not None  # noqa: SLF001
-        assert device._read_char.uuid == UART_TX_CHAR_UUID.lower()  # noqa: SLF001
-
-    asyncio.run(run())
-
-
-def test_notify_pairing_nordic_write_without_uart_tx_is_fire_and_forget() -> None:
-    """A Nordic write characteristic never falls back to 8ec90003 (DFU endpoint)."""
-
-    async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WRGB_CHANNELS))  # type: ignore[arg-type]
-        services = _services_with([UART_RX_CHAR_UUID, CUSTOM_NOTIFY_CHAR_UUID])
-        resolved = device._resolve_characteristics(services)  # noqa: SLF001
-        assert resolved
-        assert device._read_char is None  # noqa: SLF001
-
-    asyncio.run(run())
-
-
-def test_notify_pairing_hm10_write_prefers_custom_notify() -> None:
-    """Classic HM-10 devices prefer 8ec90003 for notifications, as the app does."""
-
-    async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WRGB_CHANNELS))  # type: ignore[arg-type]
-        services = _services_with([HM10_RX_CHAR_UUID, CUSTOM_NOTIFY_CHAR_UUID, UART_TX_CHAR_UUID])
-        resolved = device._resolve_characteristics(services)  # noqa: SLF001
-        assert resolved
-        assert device._write_char is not None  # noqa: SLF001
-        assert device._write_char.uuid == HM10_RX_CHAR_UUID.lower()  # noqa: SLF001
-        assert device._read_char is not None  # noqa: SLF001
-        assert device._read_char.uuid == CUSTOM_NOTIFY_CHAR_UUID.lower()  # noqa: SLF001
-
-    asyncio.run(run())
-
-
-def test_notify_pairing_full_duplex_hm10_without_notify_char() -> None:
-    """Devices with full-duplex ffe1 and no notify characteristic stay fire-and-forget."""
-
-    async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WRGB_CHANNELS))  # type: ignore[arg-type]
-        services = _services_with([HM10_RX_CHAR_UUID])
-        resolved = device._resolve_characteristics(services)  # noqa: SLF001
-        assert resolved
-        assert device._read_char is None  # noqa: SLF001
-
-    asyncio.run(run())
-
-
-def test_connection_prelude_failure_cleans_up_connection() -> None:
-    """A failed startup write stops notifications and disconnects the temporary client."""
-
-    async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
-        client = _PreludeFailureClient()
-        with patch("chihiros_led_control.client.establish_connection", return_value=client):
-            with pytest.raises(BleakError, match="prelude failed"):
-                await device._ensure_connected()  # noqa: SLF001
-        assert client.stopped
-        assert not client.is_connected
-        assert device._client is None  # noqa: SLF001
-
-    asyncio.run(run())
-
-
-def test_unexpected_disconnect_aborts_command_batch() -> None:
-    """A disconnect callback between writes aborts the remaining batch."""
-
-    async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
-        device._read_char = object()  # type: ignore[assignment]  # noqa: SLF001
-        device._write_char = object()  # type: ignore[assignment]  # noqa: SLF001
-
-        class FakeClient:
-            calls = 0
-
-            async def write_gatt_char(self, *_args: object) -> None:
-                self.calls += 1
-                device._disconnected(self)  # type: ignore[arg-type]  # noqa: SLF001
-
-        client = FakeClient()
-        device._client = client  # type: ignore[assignment]  # noqa: SLF001
-        with pytest.raises(BleakError, match="unexpectedly disconnected"):
-            await device._execute_command_locked([b"one", b"two"])  # noqa: SLF001
-        assert client.calls == 1
-
-    asyncio.run(run())
-
-
-def test_disconnect_cleanup_tolerates_notification_and_disconnect_failures() -> None:
-    """Cleanup clears client state even when both BLE cleanup calls fail."""
-
-    async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
-
-        class FakeClient:
-            is_connected = True
-
-            async def stop_notify(self, _char: object) -> None:
-                raise BleakError("stop failed")
-
-            async def disconnect(self) -> None:
-                raise BleakError("disconnect failed")
-
-        device._client = FakeClient()  # type: ignore[assignment]  # noqa: SLF001
-        device._read_char = object()  # type: ignore[assignment]  # noqa: SLF001
-        await device._execute_disconnect()  # noqa: SLF001
-        assert device._client is None  # noqa: SLF001
-
-    asyncio.run(run())
-
-
-def test_notification_handler_stores_and_publishes_runtime_notification() -> None:
-    """Parsed runtime notifications are stored and sent to subscribers."""
+def test_scripted_runtime_notification_is_stored_and_published(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A runtime notification delivered by transport reaches subscribers."""
     received: list[RuntimeNotification] = []
-    frame = bytearray.fromhex("5b170a00010a01ffffffffff13888c")
+    frame = bytes.fromhex("5b170a00010a01ffffffffff13888c")
+    transport = ScriptedTransport()
+    transport.expect(90, 4, [1], respond=_respond_once(frame))
+    _fast_waits(monkeypatch)
 
     async def run() -> ChihirosDevice:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         device.add_notification_callback(received.append)
-        device._notification_handler(None, frame)  # type: ignore[arg-type]
+        await device.query_status()
         return device
 
     device = asyncio.run(run())
-    assert device.last_runtime_notification == RuntimeNotification(
-        firmware_version=23,
-        runtime_minutes=511,
-        raw=bytes(frame),
-    )
+    assert device.last_runtime_notification == RuntimeNotification(23, 511, frame)
     assert received == [device.last_runtime_notification]
 
 
-def test_notification_handler_stores_and_publishes_schedule_snapshot() -> None:
-    """Parsed schedule notifications are stored and sent to subscribers."""
+def test_scripted_schedule_notification_is_stored_and_published(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A schedule snapshot delivered by transport reaches subscribers."""
     received: list[ScheduleSnapshotNotification] = []
+    frame = bytes(framed([0x5B, 0x17, 0, 0, 1, 0xFE, *([0] * 19), 8, 0, 50]))
+    transport = ScriptedTransport()
+    transport.expect(90, 4, [1], respond=_respond_once(frame))
+    _fast_waits(monkeypatch)
 
     async def run() -> ChihirosDevice:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
-        device.add_notification_callback(received.append)
-        device._notification_handler(
-            None,  # type: ignore[arg-type]
-            framed([0x5B, 0x17, 0, 0, 1, 0xFE, *([0] * 19), 8, 0, 50]),
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
         )
+        device.add_notification_callback(received.append)
+        await device.query_status()
         return device
 
     device = asyncio.run(run())
@@ -574,24 +437,27 @@ def test_notification_handler_stores_and_publishes_schedule_snapshot() -> None:
     assert received == [device.last_schedule_snapshot_notification]
 
 
-def test_notification_handler_stores_and_publishes_fan_status() -> None:
-    """Parsed fan status notifications are stored and sent to subscribers."""
+def test_scripted_fan_notification_is_stored_and_published(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fan status delivered by transport reaches subscribers."""
     received: list[FanStatusNotification] = []
-    frame = bytearray.fromhex("5b 1b 10 00 01 0b 02 58 19 00 01 00 00 00 00 00 48 22")
+    frame = bytes.fromhex("5b 1b 10 00 01 0b 02 58 19 00 01 00 00 00 00 00 48 22")
+    transport = ScriptedTransport()
+    transport.expect(90, 4, [1], respond=_respond_once(frame))
+    _fast_waits(monkeypatch)
 
     async def run() -> ChihirosDevice:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WRGB_CHANNELS, has_fan=True))  # type: ignore[arg-type]
+        model = DeviceModel(
+            "Test",
+            (),
+            LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25),
+        )
+        device = ChihirosDevice(ScriptedBLEDevice(transport.name, transport.address), model, transport=transport)
         device.add_notification_callback(received.append)
-        device._notification_handler(None, frame)  # type: ignore[arg-type]
+        await device.query_status()
         return device
 
     device = asyncio.run(run())
-    assert device.last_fan_status_notification == FanStatusNotification(
-        firmware_version=27,
-        fan_rpm=600,
-        temperature_celsius=25,
-        raw=bytes(frame),
-    )
+    assert device.last_fan_status_notification == FanStatusNotification(27, 600, 25, frame)
     assert received == [device.last_fan_status_notification]
 
 
@@ -599,7 +465,7 @@ def test_set_fan_speed_rejects_models_without_fan() -> None:
     """Fan control is limited to fan-equipped models."""
 
     async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="fan"):
             await device.set_fan_speed(50)
 
@@ -611,7 +477,7 @@ def test_set_brightness_sends_all_true_wrgb_channels() -> None:
     sent_commands: list[list[bytes]] = []
 
     async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test WRGB", (), WRGB_CHANNELS))  # type: ignore[arg-type]
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test WRGB", (), LedSpec(WRGB_CHANNELS)))  # type: ignore[arg-type]
 
         async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
             del retry
@@ -635,42 +501,29 @@ def test_set_brightness_sends_all_true_wrgb_channels() -> None:
     ]
 
 
-def test_set_brightness_accepts_channel_mapping() -> None:
-    """Brightness commands can target a named channel."""
-    sent_commands: list[list[bytes]] = []
-
-    async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test WRGB", (), WRGB_CHANNELS))  # type: ignore[arg-type]
-
-        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del retry
-            assert isinstance(command, list)
-            sent_commands.append([bytes(item) for item in command])
-
-        device._send_command = capture_command  # type: ignore[method-assign]
-
-        await device.set_brightness({"white": 40})
-
-    asyncio.run(run())
-
-    assert [[command[5] for command in batch] for batch in sent_commands] == [[5, 7]]
-    assert [[command[6:8] for command in batch[1:]] for batch in sent_commands] == [[bytes([3, 40])]]
-
-
-def test_notification_callback_failure_does_not_block_other_subscribers() -> None:
+def test_notification_callback_failure_does_not_block_other_subscribers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """One failing notification subscriber does not prevent later subscribers."""
     received: list[RuntimeNotification] = []
+    frame = bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")
+    transport = ScriptedTransport()
+    transport.expect(90, 4, [1], respond=_respond_once(frame))
+    _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
 
         def fail(_notification: RuntimeNotification) -> None:
             raise RuntimeError("subscriber failed")
 
         device.add_notification_callback(fail)
         device.add_notification_callback(received.append)
-        notification = RuntimeNotification(firmware_version=1, runtime_minutes=2, raw=b"test")
-        device._notify_callbacks(notification)  # noqa: SLF001
+        await device.query_status()
 
     asyncio.run(run())
 
@@ -682,7 +535,7 @@ def test_add_setting_sends_four_channel_brightness() -> None:
     sent_commands: list[bytes] = []
 
     async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test WRGB", (), WRGB_CHANNELS))  # type: ignore[arg-type]
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test WRGB", (), LedSpec(WRGB_CHANNELS)))  # type: ignore[arg-type]
 
         async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
             del retry
@@ -706,7 +559,7 @@ def test_add_setting_uses_white_channel_for_true_wrgb_models() -> None:
     sent_commands: list[bytes] = []
 
     async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test WRGB", (), WRGB_CHANNELS))  # type: ignore[arg-type]
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test WRGB", (), LedSpec(WRGB_CHANNELS)))  # type: ignore[arg-type]
 
         async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
             del retry
@@ -730,7 +583,7 @@ def test_add_setting_uses_first_channel_when_model_has_no_white_channel() -> Non
     sent_commands: list[bytes] = []
 
     async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test RGB", (), RGB_CHANNELS))  # type: ignore[arg-type]
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))  # type: ignore[arg-type]
 
         async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
             del retry
@@ -757,11 +610,11 @@ def test_set_auto_point_sends_family_specific_encoding() -> None:
     async def run() -> None:
         bleled = ChihirosDevice(
             FakeBLEDevice(),
-            DeviceModel("Commander 4", ("DYLED",), WRGB_CHANNELS),  # type: ignore[arg-type]
+            DeviceModel("Commander 4", ("DYLED",), LedSpec(WRGB_CHANNELS)),  # type: ignore[arg-type]
         )
         sealed = ChihirosDevice(
             FakeBLEDevice(),
-            DeviceModel("Commander 4", ("DYNLED",), WRGB_CHANNELS, sea_led_family=True),  # type: ignore[arg-type]
+            DeviceModel("Commander 4", ("DYNLED",), LedSpec(WRGB_CHANNELS, protocol=LedProtocol.SEA_LED)),  # type: ignore[arg-type]
         )
 
         async def capture_bleled(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
@@ -792,7 +645,7 @@ def test_set_auto_point_rejects_out_of_range_channel() -> None:
     """Auto curve points validate the channel against the model layout."""
 
     async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Commander X", ("DYONE",), WHITE_CHANNELS))  # type: ignore[arg-type]
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Commander X", ("DYONE",), LedSpec(WHITE_CHANNELS)))  # type: ignore[arg-type]
 
         with pytest.raises(ValueError, match="Channel"):
             await device.set_auto_point(1, 60, 50)
@@ -807,7 +660,7 @@ def test_set_auto_curve_sends_all_points_in_one_transaction() -> None:
     async def run() -> None:
         device = ChihirosDevice(
             FakeBLEDevice(),
-            DeviceModel("Commander 4", ("DYNLED",), WRGB_CHANNELS, sea_led_family=True),  # type: ignore[arg-type]
+            DeviceModel("Commander 4", ("DYNLED",), LedSpec(WRGB_CHANNELS, protocol=LedProtocol.SEA_LED)),  # type: ignore[arg-type]
         )
 
         async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
@@ -834,7 +687,7 @@ def test_set_auto_curve_rejects_empty_or_out_of_range_points() -> None:
     async def run() -> None:
         device = ChihirosDevice(
             FakeBLEDevice(),
-            DeviceModel("Commander 4", ("DYNLED",), WRGB_CHANNELS, sea_led_family=True),  # type: ignore[arg-type]
+            DeviceModel("Commander 4", ("DYNLED",), LedSpec(WRGB_CHANNELS, protocol=LedProtocol.SEA_LED)),  # type: ignore[arg-type]
         )
         dosing = ChihirosDevice(FakeBLEDevice(), DOSING_PUMP)  # type: ignore[arg-type]
 
@@ -855,7 +708,7 @@ def test_set_manual_mode_sends_mode_switch_command() -> None:
     sent_commands: list[bytes] = []
 
     async def run() -> None:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), WHITE_CHANNELS))  # type: ignore[arg-type]
+        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))  # type: ignore[arg-type]
 
         async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
             del retry
@@ -877,7 +730,7 @@ def test_set_fan_speed_clamps_below_model_minimum() -> None:
     async def run() -> None:
         device = ChihirosDevice(
             FakeBLEDevice(),
-            DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, min_fan_speed=25),  # type: ignore[arg-type]
+            DeviceModel("VIVID3", (), LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25)),  # type: ignore[arg-type]
         )
 
         async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
@@ -895,53 +748,76 @@ def test_set_fan_speed_clamps_below_model_minimum() -> None:
     assert [command[6] for command in sent_commands] == [25, 0, 30]
 
 
-def test_notification_handler_stores_and_publishes_dosing_totals() -> None:
-    """Parsed dosing totals are stored and sent to subscribers."""
-    received: list[DosingTotalsNotification] = []
-    frame = bytearray([0x5B, 0x10, 0x10, 0x00, 0x01, 0x1E, 0x04, 0x1F, 0x00, 0x00])
+def test_dosing_notification_state_starts_empty() -> None:
+    """Dosing notification attributes exist before the first device reply."""
+    device = ChihirosDosingPump(FakeBLEDevice(), DOSING_PUMP)  # type: ignore[arg-type]
 
-    async def run() -> ChihirosDevice:
-        device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
+    assert device.last_dosing_totals_notification is None
+    assert device.last_dosing_daily_notification is None
+
+
+def test_scripted_dosing_totals_notification_is_stored_and_published(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dosing totals notification delivered by transport reaches subscribers."""
+    received: list[DosingTotalsNotification] = []
+    frame = bytes([0x5B, 0x10, 0x10, 0x00, 0x01, 0x1E, 0x04, 0x1F, 0x00, 0x00])
+    transport = ScriptedTransport(name="DYDOSE-test")
+    transport.expect(90, 4, [1], respond=_respond_once(frame))
+    _fast_waits(monkeypatch)
+
+    async def run() -> ChihirosDosingPump:
+        device = ChihirosDosingPump(
+            ScriptedBLEDevice(transport.name, transport.address), DOSING_PUMP, transport=transport
+        )
         device.add_notification_callback(received.append)
-        device._notification_handler(None, frame)  # type: ignore[arg-type]
+        await device.query_status()
         return device
 
     device = asyncio.run(run())
-    assert device.last_dosing_totals_notification == DosingTotalsNotification(
-        total_dosed_ul=(105500, 0),
-        raw=bytes(frame),
-    )
+    assert device.last_dosing_totals_notification == DosingTotalsNotification((105500, 0), frame)
     assert received == [device.last_dosing_totals_notification]
 
 
-def test_notification_handler_stores_and_publishes_dosing_daily() -> None:
-    """Parsed dosing daily counters are stored and sent to subscribers."""
+def test_scripted_dosing_daily_notification_is_stored_and_published(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dosing daily notification delivered by transport reaches subscribers."""
     received: list[DosingDailyNotification] = []
-    frame = bytearray([0x5B, 0x10, 0x0E, 0x00, 0x01, 0x22, 0x00, 0x64, 0x01, 0x90])
+    frame = bytes([0x5B, 0x10, 0x0E, 0x00, 0x01, 0x22, 0x00, 0x64, 0x01, 0x90])
+    transport = ScriptedTransport(name="DYDOSE-test")
+    transport.expect(90, 4, [1], respond=_respond_once(frame))
+    _fast_waits(monkeypatch)
 
-    async def run() -> ChihirosDevice:
-        device = ChihirosDosingPump(FakeBLEDevice(), DeviceModel("Dosing Pump", (), {}))  # type: ignore[arg-type]
+    async def run() -> ChihirosDosingPump:
+        device = ChihirosDosingPump(
+            ScriptedBLEDevice(transport.name, transport.address), DOSING_PUMP, transport=transport
+        )
         device.add_notification_callback(received.append)
-        device._notification_handler(None, frame)  # type: ignore[arg-type]
+        await device.query_status()
         return device
 
     device = asyncio.run(run())
-    assert device.last_dosing_daily_notification == DosingDailyNotification(
-        dose_use_in_day_ul=(10000, 40000),
-        raw=bytes(frame),
-    )
+    assert device.last_dosing_daily_notification == DosingDailyNotification((10000, 40000), frame)
     assert received == [device.last_dosing_daily_notification]
 
 
-def test_notification_handler_ignores_fan_readout_on_non_fan_model() -> None:
-    """0x5B/0x0B fan readout frames are ignored on models without a fan."""
+def test_scripted_fan_notification_is_ignored_on_non_fan_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fan readout delivered to a model without fan support is ignored."""
     received: list[FanStatusNotification] = []
-    frame = bytearray([0x5B, 0x1B, 0x10, 0x00, 0x01, 0x0B, 0x02, 0x58, 25])
+    frame = bytes([0x5B, 0x1B, 0x10, 0x00, 0x01, 0x0B, 0x02, 0x58, 25])
+    transport = ScriptedTransport()
+    transport.expect(90, 4, [1], respond=_respond_once(frame))
+    _fast_waits(monkeypatch)
 
     async def run() -> ChihirosDevice:
-        device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test", (), RGB_CHANNELS))  # type: ignore[arg-type]
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(RGB_CHANNELS)),
+            transport=transport,
+        )
         device.add_notification_callback(received.append)
-        device._notification_handler(None, frame)  # type: ignore[arg-type]
+        await device.query_status()
         return device
 
     device = asyncio.run(run())
@@ -956,7 +832,7 @@ def test_set_fan_auto_sends_auto_mode_command() -> None:
     async def run() -> None:
         device = ChihirosDevice(
             FakeBLEDevice(),
-            DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, min_fan_speed=25),  # type: ignore[arg-type]
+            DeviceModel("VIVID3", (), LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25)),  # type: ignore[arg-type]
         )
         assert device.fan_auto is False
 
@@ -980,7 +856,7 @@ def test_set_fan_speed_clears_fan_auto_mode() -> None:
     async def run() -> None:
         device = ChihirosDevice(
             FakeBLEDevice(),
-            DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, min_fan_speed=25),  # type: ignore[arg-type]
+            DeviceModel("VIVID3", (), LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25)),  # type: ignore[arg-type]
         )
 
         async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
@@ -1004,7 +880,7 @@ def test_set_fan_start_stop_temp_sends_command_and_stores_values() -> None:
     async def run() -> None:
         device = ChihirosDevice(
             FakeBLEDevice(),
-            DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, min_fan_speed=25),  # type: ignore[arg-type]
+            DeviceModel("VIVID3", (), LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25)),  # type: ignore[arg-type]
         )
         assert (device.fan_start_temp, device.fan_stop_temp) == (38, 33)
 
@@ -1028,7 +904,15 @@ def test_set_temp_protect_sends_command_and_tracks_state() -> None:
     async def run() -> None:
         device = ChihirosDevice(
             FakeBLEDevice(),
-            DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, is_vivid3=True),  # type: ignore[arg-type]
+            DeviceModel(
+                "VIVID3",
+                (),
+                LedSpec(
+                    WRGB_CHANNELS,
+                    features=frozenset({LedFeature.FAN, LedFeature.TEMPERATURE_PROTECTION, LedFeature.INDICATOR_LED}),
+                    min_fan_speed=25,
+                ),
+            ),  # type: ignore[arg-type]
         )
         assert device.temp_protect is False
 
@@ -1056,7 +940,15 @@ def test_set_bluetooth_led_sends_command_and_tracks_state() -> None:
     async def run() -> None:
         device = ChihirosDevice(
             FakeBLEDevice(),
-            DeviceModel("VIVID3", (), WRGB_CHANNELS, has_fan=True, is_vivid3=True),  # type: ignore[arg-type]
+            DeviceModel(
+                "VIVID3",
+                (),
+                LedSpec(
+                    WRGB_CHANNELS,
+                    features=frozenset({LedFeature.FAN, LedFeature.TEMPERATURE_PROTECTION, LedFeature.INDICATOR_LED}),
+                    min_fan_speed=25,
+                ),
+            ),  # type: ignore[arg-type]
         )
         assert device.bluetooth_led is False
 
@@ -1080,7 +972,7 @@ def test_vivid3_switches_reject_non_vivid3_models() -> None:
     async def run() -> None:
         device = ChihirosDevice(
             FakeBLEDevice(),
-            DeviceModel("Fake RGB", (), RGB_CHANNELS),  # type: ignore[arg-type]
+            DeviceModel("Fake RGB", (), LedSpec(RGB_CHANNELS)),  # type: ignore[arg-type]
         )
         for call in (device.set_temp_protect, device.set_bluetooth_led):
             try:

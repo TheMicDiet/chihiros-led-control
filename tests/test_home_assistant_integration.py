@@ -33,47 +33,51 @@ try:
     from homeassistant.exceptions import HomeAssistantError
     from homeassistant.helpers import device_registry as dr
     from homeassistant.helpers import entity_registry as er
+    from homeassistant.helpers.entity import EntityCategory
     from homeassistant.setup import async_setup_component
     from pytest_homeassistant_custom_component.common import MockConfigEntry
 
     import custom_components.chihiros as chihiros_integration
-    from custom_components.chihiros import (
-        ATTR_ADDRESS,
+    import custom_components.chihiros.coordinator as chihiros_coordinator
+    from custom_components.chihiros.const import DOMAIN
+    from custom_components.chihiros.coordinator import ChihirosDataUpdateCoordinator
+    from custom_components.chihiros.dosing import CONF_PUMP_COUNT
+    from custom_components.chihiros.dosing_services import ATTR_ML, ATTR_PUMP, SERVICE_DOSE_ML
+    from custom_components.chihiros.runtime import ChihirosRuntime
+    from custom_components.chihiros.schedule_services import (
+        ATTR_BRIGHTNESS as ATTR_SCHEDULE_BRIGHTNESS,
+    )
+    from custom_components.chihiros.schedule_services import (
         ATTR_END,
-        ATTR_ENTRY_ID,
         ATTR_LEVELS,
-        ATTR_ML,
         ATTR_PERIODS,
-        ATTR_PUMP,
         ATTR_RAMP_UP_MINUTES,
         ATTR_START,
         ATTR_WEEKDAYS,
         SERVICE_ADD_SCHEDULE,
-        SERVICE_DOSE_ML,
         SERVICE_REMOVE_SCHEDULE,
         SERVICE_RESET_SCHEDULE,
         SERVICE_SET_SCHEDULE,
     )
-    from custom_components.chihiros import (
-        ATTR_BRIGHTNESS as ATTR_SCHEDULE_BRIGHTNESS,
-    )
-    from custom_components.chihiros.const import DOMAIN
-    from custom_components.chihiros.coordinator import ChihirosDataUpdateCoordinator
-    from custom_components.chihiros.dosing import CONF_PUMP_COUNT
-    from custom_components.chihiros.runtime import ChihirosRuntime
+    from custom_components.chihiros.service_utils import ATTR_ADDRESS, ATTR_ENTRY_ID
 except ImportError as err:
     pytest.skip(
         f"Home Assistant test group is not installed or is incompatible: {err}",
         allow_module_level=True,
     )
 
-from custom_components.chihiros.vendor.chihiros_led_control.models import RGB_CHANNELS, DeviceModel
-from custom_components.chihiros.vendor.chihiros_led_control.protocol import (
-    ParsedNotification,
+from custom_components.chihiros.vendor.chihiros_led_control.models import RGB_CHANNELS, DeviceKind, DeviceModel, LedSpec
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.led import (
     RuntimeNotification,
     SchedulePoint,
     ScheduleSnapshotNotification,
 )
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.notifications import (
+    DosingDailyNotification,
+    DosingTotalsNotification,
+    ParsedNotification,
+)
+from custom_components.chihiros.vendor.chihiros_led_control.registry import DOSING_PUMP
 
 pytestmark = [
     pytest.mark.integration,
@@ -89,7 +93,7 @@ class TrackingChihirosClient:
 
     def __init__(self) -> None:
         """Initialize the tracking client."""
-        self.model = DeviceModel("Test RGB", ("TEST-RGB",), RGB_CHANNELS)
+        self.model = DeviceModel("Test RGB", ("TEST-RGB",), LedSpec(RGB_CHANNELS))
         self.last_runtime_notification: RuntimeNotification | None = None
         self.last_schedule_snapshot_notification: ScheduleSnapshotNotification | None = None
         self.query_status_calls = 0
@@ -112,6 +116,11 @@ class TrackingChihirosClient:
     def name(self) -> str:
         """Return the fake device name."""
         return "Test Chihiros"
+
+    @property
+    def device_kind(self) -> DeviceKind:
+        """Return the typed family discriminator."""
+        return self.model.device_kind
 
     @property
     def model_name(self) -> str:
@@ -232,7 +241,7 @@ class TrackingDosingClient(TrackingChihirosClient):
     def __init__(self) -> None:
         """Initialize the tracking dosing pump client."""
         super().__init__()
-        self.model = DeviceModel("Dosing Pump", ("DYDOSE",), {})
+        self.model = DOSING_PUMP
         self.calibrate_calls: list[dict[str, Any]] = []
 
     @property
@@ -430,6 +439,82 @@ async def test_manual_dose_service_updates_persisted_daily_total_sensor(
     assert hass.states.get(pump_2_sensor).state == "3.5"
     assert hass.states.get(pump_2_lifetime_ml).state == "3.5"
     assert hass.states.get(pump_2_lifetime_cycles).state == "2"
+
+
+async def test_device_reported_dosing_sensors_follow_notifications_not_local_doses(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Device readouts stay unknown until reported, independently of local totals."""
+    _entry, client = await _setup_entry(hass, monkeypatch, TrackingDosingClient(), {CONF_PUMP_COUNT: "2"})
+    registry = er.async_get(hass)
+    reported_today = _entity_id(registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_dosing_daily_ul")
+    reported_lifetime = _entity_id(registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_dosing_lifetime_ul")
+    local_today = _entity_id(registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_dosed_today")
+    assert hass.states.get(reported_today).state == "unknown"
+    assert hass.states.get(reported_lifetime).state == "unknown"
+    assert hass.states.get(reported_today).attributes["friendly_name"] == "Test Dosing Pump Pump 2 dosed today"
+    assert hass.states.get(reported_lifetime).attributes["friendly_name"] == "Test Dosing Pump Pump 2 total ml"
+    assert hass.states.get(local_today).attributes["friendly_name"] == "Test Dosing Pump Pump 2 HA manual doses today"
+    assert registry.async_get(local_today).entity_category is EntityCategory.DIAGNOSTIC
+    client._notify(DosingDailyNotification((1000, 2750)))
+    client._notify(DosingTotalsNotification((2000, 18400)))
+    await _flush_ha_state_updates()
+    assert hass.states.get(reported_today).state == "2.8"
+    assert hass.states.get(reported_lifetime).state == "18.4"
+    assert hass.states.get(local_today).state == "0.0"
+
+    assert registry.async_get_entity_id(SENSOR_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_dosing_pump_3_dosing_daily_ul") is None
+
+
+async def test_existing_dosing_counter_keeps_entity_id_when_moved_to_diagnostics(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Upgrading a configured pump moves local counters without replacing user entities."""
+    registry = er.async_get(hass)
+    unique_id = f"{TEST_ADDRESS}_dosing_pump_1_dosed_today"
+    existing = registry.async_get_or_create(SENSOR_DOMAIN, DOMAIN, unique_id, suggested_object_id="my_dosing_history")
+    assert existing.entity_category is None
+
+    await _setup_entry(hass, monkeypatch, TrackingDosingClient())
+
+    assert _entity_id(registry, SENSOR_DOMAIN, unique_id) == existing.entity_id
+    assert registry.async_get(existing.entity_id).entity_category is EntityCategory.DIAGNOSTIC
+    assert hass.states.get(existing.entity_id).state == "0.0"
+
+
+async def test_dosing_status_refresh_updates_external_doses_and_stops_on_unload(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scheduled status request picks up device changes outside local dose tracking."""
+    scheduled: list[Callable[[datetime], Any]] = []
+    canceled: list[bool] = []
+
+    def track_refresh(_hass: HomeAssistant, action: Callable[[datetime], Any], _interval: Any) -> Callable[[], None]:
+        scheduled.append(action)
+        return lambda: canceled.append(True)
+
+    monkeypatch.setattr(chihiros_coordinator, "async_track_time_interval", track_refresh)
+    entry, client = await _setup_entry(hass, monkeypatch, TrackingDosingClient())
+    registry = er.async_get(hass)
+    reported_today = _entity_id(registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_1_dosing_daily_ul")
+    local_today = _entity_id(registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_1_dosed_today")
+
+    async def query_device_status() -> None:
+        client._notify(DosingDailyNotification((4500,)))
+        client._notify(DosingTotalsNotification((12500,)))
+
+    monkeypatch.setattr(client, "query_status", query_device_status)
+    assert len(scheduled) == 1
+    await scheduled[0](datetime.now())
+    await _flush_ha_state_updates()
+    assert hass.states.get(reported_today).state == "4.5"
+    assert hass.states.get(local_today).state == "0.0"
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert canceled == [True]
 
 
 async def test_two_channel_dosing_pump_creates_two_sensors_and_rejects_pump_three(

@@ -40,12 +40,15 @@ except ImportError as err:
 from custom_components.chihiros.vendor.chihiros_led_control.models import (
     RGB_CHANNELS,
     WRGB_CHANNELS,
+    DeviceKind,
     DeviceModel,
+    LedFeature,
+    LedSpec,
 )
-from custom_components.chihiros.vendor.chihiros_led_control.protocol import (
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.led import (
     FanStatusNotification,
-    ParsedNotification,
 )
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.notifications import ParsedNotification
 
 pytestmark = [
     pytest.mark.integration,
@@ -54,8 +57,10 @@ pytestmark = [
 ]
 
 TEST_ADDRESS = "FA:CE:C0:00:20:01"
-FAN_MODEL = DeviceModel("WRGB VIVID III", ("DYVVD3",), WRGB_CHANNELS, has_fan=True)
-RGB_MODEL = DeviceModel("Test RGB", ("TEST-RGB",), RGB_CHANNELS)
+FAN_MODEL = DeviceModel(
+    "WRGB VIVID III", ("DYVVD3",), LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25)
+)
+RGB_MODEL = DeviceModel("Test RGB", ("TEST-RGB",), LedSpec(RGB_CHANNELS))
 
 
 class _TrackingClient:
@@ -79,6 +84,10 @@ class _TrackingClient:
     @property
     def name(self) -> str:
         return "Test Chihiros"
+
+    @property
+    def device_kind(self) -> DeviceKind:
+        return self.model.device_kind
 
     @property
     def model_name(self) -> str:

@@ -1,26 +1,28 @@
 """Scripted BLE transport for exercising the device client without hardware.
 
-The scripted transport replaces ``chihiros_led_control.client.establish_connection``
-with an in-memory GATT connection. Command frames written by the real
-``ChihirosDevice`` are recorded and matched against registered rules; matching
-rules deliver notification frames through the normal notification handler, so
-message-id sequencing, the connection prelude, notification parsing, and retry
-logic all run against scripted bytes.
+ScriptedTransport subclasses the production BleTransport and substitutes only
+the BLE client. Command frames written by a family device are recorded and
+matched against registered rules; matching rules deliver notification frames
+through the normal notification handler, so message-id sequencing, the
+connection prelude, notification parsing, and retry logic run against scripted bytes.
 
 Example::
 
     import asyncio
 
-    from chihiros_led_control.client import ChihirosDevice
-    from chihiros_led_control.models import WHITE_CHANNELS, DeviceModel
-    from chihiros_led_control.testing import ScriptedTransport
+    from chihiros_led_control.devices.led import ChihirosDevice
+    from chihiros_led_control.models import WHITE_CHANNELS, DeviceModel, LedSpec
+    from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
 
     async def run() -> None:
         transport = ScriptedTransport()
         transport.expect(90, 4, [1], respond=[bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")])
-        device = transport.make_device(DeviceModel("Test", (), WHITE_CHANNELS))
-        with transport.patch_establish_connection():
-            await device.query_status()
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
+        await device.query_status()
         print(device.last_runtime_notification)
         print([command.hex() for command in transport.writes])
 
@@ -30,23 +32,21 @@ Example::
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import cast
 
 from bleak_retry_connector import BleakClientWithServiceCache, BleakError
 
-from . import client as _client_module
 from .const import (
     CUSTOM_NOTIFY_CHAR_UUID,
     HM10_RX_CHAR_UUID,
     UART_RX_CHAR_UUID,
     UART_TX_CHAR_UUID,
 )
-from .models import DOSING_PUMP, FALLBACK, DeviceModel
+from .transport import BATCH_WRITE_DELAY, BleTransport, PreludeCallback
 
 NotificationHandler = Callable[[object, bytearray], None]
-DisconnectedCallback = Callable[[BleakClientWithServiceCache], None]
+DisconnectedCallback = Callable[[object], None]
 
 # Sentinel returned by the responder for rules marked ``fail``.
 _FAIL = object()
@@ -241,8 +241,8 @@ class _ScriptedBleClient:
             callback(self)
 
 
-class ScriptedTransport:
-    """Bundle a scripted responder, GATT client, and ``establish_connection`` stand-in."""
+class ScriptedTransport(BleTransport):
+    """Scripted BLE client using the production transport lifecycle."""
 
     def __init__(
         self,
@@ -250,23 +250,30 @@ class ScriptedTransport:
         name: str = "DYNA2-test",
         address: str = "AA:BB:CC:DD:EE:FF",
         notify_characteristics: bool = True,
+        notification_callback: NotificationHandler | None = None,
+        prelude_callback: PreludeCallback | None = None,
     ) -> None:
-        """Initialize a transport with a fresh responder and client.
-
-        ``notify_characteristics=False`` omits the notify endpoints the app
-        subscribes to, emulating devices that force the client into
-        fire-and-forget mode.
-        """
-        self.name = name
+        """Initialize a scripted responder and BLE session factory."""
         self.address = address
+        self._notify_characteristics = notify_characteristics
         self.responder = ScriptedResponder()
         self.connections = 0
-        self._client = _ScriptedBleClient(self.responder, include_notify=notify_characteristics)
+        self.clients: list[_ScriptedBleClient] = []
+        super().__init__(
+            ScriptedBLEDevice(name, address),  # type: ignore[arg-type]
+            notification_callback=notification_callback,
+            prelude_callback=prelude_callback,
+        )
 
     @property
     def writes(self) -> list[bytes]:
-        """Return every command frame the device client has written."""
+        """Return every command frame written by this transport."""
         return self.responder.writes
+
+    @property
+    def batch_write_delay(self) -> float:
+        """Return the scriptable production pacing interval."""
+        return BATCH_WRITE_DELAY
 
     def expect(
         self,
@@ -280,36 +287,10 @@ class ScriptedTransport:
         """Register a scripted reply for matching command frames."""
         self.responder.expect(cmd_id, cmd_mode, params, respond=respond, fail=fail)
 
-    def make_device(self, model: DeviceModel = FALLBACK) -> _client_module.ChihirosDevice:
-        """Create a device client bound to this scripted transport.
-
-        Must be called inside a running asyncio loop (like the real client).
-        """
-        return _client_module.ChihirosDevice(ScriptedBLEDevice(self.name, self.address), model)
-
-    def make_pump(self, model: DeviceModel = DOSING_PUMP) -> _client_module.ChihirosDosingPump:
-        """Create a dosing pump client bound to this scripted transport."""
-        return _client_module.ChihirosDosingPump(ScriptedBLEDevice(self.name, self.address), model)
-
-    async def connect(
-        self,
-        _client_class: type[Any],
-        _ble_device: object,
-        _name: str,
-        disconnected_callback: DisconnectedCallback,
-        **_kwargs: object,
-    ) -> _ScriptedBleClient:
-        """Act as ``establish_connection`` for the device client."""
+    async def _establish_ble_client(self) -> BleakClientWithServiceCache:
+        """Create the next scripted BLE session for production setup to configure."""
+        client = _ScriptedBleClient(self.responder, include_notify=self._notify_characteristics)
+        client.attach(self._disconnected)
+        self.clients.append(client)
         self.connections += 1
-        self._client.attach(disconnected_callback)
-        return self._client
-
-    @contextmanager
-    def patch_establish_connection(self) -> "ScriptedTransport":
-        """Context manager routing client connections through this transport."""
-        original = _client_module.establish_connection
-        _client_module.establish_connection = self.connect  # type: ignore[method-assign]
-        try:
-            yield self
-        finally:
-            _client_module.establish_connection = original
+        return cast(BleakClientWithServiceCache, client)

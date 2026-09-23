@@ -14,8 +14,8 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .vendor.chihiros_led_control.commands import DosingWorkPoint
-from .vendor.chihiros_led_control.models import DOSING_PUMP
+from .vendor.chihiros_led_control.models import DeviceKind
+from .vendor.chihiros_led_control.protocol.dosing import DosingWorkPoint
 
 STORAGE_KEY = f"{DOMAIN}_dosing_daily_totals"
 STORAGE_VERSION = 1
@@ -223,7 +223,8 @@ class DosingCalibrationTracker:
 
 def is_dosing_capable(device: object) -> bool:
     """Return whether a runtime client or model supports manual dosing."""
-    return getattr(device, "model_name", getattr(device, "name", None)) == DOSING_PUMP.name
+    candidate = getattr(device, "device_kind", None)
+    return candidate is DeviceKind.DOSING_PUMP or candidate == DeviceKind.DOSING_PUMP.value
 
 
 @dataclass
