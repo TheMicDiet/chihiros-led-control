@@ -126,6 +126,11 @@ class BleTransport:
         """Return whether an active BLE client exists."""
         return bool(self._client and self._client.is_connected)
 
+    @property
+    def batch_write_delay(self) -> float:
+        """Return the pacing interval between frames in one batch."""
+        return BATCH_WRITE_DELAY
+
     def set_callbacks(
         self,
         *,
@@ -221,7 +226,17 @@ class BleTransport:
         self._logger.debug("%s: Connecting; RSSI: %s", self.name, self.rssi)
         self._expected_disconnect = False
         self._unexpected_disconnect.clear()
-        client = await establish_connection(
+        client = await self._establish_ble_client()
+        self._logger.debug("%s: Connected; RSSI: %s", self.name, self.rssi)
+        try:
+            await self._configure_client(client)
+        except Exception:
+            await self._abort_connection(client)
+            raise
+
+    async def _establish_ble_client(self) -> BleakClientWithServiceCache:
+        """Open one BLE connection using the retry connector."""
+        return await establish_connection(
             BleakClientWithServiceCache,
             self.ble_device,
             self.name,
@@ -229,12 +244,6 @@ class BleTransport:
             use_services_cache=True,
             ble_device_callback=lambda: self.ble_device,
         )
-        self._logger.debug("%s: Connected; RSSI: %s", self.name, self.rssi)
-        try:
-            await self._configure_client(client)
-        except Exception:
-            await self._abort_connection(client)
-            raise
 
     async def _configure_client(self, client: BleakClientWithServiceCache) -> None:
         """Resolve endpoints, subscribe to notifications, and lazily send prelude."""
@@ -326,7 +335,7 @@ class BleTransport:
         for index, frame in enumerate(frames):
             await self._write_frame(client, write_char, frame)
             if index < len(frames) - 1:
-                await asyncio.sleep(BATCH_WRITE_DELAY)
+                await asyncio.sleep(self.batch_write_delay)
 
     async def _write_frame(
         self,

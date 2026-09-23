@@ -201,6 +201,25 @@ async def test_async_start_bluetooth_is_idempotent(
     assert starts == [True]
 
 
+async def test_bluetooth_callbacks_update_device_availability(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bluetooth advertisements restore availability and unavailable events clear it."""
+    from types import SimpleNamespace
+
+    from homeassistant.components.bluetooth import BluetoothChange
+
+    _entry, client, coordinator = await _setup(hass, monkeypatch)
+    coordinator._available = False
+
+    coordinator._async_handle_bluetooth_event(None, BluetoothChange.ADVERTISEMENT)
+    assert coordinator.available is True
+
+    coordinator._async_handle_unavailable(SimpleNamespace(time=1.0, name=client.name))
+    assert coordinator.available is False
+
+
 async def test_async_close_unregisters_callbacks_and_drops_notifications(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,

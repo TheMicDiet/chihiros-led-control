@@ -20,6 +20,7 @@ from .fake import create_fake_device, fake_devices_enabled, is_fake_address
 from .vendor.chihiros_led_control import create_device, needs_device_type
 from .vendor.chihiros_led_control.exceptions import UnsupportedDeviceError
 from .vendor.chihiros_led_control.models import DeviceKind, DeviceModel, LedFeature, LedSpec
+from .vendor.chihiros_led_control.protocol.dosing import DosingMode, DosingWorkPoint
 from .vendor.chihiros_led_control.protocol.notifications import (
     DosingDailyNotification,
     DosingTotalsNotification,
@@ -202,6 +203,19 @@ class StirrerChihirosClient(BaseChihirosClient, Protocol):
         speed: int = 40,
         *,
         restart: bool = False,
+    ) -> None: ...
+
+    async def program_channel(
+        self,
+        channel: int,
+        *,
+        active: bool,
+        compensate: bool = False,
+        dose_per_day_ml: float | None = None,
+        frequency: int = 127,
+        is_first_setting: bool = True,
+        mode: DosingMode | None = None,
+        points: Sequence[DosingWorkPoint] = (),
     ) -> None: ...
 
     async def set_stir_schedule(

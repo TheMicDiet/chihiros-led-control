@@ -178,15 +178,11 @@ Remove the heater’s dependency on the transport’s private operation lock. He
 
 ### Convert `ScriptedTransport`
 
-Change `src/chihiros_led_control/testing.py` so `ScriptedTransport` implements `ChihirosTransport` directly.
+Change `ScriptedTransport` to subclass `BleTransport` and supply only a
+scripted BLE client for connection setup. Production `BleTransport` must own
+retry, locking, notifications, write pacing, and disconnect lifecycle.
 
-Remove:
-
-```python
-ScriptedTransport()
-```
-
-New usage:
+The injected driver usage remains:
 
 ```python
 transport = ScriptedTransport()
@@ -233,7 +229,7 @@ uv --cache-dir .uv-cache run --group dev pytest
 ### Exit criteria
 
 - Production clients default to `BleTransport`.
-- Tests inject `ScriptedTransport` without monkey-patching globals.
+- Tests use `ScriptedTransport` to replace only BLE connection/client behavior.
 - Transport contains no LED, dosing, stirrer, fan, or heater command knowledge.
 - Wire output and connection behavior remain unchanged.
 
@@ -883,7 +879,7 @@ Also run scripted smoke scenarios using the real family drivers:
 
 | PR | Scope | Main risk |
 |---|---|---|
-| 1 | Injectable `BleTransport` and direct `ScriptedTransport` | Connection/prelude/retry regressions |
+| 1 | Injectable `BleTransport` with scripted BLE client adapter | Connection/prelude/retry regressions |
 | 2 | Typed profile specifications and registry | Detection or capability regression |
 | 3 | Family driver split plus HA type cutover | Missing callers and invalid family assumptions |
 | 4 | Family protocol package | Changed command bytes or parsing |

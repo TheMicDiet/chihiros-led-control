@@ -152,13 +152,13 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         change: bluetooth.BluetoothChange,
     ) -> None:
         """Handle a Bluetooth event."""
-        _LOGGER.debug("%s: Bluetooth event: %s", self._device_address, change)
+        _LOGGER.debug("%s: Bluetooth event: %s", self.address, change)
         super()._async_handle_bluetooth_event(service_info, change)
 
     @callback
     def _async_handle_unavailable(self, service_info: bluetooth.BluetoothServiceInfoBleak) -> None:
         """Handle the device going unavailable."""
-        _LOGGER.debug("%s: Chihiros device unavailable", self._device_address)
+        _LOGGER.debug("%s: Chihiros device unavailable", self.address)
         super()._async_handle_unavailable(service_info)
 
 

@@ -26,14 +26,11 @@ Example::
 
 from __future__ import annotations
 
-import asyncio
-import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from inspect import isawaitable
+from typing import cast
 
-from bleak_retry_connector import BLEAK_RETRY_EXCEPTIONS as BLEAK_EXCEPTIONS
-from bleak_retry_connector import BleakError
+from bleak_retry_connector import BleakClientWithServiceCache, BleakError
 
 from .const import (
     CUSTOM_NOTIFY_CHAR_UUID,
@@ -41,10 +38,9 @@ from .const import (
     UART_RX_CHAR_UUID,
     UART_TX_CHAR_UUID,
 )
-from .exceptions import CharacteristicMissingError
 from .models import DeviceModel
 from .registry import DOSING_PUMP, FALLBACK, HEATER, MAG_STIRRER
-from .transport import BATCH_WRITE_DELAY, PreludeCallback, pair_notify_characteristic
+from .transport import BATCH_WRITE_DELAY, BleTransport, PreludeCallback
 
 NotificationHandler = Callable[[object, bytearray], None]
 DisconnectedCallback = Callable[[object], None]
@@ -242,8 +238,8 @@ class _ScriptedBleClient:
             callback(self)
 
 
-class ScriptedTransport:
-    """In-memory transport implementing the production transport contract."""
+class ScriptedTransport(BleTransport):
+    """Scripted BLE client using the production transport lifecycle."""
 
     def __init__(
         self,
@@ -254,26 +250,17 @@ class ScriptedTransport:
         notification_callback: NotificationHandler | None = None,
         prelude_callback: PreludeCallback | None = None,
     ) -> None:
-        """Initialize a scripted responder and a fresh GATT session."""
-        self.name = name
+        """Initialize a scripted responder and BLE session factory."""
         self.address = address
-        self.ble_device = ScriptedBLEDevice(name, address)
-        self.advertisement_data: object | None = None
+        self._notify_characteristics = notify_characteristics
         self.responder = ScriptedResponder()
         self.connections = 0
-        self._client = _ScriptedBleClient(self.responder, include_notify=notify_characteristics)
-        self._logger = logging.getLogger(self.address.replace(":", "-"))
-        self._notification_callback = notification_callback
-        self._prelude_callback = prelude_callback
-        self._read_char: _ScriptedCharacteristic | None = None
-        self._write_char: _ScriptedCharacteristic | None = None
-        self._connect_lock = asyncio.Lock()
-        self._operation_lock = asyncio.Lock()
-        self._unexpected_disconnect = asyncio.Event()
-        self._expected_disconnect = False
-        self._disconnect_timer: asyncio.TimerHandle | None = None
-        self._disconnect_timer_generation = 0
-        self._loop: asyncio.AbstractEventLoop | None = None
+        self.clients: list[_ScriptedBleClient] = []
+        super().__init__(
+            ScriptedBLEDevice(name, address),  # type: ignore[arg-type]
+            notification_callback=notification_callback,
+            prelude_callback=prelude_callback,
+        )
 
     @property
     def writes(self) -> list[bytes]:
@@ -281,19 +268,9 @@ class ScriptedTransport:
         return self.responder.writes
 
     @property
-    def is_connected(self) -> bool:
-        """Return whether the scripted GATT client is connected."""
-        return self._client.is_connected
-
-    def set_callbacks(
-        self,
-        *,
-        notification_callback: NotificationHandler,
-        prelude_callback: PreludeCallback,
-    ) -> None:
-        """Bind raw notification and lazy connection-prelude callbacks."""
-        self._notification_callback = notification_callback
-        self._prelude_callback = prelude_callback
+    def batch_write_delay(self) -> float:
+        """Return the scriptable production pacing interval."""
+        return BATCH_WRITE_DELAY
 
     def expect(
         self,
@@ -335,200 +312,10 @@ class ScriptedTransport:
 
         return ChihirosHeater(self._scripted_device(), model, transport=self)
 
-    async def _ensure_connected(self) -> None:
-        """Connect and configure the scripted GATT client when idle."""
-        if self._client.is_connected:
-            return
-        async with self._connect_lock:
-            if self._client.is_connected:
-                return
-            await self._connect_client()
-
-    async def _connect_client(self) -> None:
-        """Create and configure one scripted GATT session."""
-        self._expected_disconnect = False
-        self._unexpected_disconnect.clear()
-        self._client.attach(self._disconnected)
+    async def _establish_ble_client(self) -> BleakClientWithServiceCache:
+        """Create the next scripted BLE session for production setup to configure."""
+        client = _ScriptedBleClient(self.responder, include_notify=self._notify_characteristics)
+        client.attach(self._disconnected)
+        self.clients.append(client)
         self.connections += 1
-        try:
-            await self._configure_connected_client()
-        except Exception:
-            await self._abort_connection()
-            raise
-
-    async def _configure_connected_client(self) -> None:
-        """Resolve scripted endpoints, notifications, and the connection prelude."""
-        services = await self._client.get_services()
-        self._write_char = services.get_characteristic(HM10_RX_CHAR_UUID) or services.get_characteristic(
-            UART_RX_CHAR_UUID
-        )
-        self._read_char = pair_notify_characteristic(services, self._write_char)
-        if self._write_char is None:
-            raise CharacteristicMissingError("Write characteristic missing")
-        if self._read_char is not None:
-            await self._client.start_notify(self._read_char, self._notification_handler)
-        else:
-            self._logger.warning(
-                "%s: No notify characteristic (8ec90003/6e400003) found; "
-                "running fire-and-forget without state notifications",
-                self.name,
-            )
-        await self._run_prelude()
-
-    async def _run_prelude(self) -> None:
-        """Run the configured scripted connection prelude."""
-        if self._prelude_callback is None:
-            return
-        prelude = self._prelude_callback()
-        if isawaitable(prelude):
-            prelude = await prelude
-        await self._write_frames(prelude)
-
-    async def _send_once(self, frames: Sequence[bytes], notification_wait: float) -> None:
-        """Write one complete scripted transaction."""
-        await self._ensure_connected()
-        await self._write_frames(frames)
-        if notification_wait:
-            await asyncio.sleep(notification_wait)
-
-    async def send(self, frames: Sequence[bytes], *, attempts: int, notification_wait: float) -> None:
-        """Connect lazily, run the prelude once, and write a frame batch."""
-        if attempts < 1:
-            raise ValueError("attempts must be at least 1")
-        commands_to_send = [bytes(frame) for frame in frames]
-        if not commands_to_send:
-            return
-        async with self._operation_lock:
-            await self._send_attempts(commands_to_send, attempts, notification_wait)
-
-    async def _send_attempts(self, frames: Sequence[bytes], attempts: int, notification_wait: float) -> None:
-        """Run scripted transaction attempts while holding the operation lock."""
-        for attempt in range(1, attempts + 1):
-            if await self._send_attempt(frames, attempt, attempts, notification_wait):
-                return
-
-    async def _send_attempt(
-        self,
-        frames: Sequence[bytes],
-        attempt: int,
-        attempts: int,
-        notification_wait: float,
-    ) -> bool:
-        """Run one scripted transaction attempt and report whether it succeeded."""
-        try:
-            await self._send_once(frames, notification_wait)
-        except (CharacteristicMissingError, asyncio.CancelledError):
-            await self._execute_disconnect()
-            raise
-        except BLEAK_EXCEPTIONS:
-            await self._execute_disconnect()
-            if attempt == attempts:
-                raise
-            return False
-        self._schedule_disconnect_timer()
-        return True
-
-    def _notification_handler(self, sender: object, data: bytearray) -> None:
-        """Forward raw scripted notifications to the family driver."""
-        if self._notification_callback is not None:
-            self._notification_callback(sender, data)
-
-    def _disconnected(self, client: object) -> None:
-        """Handle expected and unexpected scripted disconnects."""
-        if client is not self._client:
-            return
-        self._cancel_disconnect_timer()
-        self._read_char = None
-        self._write_char = None
-        if self._expected_disconnect:
-            return
-        self._unexpected_disconnect.set()
-
-    async def _write_frames(self, frames: Sequence[bytes]) -> None:
-        """Write scripted frame batches with production pacing."""
-        if self._write_char is None:
-            raise CharacteristicMissingError("Write characteristic missing")
-        for index, frame in enumerate(frames):
-            await self._write_frame(frame)
-            if index < len(frames) - 1:
-                await asyncio.sleep(BATCH_WRITE_DELAY)
-
-    async def _write_frame(self, frame: bytes) -> None:
-        """Write one scripted frame while checking for a disconnect."""
-        if self._unexpected_disconnect.is_set():
-            raise BleakError("Device unexpectedly disconnected during command batch")
-        await self._client.write_gatt_char(self._write_char, frame, False)
-        if self._unexpected_disconnect.is_set():
-            raise BleakError("Device unexpectedly disconnected during command batch")
-
-    async def _abort_connection(self) -> None:
-        """Tear down a partially configured scripted connection."""
-        self._expected_disconnect = True
-        read_char = self._read_char
-        self._read_char = None
-        self._write_char = None
-        self._cancel_disconnect_timer()
-        if read_char is not None:
-            await self._client.stop_notify(read_char)
-        if self._client.is_connected:
-            await self._client.disconnect()
-
-    async def disconnect(self) -> None:
-        """Disconnect the active scripted GATT session."""
-        async with self._operation_lock:
-            await self._execute_disconnect()
-
-    async def _execute_disconnect(self) -> None:
-        """Disconnect while holding the connection lock."""
-        async with self._connect_lock:
-            self._expected_disconnect = True
-            read_char = self._read_char
-            self._read_char = None
-            self._write_char = None
-            self._cancel_disconnect_timer()
-            if read_char is not None:
-                await self._client.stop_notify(read_char)
-            if self._client.is_connected:
-                await self._client.disconnect()
-
-    def _cancel_disconnect_timer(self) -> None:
-        """Cancel a pending idle disconnect."""
-        self._disconnect_timer_generation += 1
-        if self._disconnect_timer is not None:
-            self._disconnect_timer.cancel()
-            self._disconnect_timer = None
-
-    def _schedule_disconnect_timer(self) -> None:
-        """Schedule disconnect after the production idle timeout."""
-        self._cancel_disconnect_timer()
-        if not self._client.is_connected:
-            return
-        generation = self._disconnect_timer_generation
-        loop = self._loop or asyncio.get_running_loop()
-        self._loop = loop
-        self._disconnect_timer = loop.call_later(
-            120,
-            self._disconnect_after_timeout,
-            generation,
-        )
-
-    def _disconnect_after_timeout(self, generation: int) -> None:
-        """Start idle disconnect work from the event-loop timer."""
-        if generation != self._disconnect_timer_generation:
-            return
-        self._disconnect_timer = None
-        self._loop.create_task(self._execute_timed_disconnect(generation))
-
-    async def _execute_timed_disconnect(self, generation: int) -> None:
-        """Disconnect only if no newer operation refreshed the deadline."""
-        async with self._operation_lock:
-            if generation != self._disconnect_timer_generation or not self._client.is_connected:
-                return
-            await self._execute_disconnect()
-
-    def update_device(self, ble_device: object, advertisement_data: object) -> None:
-        """Record the latest device identity for protocol conformance."""
-        self.ble_device = ble_device
-        self.advertisement_data = advertisement_data
-        self.name = getattr(ble_device, "name", self.name)
-        self.address = getattr(ble_device, "address", self.address)
+        return cast(BleakClientWithServiceCache, client)

@@ -74,6 +74,40 @@ class ChihirosMagStirrer(BaseChihirosDevice):
         cmd = dosing.create_general_temp_run_command(self.get_next_msg_id(), {channel: on}, seconds)
         await self._send_command(cmd, 3)
 
+    async def program_channel(
+        self,
+        channel: int,
+        *,
+        active: bool,
+        compensate: bool = False,
+        dose_per_day_ml: float | None = None,
+        frequency: int = 127,
+        is_first_setting: bool = True,
+        mode: dosing.DosingMode | None = None,
+        points: Sequence[dosing.DosingWorkPoint] = (),
+    ) -> None:
+        """Replay pump programming onto a linked stirrer in one paced batch.
+
+        The daily setting is omitted when its volume is ``None``. A supplied
+        mode always writes the schedule, including for inactive channels.
+        """
+        commands_to_send = [
+            dosing.create_dosing_active_compensation_command(
+                self.get_next_msg_id(), channel, active=active, compensate=compensate
+            )
+        ]
+        if dose_per_day_ml is not None:
+            commands_to_send.append(
+                dosing.create_dosing_set_command(
+                    self.get_next_msg_id(), channel, dose_per_day_ml, frequency, is_first_setting=is_first_setting
+                )
+            )
+        if mode is not None:
+            commands_to_send.extend(
+                dosing.create_dosing_schedule_command(self.get_next_msg_id(), channel, mode, points)
+            )
+        await self._send_command(commands_to_send, 3)
+
     async def set_stir_schedule(
         self,
         channel: int,

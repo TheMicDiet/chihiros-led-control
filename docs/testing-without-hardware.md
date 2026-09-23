@@ -32,9 +32,10 @@ roster assertion in `tests/test_home_assistant_unit.py`.
 
 ## Scripted BLE transport
 
-`src/chihiros_led_control/testing.py` provides an injectable in-memory
-`ScriptedTransport`, so the real family driver runs its connect flow,
-command encoding, retry logic, and notification parsing against scripted
+`src/chihiros_led_control/testing.py` provides `ScriptedTransport`, which
+supplies a scripted BLE client to the production `BleTransport`. Real family
+drivers and the production transport run connection setup, retries, locking,
+idle disconnect, command pacing, and notification parsing against scripted
 bytes.
 
 ```python

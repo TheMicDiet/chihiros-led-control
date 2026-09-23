@@ -129,6 +129,33 @@ def test_scripted_stirrer_inactive_channel_skips_schedule(monkeypatch: pytest.Mo
     asyncio.run(run())
 
 
+def test_program_channel_replays_inactive_stirrer_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Master/slave replay sends settings and schedule even for an inactive channel."""
+    transport = ScriptedTransport(name="DYMIXR-test")
+    _fast_waits(monkeypatch)
+    points = [DosingWorkPoint(8, 0, volume_ml=stirrer_dosage_for_minutes(10))]
+
+    async def run() -> None:
+        device = _make_stirrer(transport)
+        await device.program_channel(
+            2,
+            active=False,
+            compensate=True,
+            dose_per_day_ml=2.5,
+            frequency=9,
+            is_first_setting=False,
+            mode=DosingMode.TIMER,
+            points=points,
+        )
+
+    asyncio.run(run())
+    frames = [frame for frame in transport.writes if frame[0] == 165]
+    assert [frame[5] for frame in frames] == [32, 27, 21]
+    assert frames[0][6:9] == bytes([2, 1, 0])
+    assert frames[1][6:12] == bytes([2, 9, 1, 1, 0, 25])
+    assert frames[2][6:-1] == bytes([2, 3, 8, 0, 0, 60])
+
+
 def test_scripted_pump_schedule_and_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pump schedule/settings/calibration/reset commands write the right frames."""
     transport = ScriptedTransport(name="DYDOSE-test")

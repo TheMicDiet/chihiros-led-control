@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 
+from ..vendor.chihiros_led_control.protocol.dosing import DosingMode, DosingWorkPoint
 from .base import FakeBaseDevice
 
 
@@ -43,6 +44,33 @@ class FakeStirrerDevice(FakeBaseDevice):
         del restart
         self.stir_speeds[channel] = speed
         self.stir_pre_seconds[channel] = seconds
+
+    async def program_channel(
+        self,
+        channel: int,
+        *,
+        active: bool,
+        compensate: bool = False,
+        dose_per_day_ml: float | None = None,
+        frequency: int = 127,
+        is_first_setting: bool = True,
+        mode: DosingMode | None = None,
+        points: Sequence[DosingWorkPoint] = (),
+    ) -> None:
+        await asyncio.sleep(0)
+        self.dosing_programming_calls.append(
+            {
+                "kind": "program",
+                "channel": channel,
+                "active": active,
+                "compensate": compensate,
+                "ml": dose_per_day_ml,
+                "frequency": frequency,
+                "first_setting": is_first_setting,
+                "mode": getattr(mode, "name", None),
+                "points": tuple(points),
+            }
+        )
 
     async def set_stir_schedule(
         self,
