@@ -230,7 +230,7 @@ class BleTransport:
         self._logger.debug("%s: Connected; RSSI: %s", self.name, self.rssi)
         try:
             await self._configure_client(client)
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             await self._abort_connection(client)
             raise
 

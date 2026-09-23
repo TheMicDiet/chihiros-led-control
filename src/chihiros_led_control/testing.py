@@ -1,10 +1,10 @@
 """Scripted BLE transport for exercising the device client without hardware.
 
-The scripted transport implements ``ChihirosTransport`` directly. Command
-frames written by a family device are recorded and matched against registered
-rules; matching rules deliver notification frames through the normal
-notification handler, so message-id sequencing, the connection prelude,
-notification parsing, and retry logic run against scripted bytes.
+ScriptedTransport subclasses the production BleTransport and substitutes only
+the BLE client. Command frames written by a family device are recorded and
+matched against registered rules; matching rules deliver notification frames
+through the normal notification handler, so message-id sequencing, the
+connection prelude, notification parsing, and retry logic run against scripted bytes.
 
 Example::
 
@@ -12,11 +12,16 @@ Example::
 
     from chihiros_led_control.devices.led import ChihirosDevice
     from chihiros_led_control.models import WHITE_CHANNELS, DeviceModel, LedSpec
+    from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
 
     async def run() -> None:
         transport = ScriptedTransport()
         transport.expect(90, 4, [1], respond=[bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")])
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         await device.query_status()
         print(device.last_runtime_notification)
         print([command.hex() for command in transport.writes])
@@ -38,8 +43,6 @@ from .const import (
     UART_RX_CHAR_UUID,
     UART_TX_CHAR_UUID,
 )
-from .models import DeviceModel
-from .registry import DOSING_PUMP, FALLBACK, HEATER, MAG_STIRRER
 from .transport import BATCH_WRITE_DELAY, BleTransport, PreludeCallback
 
 NotificationHandler = Callable[[object, bytearray], None]
@@ -283,34 +286,6 @@ class ScriptedTransport(BleTransport):
     ) -> None:
         """Register a scripted reply for matching command frames."""
         self.responder.expect(cmd_id, cmd_mode, params, respond=respond, fail=fail)
-
-    def _scripted_device(self) -> ScriptedBLEDevice:
-        """Return a BLE identity suitable for a package family constructor."""
-        return ScriptedBLEDevice(self.name, self.address)
-
-    def make_device(self, model: DeviceModel = FALLBACK):
-        """Create an LED family client bound directly to this transport."""
-        from .devices.led import ChihirosDevice
-
-        return ChihirosDevice(self._scripted_device(), model, transport=self)
-
-    def make_pump(self, model: DeviceModel = DOSING_PUMP):
-        """Create a dosing-pump family client bound directly to this transport."""
-        from .devices.dosing import ChihirosDosingPump
-
-        return ChihirosDosingPump(self._scripted_device(), model, transport=self)
-
-    def make_stirrer(self, model: DeviceModel = MAG_STIRRER):
-        """Create a magnetic-stirrer family client bound directly to this transport."""
-        from .devices.stirrer import ChihirosMagStirrer
-
-        return ChihirosMagStirrer(self._scripted_device(), model, transport=self)
-
-    def make_heater(self, model: DeviceModel = HEATER):
-        """Create a heater family client bound directly to this transport."""
-        from .devices.heater import ChihirosHeater
-
-        return ChihirosHeater(self._scripted_device(), model, transport=self)
 
     async def _establish_ble_client(self) -> BleakClientWithServiceCache:
         """Create the next scripted BLE session for production setup to configure."""

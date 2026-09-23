@@ -16,14 +16,30 @@ import pytest
 from bleak_retry_connector import BleakError
 
 from chihiros_led_control import testing as testing_module
+from chihiros_led_control.const import UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
+from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump
 from chihiros_led_control.devices import base as device_base
 from chihiros_led_control.models import WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel, LedFeature, LedSpec
 from chihiros_led_control.protocol import led as commands
 from chihiros_led_control.protocol.notifications import DosingTotalsNotification, RuntimeNotification
-from chihiros_led_control.testing import ScriptedTransport
+from chihiros_led_control.registry import DOSING_PUMP
+from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
 from chihiros_led_control.weekday_encoding import WeekdaySelect
 
 RUNTIME_FRAME = bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")
+
+
+class _FilteredServices:
+    """Expose only selected characteristics from a scripted BLE client."""
+
+    def __init__(self, services: object, allowed: frozenset[str]) -> None:
+        self._services = services
+        self._allowed = allowed
+
+    def get_characteristic(self, uuid: str) -> object | None:
+        if uuid not in self._allowed:
+            return None
+        return self._services.get_characteristic(uuid)
 
 
 def _fast_waits(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -40,7 +56,11 @@ def test_scripted_query_status_round_trip(monkeypatch: pytest.MonkeyPatch) -> No
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         if transport:
             await device.query_status()
 
@@ -72,7 +92,11 @@ def test_scripted_fire_and_forget_without_notify_characteristic(
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         with caplog.at_level(logging.WARNING):
             await device.query_status()
 
@@ -92,8 +116,10 @@ def test_scripted_fan_commands_round_trip(monkeypatch: pytest.MonkeyPatch) -> No
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(
-            DeviceModel("VIVID3", (), LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("VIVID3", (), LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25)),
+            transport=transport,
         )
         if transport:
             await device.set_fan_auto()
@@ -123,7 +149,9 @@ def test_scripted_dosing_pump_dose_sequence(monkeypatch: pytest.MonkeyPatch) -> 
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_pump()
+        device = ChihirosDosingPump(
+            ScriptedBLEDevice(transport.name, transport.address), DOSING_PUMP, transport=transport
+        )
         if transport:
             await device.dose_ml(1, 2.0)
 
@@ -156,7 +184,11 @@ def test_scripted_retries_transient_write_failure(monkeypatch: pytest.MonkeyPatc
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         if transport:
             await device.query_status()
 
@@ -176,8 +208,10 @@ def test_scripted_fan_speed_can_fail_permanently(monkeypatch: pytest.MonkeyPatch
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(
-            DeviceModel("VIVID3", (), LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("VIVID3", (), LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25)),
+            transport=transport,
         )
         if transport:
             with pytest.raises(BleakError, match="scripted write failure"):
@@ -194,7 +228,11 @@ def test_scripted_turn_on_and_off_write_manual_switch_and_levels(monkeypatch: py
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         if transport:
             await device.turn_on()
             await device.turn_off()
@@ -216,7 +254,11 @@ def test_scripted_remove_setting_writes_delete_frame(monkeypatch: pytest.MonkeyP
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         if transport:
             await device.remove_setting(
                 datetime(2024, 1, 1, 6, 0),
@@ -244,7 +286,11 @@ def test_scripted_reset_settings_writes_reset_frame(monkeypatch: pytest.MonkeyPa
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         if transport:
             await device.reset_settings()
 
@@ -263,7 +309,11 @@ def test_scripted_disconnect_closes_connection_until_next_command(monkeypatch: p
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         if transport:
             await device.query_status()
             assert transport.connections == 1
@@ -280,7 +330,11 @@ def test_scripted_set_log_level_configures_device_logger() -> None:
 
     async def run() -> None:
         transport = ScriptedTransport()
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
 
         device.set_log_level("DEBUG")
         assert device._logger.level == logging.DEBUG  # noqa: SLF001
@@ -290,3 +344,111 @@ def test_scripted_set_log_level_configures_device_logger() -> None:
         assert device._logger.level == logging.INFO  # noqa: SLF001
 
     asyncio.run(run())
+
+
+def test_cancel_during_service_discovery_disconnects_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cancelled setup cannot leave a connected client untracked."""
+
+    async def run() -> None:
+        transport = ScriptedTransport()
+        device = ChihirosDevice(ScriptedBLEDevice(transport.name, transport.address), transport=transport)
+        discovering = asyncio.Event()
+        original_establish = transport._establish_ble_client
+
+        async def establish_with_slow_services() -> object:
+            client = await original_establish()
+            monkeypatch.setattr(client, "services", _FilteredServices(client.services, frozenset()))
+
+            async def get_services() -> object:
+                discovering.set()
+                await asyncio.Event().wait()
+                return client.services
+
+            monkeypatch.setattr(client, "get_services", get_services)
+            return client
+
+        monkeypatch.setattr(transport, "_establish_ble_client", establish_with_slow_services)
+        pending = asyncio.create_task(device.query_status())
+        await asyncio.wait_for(discovering.wait(), timeout=5)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+
+        assert transport.connections == 1
+        assert not transport.clients[0].is_connected
+
+    asyncio.run(run())
+
+
+def test_nordic_uart_only_characteristics_deliver_notifications(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Nordic UART RX endpoint pairs with UART TX rather than HM10 notify."""
+    transport = ScriptedTransport()
+    transport.expect(90, 4, [1], respond=[RUNTIME_FRAME])
+    _fast_waits(monkeypatch)
+    original_establish = transport._establish_ble_client
+
+    async def establish_with_nordic_services() -> object:
+        client = await original_establish()
+        monkeypatch.setattr(
+            client, "services", _FilteredServices(client.services, frozenset({UART_RX_CHAR_UUID, UART_TX_CHAR_UUID}))
+        )
+        return client
+
+    monkeypatch.setattr(transport, "_establish_ble_client", establish_with_nordic_services)
+
+    async def run() -> None:
+        device = ChihirosDevice(ScriptedBLEDevice(transport.name, transport.address), transport=transport)
+        await device.query_status()
+        assert device.last_runtime_notification == RuntimeNotification(27, 511, RUNTIME_FRAME)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("mode,params", [(27, [1]), (22, [1, 10])])
+def test_non_idempotent_pump_command_is_not_replayed_after_failed_write(
+    monkeypatch: pytest.MonkeyPatch, mode: int, params: list[int]
+) -> None:
+    """Manual dosing and timed calibration must not retry an ambiguous write."""
+    transport = ScriptedTransport(name="DYDOSE-test")
+    transport.expect(165, mode, params, fail=True)
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        pump = ChihirosDosingPump(
+            ScriptedBLEDevice(transport.name, transport.address), DOSING_PUMP, transport=transport
+        )
+        with pytest.raises(BleakError, match="scripted write failure"):
+            if mode == 27:
+                await pump.dose_ml(1, 2.0)
+            else:
+                await pump.calibrate_channel(1, seconds=10)
+
+    asyncio.run(run())
+    assert transport.connections == 1
+    assert sum(frame[0] == 165 and frame[5] == mode for frame in transport.writes) == 1
+
+
+def test_recorded_calibration_volume_retries_transient_write_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Recording a measured volume can safely retry on a fresh connection."""
+    transport = ScriptedTransport(name="DYDOSE-test")
+    _fast_waits(monkeypatch)
+    writes = 0
+
+    def fail_once(_frame: bytes) -> list[bytes]:
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            raise BleakError("transient calibration failure")
+        return []
+
+    transport.expect(165, 22, [0, 255], respond=fail_once)
+
+    async def run() -> None:
+        pump = ChihirosDosingPump(
+            ScriptedBLEDevice(transport.name, transport.address), DOSING_PUMP, transport=transport
+        )
+        await pump.calibrate_channel(0, volume_ml=4.05)
+
+    asyncio.run(run())
+    assert transport.connections == 2
+    assert writes == 2

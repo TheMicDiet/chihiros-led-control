@@ -79,9 +79,9 @@ Before moving code, identify existing tests covering these invariants:
 
 | Invariant | Existing primary coverage |
 |---|---|
-| Frame checksum and message IDs | `tests/test_legacy protocol module` |
-| LED commands and schedules | `tests/test_legacy client module` |
-| Dosing commands and retry safety | `tests/test_dosing.py`, `tests/test_dosing_legacy protocol module` |
+| Frame checksum and message IDs | `tests/test_protocol.py` |
+| LED commands and schedules | `tests/test_client.py` |
+| Dosing commands and retry safety | `tests/test_scripted_transport.py`, `tests/test_dosing_protocol.py` |
 | Stirrer behavior | `tests/test_mag_stirrer.py`, `tests/test_stirrer_ha.py` |
 | Heater behavior | `tests/test_heater.py`, `tests/test_heater_ha.py` |
 | Fan/VIVID III behavior | `tests/test_fan.py` |
@@ -113,7 +113,7 @@ This removes Bluetooth lifecycle complexity from the later device split.
 
 ```diff
  src/chihiros_led_control/
- ├── legacy client module
+ ├── client.py
 +├── transport.py
  ├── testing.py
  └── const.py
@@ -196,7 +196,7 @@ The production constructor creates `BleTransport` when no transport is supplied.
 
 Update:
 
-- `tests/test_legacy client module`
+- `tests/test_client.py`
 - `tests/test_scripted_transport.py`
 - family tests that inject `ScriptedTransport`
 - `docs/testing-without-hardware.md`
@@ -216,7 +216,7 @@ Preserve tests for:
 
 ```bash
 uv --cache-dir .uv-cache run --group dev pytest \
-  tests/test_legacy client module \
+  tests/test_client.py \
   tests/test_scripted_transport.py \
   tests/test_dosing.py \
   tests/test_heater.py
@@ -407,7 +407,7 @@ Do not add tests merely asserting the dataclass layout.
 
 ```diff
  src/chihiros_led_control/
--├── legacy client module
+-├── client.py
 +├── devices/
 +│   ├── __init__.py
 +│   ├── base.py
@@ -417,7 +417,7 @@ Do not add tests merely asserting the dataclass layout.
 +│   └── heater.py
 ```
 
-Delete `legacy client module` after migrating every internal caller. Do not leave a forwarding module.
+Delete `client.py` after migrating every internal caller. Do not leave a forwarding module.
 
 ### `devices/base.py`
 
@@ -550,7 +550,7 @@ Remove capability helpers that compare names. Use `device_kind`, then cast to th
 
 Update direct imports across:
 
-- `test_legacy client module`
+- `test_client.py`
 - `test_cli.py`
 - `test_factory.py`
 - `test_dosing.py`
@@ -567,7 +567,7 @@ Use a throwaway introspection smoke check—not a permanent test—to confirm th
 - Non-LED devices do not expose `set_brightness()`, LED schedule methods, or fan methods.
 - Stirrer does not inherit dosing-pump state or status behavior.
 - Factory, CLI, HA, fakes, and tests use the new modules.
-- `legacy client module` is removed.
+- `client.py` is removed.
 - Top-level package exports still work.
 
 ## Phase 4 — Split frame, command, and notification codecs
@@ -576,8 +576,8 @@ Use a throwaway introspection smoke check—not a permanent test—to confirm th
 
 ```diff
  src/chihiros_led_control/
--├── old monolithic command module (removed)
--├── old monolithic protocol module (removed)
+-├── commands.py
+-├── protocol.py
 +├── protocol/
 +│   ├── __init__.py
 +│   ├── frame.py
@@ -672,10 +672,10 @@ Update references in:
 Move test imports but preserve byte-level assertions. Suggested grouping:
 
 ```text
-tests/test_legacy protocol module
+tests/test_protocol.py
   → common frame + LED protocol
 
-tests/test_dosing_legacy protocol module
+tests/test_dosing_protocol.py
   → dosing protocol
 
 tests/test_heater.py
@@ -693,7 +693,7 @@ Renaming test files is optional; do not reorganize them solely for symmetry.
 - No `heater=True` parsing flag remains.
 - A family driver imports no unrelated family codec.
 - Every existing command-byte assertion remains unchanged.
-- Old `legacy command module` and `legacy protocol module` are removed.
+- Old `commands.py` and `protocol.py` are removed.
 
 ## Phase 5 — Align Home Assistant runtime data and fakes
 
@@ -835,9 +835,9 @@ Do not add a new changelog unless the project adopts one separately.
 
 Confirm removal of:
 
-- `legacy client module`;
-- `legacy command module`;
-- monolithic `legacy protocol module`;
+- `client.py`;
+- `commands.py`;
+- monolithic `protocol.py`;
 - global transport monkey-patching;
 - model-name capability checks;
 - old boolean profile fields;

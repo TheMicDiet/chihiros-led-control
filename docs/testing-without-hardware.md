@@ -43,13 +43,17 @@ import asyncio
 
 from chihiros_led_control import ChihirosDevice
 from chihiros_led_control.models import DeviceModel, LedSpec, WHITE_CHANNELS
-from chihiros_led_control.testing import ScriptedTransport
+from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
 
 async def run() -> None:
     transport = ScriptedTransport()
     # Reply to the auth/status command with a runtime notification frame.
     transport.expect(90, 4, [1], respond=[bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")])
-    device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+    device = ChihirosDevice(
+        ScriptedBLEDevice(transport.name, transport.address),
+        DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+        transport=transport,
+    )
     await device.query_status()
     # Successful commands reuse the connection until it goes idle.
     await device.disconnect()

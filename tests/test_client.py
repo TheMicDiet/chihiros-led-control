@@ -29,7 +29,7 @@ from chihiros_led_control.protocol.notifications import (
     ScheduleSnapshotNotification,
 )
 from chihiros_led_control.registry import DOSING_PUMP, MAG_STIRRER
-from chihiros_led_control.testing import ScriptedTransport
+from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
 
 
 class FakeBLEDevice:
@@ -170,51 +170,6 @@ def test_mag_stirrer_status_refresh_is_fire_and_forget() -> None:
     assert sent_commands == []
 
 
-def test_dosing_pump_manual_dose_sends_auth_and_dose_batch() -> None:
-    """Manual dosing sends dose auth frames before the one-shot dose command."""
-    sent_batches: list[list[bytes]] = []
-    retry_attempts: list[int | None] = []
-
-    async def run() -> None:
-        device = ChihirosDosingPump(FakeBLEDevice(), DOSING_PUMP)  # type: ignore[arg-type]
-
-        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            assert isinstance(command, list)
-            sent_batches.append([bytes(item) for item in command])
-            retry_attempts.append(retry)
-
-        device._send_command = capture_command  # type: ignore[method-assign]
-
-        await device.dose_ml(1, 2.0)
-
-    asyncio.run(run())
-
-    assert [command[5:7] for command in sent_batches[0]] == [bytes([4, 4]), bytes([4, 5]), bytes([27, 1])]
-    assert sent_batches[0][2][6:-1] == bytes([1, 0, 0, 0, 20])
-    assert retry_attempts == [1]
-
-
-def test_dosing_pump_calibration_retry_policy() -> None:
-    """A timed calibration run is never replayed; recording a volume is idempotent."""
-    retry_attempts: list[int | None] = []
-
-    async def run() -> None:
-        device = ChihirosDosingPump(FakeBLEDevice(), DOSING_PUMP)  # type: ignore[arg-type]
-
-        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del command
-            retry_attempts.append(retry)
-
-        device._send_command = capture_command  # type: ignore[method-assign]
-
-        await device.calibrate_channel(0, seconds=5)
-        await device.calibrate_channel(0, volume_ml=4.05)
-
-    asyncio.run(run())
-
-    assert retry_attempts == [1, 3]
-
-
 def _fast_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove notification and batch pacing delays from scripted sessions."""
     from chihiros_led_control import testing as testing_module
@@ -248,7 +203,11 @@ def test_scripted_connection_reuse_runs_prelude_once(monkeypatch: pytest.MonkeyP
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         await device.set_manual_mode()
         await device.set_manual_mode()
 
@@ -264,7 +223,11 @@ def test_scripted_idle_disconnect_closes_connection(monkeypatch: pytest.MonkeyPa
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         loop = asyncio.get_running_loop()
         original_call_later = loop.call_later
 
@@ -289,7 +252,11 @@ def test_scripted_concurrent_commands_are_serialized(monkeypatch: pytest.MonkeyP
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         await asyncio.gather(device.set_manual_mode(), device.set_manual_mode())
 
     asyncio.run(run())
@@ -316,7 +283,11 @@ def test_scripted_transient_failure_reconnects(monkeypatch: pytest.MonkeyPatch) 
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         await device.query_status()
 
     asyncio.run(run())
@@ -333,7 +304,11 @@ def test_scripted_missing_notify_characteristic_is_fire_and_forget(
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         with caplog.at_level(logging.WARNING):
             await device.query_status()
         assert device.last_runtime_notification is None
@@ -352,7 +327,11 @@ def test_scripted_characteristic_pairing_delivers_notifications(monkeypatch: pyt
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         await device.query_status()
         assert device.last_runtime_notification == RuntimeNotification(27, 511, runtime_frame)
 
@@ -369,7 +348,11 @@ def test_scripted_prelude_failure_disconnects_temporary_session(monkeypatch: pyt
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         with pytest.raises(BleakError, match="scripted write failure"):
             await device.query_status()
 
@@ -395,7 +378,11 @@ def test_scripted_batch_writes_keep_vendor_pacing(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(asyncio, "sleep", capture_sleep)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         await device.set_brightness({"white": 40})
 
     asyncio.run(run())
@@ -413,7 +400,11 @@ def test_scripted_runtime_notification_is_stored_and_published(monkeypatch: pyte
     _fast_waits(monkeypatch)
 
     async def run() -> ChihirosDevice:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         device.add_notification_callback(received.append)
         await device.query_status()
         return device
@@ -432,7 +423,11 @@ def test_scripted_schedule_notification_is_stored_and_published(monkeypatch: pyt
     _fast_waits(monkeypatch)
 
     async def run() -> ChihirosDevice:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
         device.add_notification_callback(received.append)
         await device.query_status()
         return device
@@ -456,7 +451,7 @@ def test_scripted_fan_notification_is_stored_and_published(monkeypatch: pytest.M
             (),
             LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25),
         )
-        device = transport.make_device(model)
+        device = ChihirosDevice(ScriptedBLEDevice(transport.name, transport.address), model, transport=transport)
         device.add_notification_callback(received.append)
         await device.query_status()
         return device
@@ -517,7 +512,11 @@ def test_notification_callback_failure_does_not_block_other_subscribers(
     _fast_waits(monkeypatch)
 
     async def run() -> None:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
 
         def fail(_notification: RuntimeNotification) -> None:
             raise RuntimeError("subscriber failed")
@@ -768,7 +767,9 @@ def test_scripted_dosing_totals_notification_is_stored_and_published(
     _fast_waits(monkeypatch)
 
     async def run() -> ChihirosDosingPump:
-        device = transport.make_pump()
+        device = ChihirosDosingPump(
+            ScriptedBLEDevice(transport.name, transport.address), DOSING_PUMP, transport=transport
+        )
         device.add_notification_callback(received.append)
         await device.query_status()
         return device
@@ -789,7 +790,9 @@ def test_scripted_dosing_daily_notification_is_stored_and_published(
     _fast_waits(monkeypatch)
 
     async def run() -> ChihirosDosingPump:
-        device = transport.make_pump()
+        device = ChihirosDosingPump(
+            ScriptedBLEDevice(transport.name, transport.address), DOSING_PUMP, transport=transport
+        )
         device.add_notification_callback(received.append)
         await device.query_status()
         return device
@@ -808,7 +811,11 @@ def test_scripted_fan_notification_is_ignored_on_non_fan_model(monkeypatch: pyte
     _fast_waits(monkeypatch)
 
     async def run() -> ChihirosDevice:
-        device = transport.make_device(DeviceModel("Test", (), LedSpec(RGB_CHANNELS)))
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(RGB_CHANNELS)),
+            transport=transport,
+        )
         device.add_notification_callback(received.append)
         await device.query_status()
         return device
