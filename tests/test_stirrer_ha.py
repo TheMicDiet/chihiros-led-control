@@ -258,24 +258,29 @@ async def test_stir_numbers_write_pre_second_frame(hass: HomeAssistant, monkeypa
     await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
 
-    assert float(hass.states.get(speed_id).state) == 40
+    speed_state = hass.states.get(speed_id)
+    assert speed_state is not None
+    assert float(speed_state.state) == 40
+    assert speed_state.attributes["min"] == 0
+    assert speed_state.attributes["max"] == 40
+    assert speed_state.attributes.get("unit_of_measurement") is None
     assert float(hass.states.get(prerun_id).state) == 0
 
-    await hass.services.async_call("number", "set_value", {"entity_id": speed_id, "value": 55}, blocking=True)
-    assert client.pre_second_calls == [(0, 0, 55)]
+    await hass.services.async_call("number", "set_value", {"entity_id": speed_id, "value": 16}, blocking=True)
+    assert client.pre_second_calls == [(0, 0, 16)]
     assert client.restart_calls == []
-    assert float(hass.states.get(speed_id).state) == 55
+    assert float(hass.states.get(speed_id).state) == 16
 
     await hass.services.async_call(
         "switch", "turn_on", {"entity_id": _entity_id(hass, "switch", "stir_channel_1")}, blocking=True
     )
-    await hass.services.async_call("number", "set_value", {"entity_id": speed_id, "value": 60}, blocking=True)
-    assert client.restart_calls == [(0, 0, 60)]
+    await hass.services.async_call("number", "set_value", {"entity_id": speed_id, "value": 40}, blocking=True)
+    assert client.restart_calls == [(0, 0, 40)]
 
     await hass.services.async_call("number", "set_value", {"entity_id": prerun_id, "value": 90}, blocking=True)
     # The pre-run write re-sends the current speed without restarting the channel.
-    assert client.pre_second_calls == [(0, 0, 55), (0, 0, 60), (0, 90, 60)]
-    assert client.restart_calls == [(0, 0, 60)]
+    assert client.pre_second_calls == [(0, 0, 16), (0, 0, 40), (0, 90, 40)]
+    assert client.restart_calls == [(0, 0, 40)]
 
 
 async def test_set_stir_schedule_service(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:

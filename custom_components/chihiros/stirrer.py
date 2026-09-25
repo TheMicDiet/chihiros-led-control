@@ -30,6 +30,7 @@ from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_
 from .models import StirrerChannelState, StirrerChihirosData
 from .runtime import StirrerChihirosClient
 from .vendor.chihiros_led_control.models import DeviceKind
+from .vendor.chihiros_led_control.protocol.stirrer import STIRRER_MAX_SPEED
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -245,11 +246,10 @@ class ChihirosStirNumberBase(
 
 
 class ChihirosStirSpeedNumber(ChihirosStirNumberBase):
-    """Number entity for one channel's stir speed (app default 40)."""
+    """Number entity for one channel's app stir-speed setting (0-40)."""
 
-    _attr_native_max_value = 100
+    _attr_native_max_value = STIRRER_MAX_SPEED
     _restart_when_running = True
-    _attr_native_unit_of_measurement = "%"
     _unique_id_suffix = "speed"
     _label = "speed"
 

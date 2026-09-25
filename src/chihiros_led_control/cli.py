@@ -23,7 +23,11 @@ from .protocol.dosing import (
     DosingWorkPoint,
 )
 from .protocol.heater import HEATER_MAX_POWER_WATTS, HEATER_MAX_TEMPERATURE_C, encode_heater_power_watts
-from .protocol.stirrer import stirrer_dosage_for_minutes, validate_stirrer_work_points
+from .protocol.stirrer import (
+    STIRRER_MAX_SPEED,
+    stirrer_dosage_for_minutes,
+    validate_stirrer_work_points,
+)
 from .weekday_encoding import WeekdaySelect, encode_selected_weekdays
 
 app = typer.Typer()
@@ -437,7 +441,7 @@ def stirrer_off(
 def stirrer_speed(
     device_address: str,
     channel: Annotated[int, typer.Argument(min=1, max=8)],
-    speed: Annotated[int, typer.Argument(min=0, max=100)],
+    speed: Annotated[int, typer.Argument(min=0, max=STIRRER_MAX_SPEED)],
     pre_seconds: Annotated[int, typer.Option(min=0, max=999)] = 0,
     restart: Annotated[bool, typer.Option("--restart/--no-restart")] = False,
 ) -> None:

@@ -70,7 +70,7 @@ def test_scripted_stirrer_pre_second_and_manual_stir(monkeypatch: pytest.MonkeyP
     async def run() -> None:
         device = _make_stirrer(transport)
         if transport:
-            await device.set_pre_second(0, 90, speed=60)
+            await device.set_pre_second(0, 90, speed=40)
             await device.stir(2, True)
             await device.stir(2, False, seconds=300)
 
@@ -78,7 +78,7 @@ def test_scripted_stirrer_pre_second_and_manual_stir(monkeypatch: pytest.MonkeyP
         assert modes.count(42) == 1
         assert modes.count(20) == 2
         pre_second = next(frame for frame in transport.writes if frame[5] == 42)
-        assert pre_second[6:10] == bytes([0, 0, 90, 60])
+        assert pre_second[6:10] == bytes([0, 0, 90, 40])
         start, stop = (frame for frame in transport.writes if frame[5] == 20)
         assert list(start[6:-1]) == [255, 255, 255, 255, 1, 255, 255, 255, 255, 255]
         assert list(stop[6:-1]) == [5, 0, 255, 255, 0, 255, 255, 255, 255, 255]
@@ -229,14 +229,16 @@ def test_stir_cli_commands_drive_stirrer(monkeypatch: pytest.MonkeyPatch) -> Non
     assert RUNNER.invoke(cli.app, ["stirrer", "on", TEST_ADDRESS, "3"]).exit_code == 0
     assert RUNNER.invoke(cli.app, ["stirrer", "on", TEST_ADDRESS, "3", "--seconds", "600"]).exit_code == 0
     assert RUNNER.invoke(cli.app, ["stirrer", "off", TEST_ADDRESS, "3"]).exit_code == 0
-    assert RUNNER.invoke(cli.app, ["stirrer", "speed", TEST_ADDRESS, "1", "60", "--pre-seconds", "30"]).exit_code == 0
+    assert RUNNER.invoke(cli.app, ["stirrer", "speed", TEST_ADDRESS, "1", "40", "--pre-seconds", "30"]).exit_code == 0
+    bad_speed = RUNNER.invoke(cli.app, ["stirrer", "speed", TEST_ADDRESS, "1", "41"])
+    assert bad_speed.exit_code != 0
     result = RUNNER.invoke(cli.app, ["stirrer", "schedule", TEST_ADDRESS, "2", "08:00:10", "20:30:5"])
     assert result.exit_code == 0
 
     assert calls[0] == ("stir", (2, True), {"seconds": None})
     assert calls[1] == ("stir", (2, True), {"seconds": 600})
     assert calls[2] == ("stir", (2, False), {})
-    assert calls[3] == ("set_pre_second", (0, 30, 60), {})
+    assert calls[3] == ("set_pre_second", (0, 30, 40), {})
     assert calls[4][0] == "set_stir_schedule"
     points = calls[4][1][1]
     assert [point.start_hour for point in points] == [8, 20]  # type: ignore[attr-defined]
