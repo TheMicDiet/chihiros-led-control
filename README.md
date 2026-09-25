@@ -187,8 +187,8 @@ stirrer verbatim, like the vendor app. A per-channel `last calibration`
 sensor shows when each channel was last calibrated. Magnetic stirrers are not
 calibratable (matching the app).
 
-Magnetic stirrers (`DYMIXR`) expose one stir switch and a speed number
-(0-100 %, device default 40) per channel; the pre-run number (0-999 s) is
+Magnetic stirrers (`DYMIXR`) expose one stir switch and a unitless speed number
+(0-40, device default 40) per channel; the pre-run number (0-999 s) is
 created **disabled by default** because it only matters while the stirrer
 runs as a slave of a linked dosing pump. Setup asks how many stir channels to
 expose (2, 4, or all 8; changeable later from the integration's Configure
@@ -424,7 +424,7 @@ uv run chihirosctl dosing <device-address> today
 # magnetic stirrer: start/stop, speed/pre-run, and timer schedule
 uv run chihirosctl stirrer <device-address> on 1 --seconds 300
 uv run chihirosctl stirrer <device-address> off 1
-uv run chihirosctl stirrer <device-address> speed 1 60 --pre-seconds 30
+uv run chihirosctl stirrer <device-address> speed 1 40 --pre-seconds 30
 uv run chihirosctl stirrer <device-address> schedule 1 08:00:10 20:30:5 --weekdays monday
 
 # heater: set both manual values atomically because power cannot be read back

@@ -14,6 +14,7 @@ def _validate_work_point_time(point: DosingWorkPoint) -> None:
 
 
 STIRRER_MAX_SECONDS = 999
+STIRRER_MAX_SPEED = 40
 STIRRER_SPEED_DEFAULT = 40
 STIRRER_ML_PER_MINUTE = 0.6
 
@@ -66,22 +67,23 @@ def create_stirrer_pre_second_command(
 ) -> bytearray:
     """Create the stirrer's ``stirrerPreSecond`` frame ``(0xA5, 42)``.
 
-    Payload ``[channel, sec_hi, sec_lo, speed]``: the only wire carrier for
-    the stir speed. ``seconds`` is the pre-stir time (0 to 999 s, the app's
-    ``stirrer_time_max`` bound). The 0-100 speed range is an implementation
-    assumption — the docs only pin the default of 40.
+    Payload ``[channel, sec_hi, sec_lo, speed]``: the only wire carrier for the
+    stir speed. The app's speed is an integer setting from 0 to 40 (default 40),
+    not a percentage. ``seconds`` is the pre-stir time (0 to 999 s, the app's
+    ``stirrer_time_max`` bound).
     """
     _validate_stirrer_channel(channel)
     if not 0 <= seconds <= STIRRER_MAX_SECONDS:
         raise ValueError(f"Pre-stir seconds must be between 0 and {STIRRER_MAX_SECONDS}")
-    if not 0 <= speed <= 100:
-        raise ValueError("Stir speed must be between 0 and 100")
+    if not 0 <= speed <= STIRRER_MAX_SPEED:
+        raise ValueError(f"Stir speed must be between 0 and {STIRRER_MAX_SPEED}")
     parameters = [channel, seconds >> 8, seconds & 0xFF, speed]
     return create_command_encoding(165, 42, msg_id, parameters, avoid_reserved_byte=False)
 
 
 __all__ = [
     "STIRRER_MAX_SECONDS",
+    "STIRRER_MAX_SPEED",
     "STIRRER_SPEED_DEFAULT",
     "STIRRER_ML_PER_MINUTE",
     "stirrer_dosage_for_minutes",

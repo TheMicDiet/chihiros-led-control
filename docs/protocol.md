@@ -641,8 +641,11 @@ notifications.
 
 | Command ID | Mode | Parameters | Meaning |
 | ---: | ---: | --- | --- |
-| `165` | `42` | `[ch, sec_hi, sec_lo, speed]` | Pre-stir seconds (0 to 999) and stir speed — the only wire carrier for speed (`stirrerPreSecond`) |
+| `165` | `42` | `[ch, sec_hi, sec_lo, speed]` | Pre-stir seconds (0 to 999) and unitless app speed setting (0 to 40, default 40) — the only wire carrier for speed (`stirrerPreSecond`) |
 | `165` | `20` | `[min][sec][8 channel bytes]` | Manual run/stop: duration bytes first (binary-verified 2.8.59: `[min,sec]` built then `addAll(channel bytes)`), channel bytes default `255`, overlaid with `1` (run) / `0` (stop); duration `255/255` = unlimited (`generalTempSet`, the app's `tempRun`) |
+
+The app's speed is an integer setting from 0 to 40 (default 40), not a
+percentage; it is sent directly in the `speed` byte.
 
 The app changes the speed of a running channel by stopping it, re-sending
 `(0xA5, 42)`, and restarting — speed is never sent standalone.
