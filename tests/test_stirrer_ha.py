@@ -100,7 +100,7 @@ class _TrackingStirrer:
     async def stir(self, channel: int, on: bool, *, seconds: int | None = None) -> None:
         self.stir_calls.append((channel, on, seconds))
 
-    async def set_pre_second(self, channel: int, seconds: int, speed: int = 40, *, restart: bool = False) -> None:
+    async def set_pre_second(self, channel: int, seconds: int, speed: int = 20, *, restart: bool = False) -> None:
         self.pre_second_calls.append((channel, seconds, speed))
         if restart:
             self.restart_calls.append((channel, seconds, speed))
@@ -260,11 +260,15 @@ async def test_stir_numbers_write_pre_second_frame(hass: HomeAssistant, monkeypa
 
     speed_state = hass.states.get(speed_id)
     assert speed_state is not None
-    assert float(speed_state.state) == 40
+    assert float(speed_state.state) == 20
     assert speed_state.attributes["min"] == 0
-    assert speed_state.attributes["max"] == 40
+    assert speed_state.attributes["max"] == 20
     assert speed_state.attributes.get("unit_of_measurement") is None
     assert float(hass.states.get(prerun_id).state) == 0
+
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call("number", "set_value", {"entity_id": speed_id, "value": 21}, blocking=True)
+    assert client.pre_second_calls == []
 
     await hass.services.async_call("number", "set_value", {"entity_id": speed_id, "value": 16}, blocking=True)
     assert client.pre_second_calls == [(0, 0, 16)]
@@ -274,13 +278,40 @@ async def test_stir_numbers_write_pre_second_frame(hass: HomeAssistant, monkeypa
     await hass.services.async_call(
         "switch", "turn_on", {"entity_id": _entity_id(hass, "switch", "stir_channel_1")}, blocking=True
     )
-    await hass.services.async_call("number", "set_value", {"entity_id": speed_id, "value": 40}, blocking=True)
-    assert client.restart_calls == [(0, 0, 40)]
+    await hass.services.async_call("number", "set_value", {"entity_id": speed_id, "value": 20}, blocking=True)
+    assert client.restart_calls == [(0, 0, 20)]
 
     await hass.services.async_call("number", "set_value", {"entity_id": prerun_id, "value": 90}, blocking=True)
     # The pre-run write re-sends the current speed without restarting the channel.
-    assert client.pre_second_calls == [(0, 0, 16), (0, 0, 40), (0, 90, 40)]
-    assert client.restart_calls == [(0, 0, 40)]
+    assert client.pre_second_calls == [(0, 0, 16), (0, 0, 20), (0, 90, 20)]
+    assert client.restart_calls == [(0, 0, 20)]
+
+
+@pytest.mark.parametrize(("saved_speed", "expected_speed"), [(15, 15), (40, 20)])
+async def test_stir_speed_restores_only_values_in_app_range(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, saved_speed: int, expected_speed: int
+) -> None:
+    """Preserve valid speeds but discard legacy out-of-range state without writing."""
+    from homeassistant.core import State
+    from homeassistant.helpers.restore_state import StoredState
+    from homeassistant.helpers.restore_state import async_get as async_get_restore_data
+    from homeassistant.util import dt as dt_util
+
+    entry, client = await _setup_stirrer(hass, monkeypatch)
+    await hass.async_block_till_done()
+    speed_id = _entity_id(hass, "number", "stir_channel_1_speed")
+    assert speed_id is not None
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    async_get_restore_data(hass).last_states[speed_id] = StoredState(
+        State(speed_id, str(saved_speed)), None, dt_util.utcnow()
+    )
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert float(hass.states.get(speed_id).state) == expected_speed
+    assert client.pre_second_calls == []
 
 
 async def test_set_stir_schedule_service(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -246,7 +246,7 @@ class ChihirosStirNumberBase(
 
 
 class ChihirosStirSpeedNumber(ChihirosStirNumberBase):
-    """Number entity for one channel's app stir-speed setting (0-40)."""
+    """Number entity for one channel's app stir-speed setting (0-20)."""
 
     _attr_native_max_value = STIRRER_MAX_SPEED
     _restart_when_running = True

@@ -14,8 +14,8 @@ def _validate_work_point_time(point: DosingWorkPoint) -> None:
 
 
 STIRRER_MAX_SECONDS = 999
-STIRRER_MAX_SPEED = 40
-STIRRER_SPEED_DEFAULT = 40
+STIRRER_MAX_SPEED = 20
+STIRRER_SPEED_DEFAULT = 20
 STIRRER_ML_PER_MINUTE = 0.6
 
 
@@ -68,7 +68,7 @@ def create_stirrer_pre_second_command(
     """Create the stirrer's ``stirrerPreSecond`` frame ``(0xA5, 42)``.
 
     Payload ``[channel, sec_hi, sec_lo, speed]``: the only wire carrier for the
-    stir speed. The app's speed is an integer setting from 0 to 40 (default 40),
+    stir speed. The app's speed is an integer setting from 0 to 20 (default 20),
     not a percentage. ``seconds`` is the pre-stir time (0 to 999 s, the app's
     ``stirrer_time_max`` bound).
     """

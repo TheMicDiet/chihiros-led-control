@@ -188,7 +188,7 @@ sensor shows when each channel was last calibrated. Magnetic stirrers are not
 calibratable (matching the app).
 
 Magnetic stirrers (`DYMIXR`) expose one stir switch and a unitless speed number
-(0-40, device default 40) per channel; the pre-run number (0-999 s) is
+(0-20, app default 20) per channel; the pre-run number (0-999 s) is
 created **disabled by default** because it only matters while the stirrer
 runs as a slave of a linked dosing pump. Setup asks how many stir channels to
 expose (2, 4, or all 8; changeable later from the integration's Configure
@@ -196,6 +196,10 @@ dialog). The stirrer sends no status notifications, so stirrer states are
 optimistic and restored across Home Assistant restarts. Do not build
 automations on the switch *state* — use it (or `chihiros.stir_for`) to
 *drive* the channel.
+
+Speed values above 20 saved by older integration versions are discarded on
+restore; those channels use the local default of 20 without sending a command.
+Valid saved speeds are preserved.
 
 ```yaml
 service: chihiros.stir_for

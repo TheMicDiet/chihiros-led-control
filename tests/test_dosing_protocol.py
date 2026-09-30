@@ -221,20 +221,23 @@ def test_stirrer_work_points_use_inclusive_non_cyclic_intervals() -> None:
 
 
 def test_stirrer_pre_second_command_layout() -> None:
-    """StirrerPreSecond carries the app's unitless speed setting from 0 to 40."""
-    frame = stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 90, 40)
+    """StirrerPreSecond carries unitless speed endpoints without rescaling."""
+    frame = stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 90, 20)
     assert frame[5] == 42
-    assert _payload(frame) == [0, 0, 90, 40]
+    assert _payload(frame) == [0, 0, 90, 20]
     minimum = stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 0, 0)
     assert _payload(minimum) == [0, 0, 0, 0]
-    long_run = stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 3, 999, 40)
-    assert _payload(long_run) == [3, 3, 231, 40]
-    with pytest.raises(ValueError, match="999"):
-        stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 1000, 40)
-    with pytest.raises(ValueError, match="40"):
-        stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 90, 41)
-    with pytest.raises(ValueError, match="speed"):
-        stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 90, -1)
+    long_run = stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 3, 999, 20)
+    assert _payload(long_run) == [3, 3, 231, 20]
+    with pytest.raises(ValueError):
+        stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 1000, 20)
+
+
+@pytest.mark.parametrize("speed", [-1, 21, 40])
+def test_stirrer_pre_second_rejects_speed_outside_app_range(speed: int) -> None:
+    """Reject values outside 0–20, including the formerly accepted maximum."""
+    with pytest.raises(ValueError):
+        stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 90, speed)
 
 
 def test_parse_captured_firmware_reply_frames() -> None:
