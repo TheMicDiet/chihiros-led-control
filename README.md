@@ -149,12 +149,19 @@ pump's status notifications. Status is requested at setup and every five minutes
 so doses made outside Home Assistant appear after the next successful readout.
 Until the first readout, the sensors are unknown. `total ml` is
 `total_increasing` and can be used with Home Assistant's `utility_meter`.
+It retains the last successfully read lifetime total through Bluetooth gaps;
+availability means a cached reading is accessible, not that the pump is currently
+reachable. New doses appear after the next successful readout. The device-reported
+`dosed today` sensor continues to follow Bluetooth availability.
 
 The locally tracked `HA manual doses today`, `HA manual dose total`, and
 `HA manual dose cycles` sensors are diagnostics. They count successful manual
 doses initiated by this integration and give immediate feedback, but do not
 include doses made elsewhere. Existing entity IDs are retained when upgrading.
 The channel's last-calibration timestamp is also a diagnostic sensor.
+These local history sensors remain available independently of Bluetooth.
+A channel that has never been calibrated shows `unknown`, not a fabricated
+calibration timestamp.
 
 The first setup asks how many channels the pump has (2, 4, or 8; changeable later from the
 integration's Configure dialog). Manual doses can also be triggered
