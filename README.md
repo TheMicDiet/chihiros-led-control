@@ -433,10 +433,10 @@ uv run chihirosctl dosing <device-address> totals
 uv run chihirosctl dosing <device-address> today
 
 # magnetic stirrer: start/stop, speed/pre-run, and timer schedule
-uv run chihirosctl stirrer <device-address> on 1 --seconds 300
-uv run chihirosctl stirrer <device-address> off 1
-uv run chihirosctl stirrer <device-address> speed 1 40 --pre-seconds 30
-uv run chihirosctl stirrer <device-address> schedule 1 08:00:10 20:30:5 --weekdays monday
+uv run chihirosctl stirrer on <device-address> 1 --seconds 300
+uv run chihirosctl stirrer off <device-address> 1
+uv run chihirosctl stirrer speed <device-address> 1 20 --pre-seconds 30
+uv run chihirosctl stirrer schedule <device-address> 1 08:00:10 20:30:5 --weekdays monday
 
 # heater: set both manual values atomically because power cannot be read back
 uv run chihirosctl heater manual-set <device-address> 26.5 800
