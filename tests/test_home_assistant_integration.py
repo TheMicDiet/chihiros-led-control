@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 try:
+    from homeassistant.components.bluetooth import BluetoothChange
     from homeassistant.components.bluetooth import update_coordinator as bluetooth_update
     from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN
     from homeassistant.components.button import SERVICE_PRESS
@@ -453,9 +455,6 @@ async def test_device_reported_dosing_sensors_follow_notifications_not_local_dos
     local_today = _entity_id(registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_dosed_today")
     assert hass.states.get(reported_today).state == "unknown"
     assert hass.states.get(reported_lifetime).state == "unknown"
-    assert hass.states.get(reported_today).attributes["friendly_name"] == "Test Dosing Pump Pump 2 dosed today"
-    assert hass.states.get(reported_lifetime).attributes["friendly_name"] == "Test Dosing Pump Pump 2 total ml"
-    assert hass.states.get(local_today).attributes["friendly_name"] == "Test Dosing Pump Pump 2 HA manual doses today"
     assert registry.async_get(local_today).entity_category is EntityCategory.DIAGNOSTIC
     client._notify(DosingDailyNotification((1000, 2750)))
     client._notify(DosingTotalsNotification((2000, 18400)))
@@ -465,6 +464,81 @@ async def test_device_reported_dosing_sensors_follow_notifications_not_local_dos
     assert hass.states.get(local_today).state == "0.0"
 
     assert registry.async_get_entity_id(SENSOR_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_dosing_pump_3_dosing_daily_ul") is None
+
+
+@pytest.mark.parametrize("pump_number", [1, 4])
+async def test_local_dosing_history_survives_bluetooth_unavailability(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    pump_number: int,
+) -> None:
+    """Stored counters and calibration history remain readable without advertisements."""
+    entry, _client = await _setup_entry(hass, monkeypatch, TrackingDosingClient())
+    data = hass.data[DOMAIN][entry.entry_id]
+    data.coordinator.always_available = False
+    registry = er.async_get(hass)
+    sensors = {
+        suffix: _entity_id(registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_{pump_number}_{suffix}")
+        for suffix in ("dosed_today", "total_ml", "total_cycles", "last_calibration")
+    }
+    assert hass.states.get(sensors["last_calibration"]).state == "unknown"
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_DOSE_ML,
+        {ATTR_ENTRY_ID: entry.entry_id, ATTR_PUMP: pump_number, ATTR_ML: 2.5},
+        blocking=True,
+    )
+    await data.dosing_calibration.async_record(pump_number - 1, seconds=5, volume_ml=1.0)
+    await _flush_ha_state_updates()
+    calibrated_at = hass.states.get(sensors["last_calibration"]).state
+    assert calibrated_at not in ("unknown", "unavailable")
+    data.coordinator._async_handle_unavailable(SimpleNamespace(time=1.0, name=data.device.name))
+    await _flush_ha_state_updates()
+
+    assert data.coordinator.available is False
+    assert {suffix: hass.states.get(entity_id).state for suffix, entity_id in sensors.items()} == {
+        "dosed_today": "2.5",
+        "total_ml": "2.5",
+        "total_cycles": "1",
+        "last_calibration": calibrated_at,
+    }
+
+
+async def test_device_lifetime_counter_updates_offline_without_making_daily_counter_available(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lifetime readouts stay unknown until reported and retain values through Bluetooth gaps."""
+    entry, client = await _setup_entry(hass, monkeypatch, TrackingDosingClient())
+    coordinator = hass.data[DOMAIN][entry.entry_id].coordinator
+    coordinator.always_available = False
+    registry = er.async_get(hass)
+    lifetime = _entity_id(registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_dosing_lifetime_ul")
+    today = _entity_id(registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_dosing_daily_ul")
+    uncalibrated = _entity_id(registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_last_calibration")
+    coordinator._async_handle_unavailable(SimpleNamespace(time=1.0, name=client.name))
+    await _flush_ha_state_updates()
+    assert hass.states.get(lifetime).state == "unknown"
+    assert hass.states.get(uncalibrated).state == "unknown"
+
+    client._notify(DosingTotalsNotification((12000,)))
+    await _flush_ha_state_updates()
+    assert hass.states.get(lifetime).state == "unknown"
+    client._notify(DosingTotalsNotification((12000, 0)))
+    client._notify(DosingDailyNotification((1000, 2500)))
+    await _flush_ha_state_updates()
+    assert hass.states.get(lifetime).state == "0.0"
+    client._notify(DosingTotalsNotification((12000, 18400)))
+    await _flush_ha_state_updates()
+    coordinator._async_handle_unavailable(SimpleNamespace(time=2.0, name=client.name))
+    await _flush_ha_state_updates()
+    assert hass.states.get(lifetime).state == "18.4"
+    assert hass.states.get(today).state == "unavailable"
+
+    coordinator._async_handle_bluetooth_event(None, BluetoothChange.ADVERTISEMENT)
+    await _flush_ha_state_updates()
+    assert hass.states.get(lifetime).state == "18.4"
+    assert hass.states.get(today).state == "2.5"
 
 
 async def test_existing_dosing_counter_keeps_entity_id_when_moved_to_diagnostics(

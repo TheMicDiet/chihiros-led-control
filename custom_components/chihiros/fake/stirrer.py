@@ -9,6 +9,7 @@ import asyncio
 from collections.abc import Sequence
 
 from ..vendor.chihiros_led_control.protocol.dosing import DosingMode, DosingWorkPoint
+from ..vendor.chihiros_led_control.protocol.stirrer import STIRRER_SPEED_DEFAULT
 from .base import FakeBaseDevice
 
 
@@ -36,7 +37,7 @@ class FakeStirrerDevice(FakeBaseDevice):
         self,
         channel: int,
         seconds: int,
-        speed: int = 40,
+        speed: int = STIRRER_SPEED_DEFAULT,
         *,
         restart: bool = False,
     ) -> None:

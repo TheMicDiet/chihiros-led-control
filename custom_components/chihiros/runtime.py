@@ -31,6 +31,7 @@ from .vendor.chihiros_led_control.protocol.notifications import (
     RuntimeNotification,
     ScheduleSnapshotNotification,
 )
+from .vendor.chihiros_led_control.protocol.stirrer import STIRRER_SPEED_DEFAULT
 from .vendor.chihiros_led_control.weekday_encoding import WeekdaySelect
 
 NotificationCallback = Callable[[ParsedNotification], None]
@@ -200,7 +201,7 @@ class StirrerChihirosClient(BaseChihirosClient, Protocol):
         self,
         channel: int,
         seconds: int,
-        speed: int = 40,
+        speed: int = STIRRER_SPEED_DEFAULT,
         *,
         restart: bool = False,
     ) -> None: ...

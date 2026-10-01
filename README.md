@@ -149,12 +149,19 @@ pump's status notifications. Status is requested at setup and every five minutes
 so doses made outside Home Assistant appear after the next successful readout.
 Until the first readout, the sensors are unknown. `total ml` is
 `total_increasing` and can be used with Home Assistant's `utility_meter`.
+It retains the last successfully read lifetime total through Bluetooth gaps;
+availability means a cached reading is accessible, not that the pump is currently
+reachable. New doses appear after the next successful readout. The device-reported
+`dosed today` sensor continues to follow Bluetooth availability.
 
 The locally tracked `HA manual doses today`, `HA manual dose total`, and
 `HA manual dose cycles` sensors are diagnostics. They count successful manual
 doses initiated by this integration and give immediate feedback, but do not
 include doses made elsewhere. Existing entity IDs are retained when upgrading.
 The channel's last-calibration timestamp is also a diagnostic sensor.
+These local history sensors remain available independently of Bluetooth.
+A channel that has never been calibrated shows `unknown`, not a fabricated
+calibration timestamp.
 
 The first setup asks how many channels the pump has (2, 4, or 8; changeable later from the
 integration's Configure dialog). Manual doses can also be triggered
@@ -187,8 +194,8 @@ stirrer verbatim, like the vendor app. A per-channel `last calibration`
 sensor shows when each channel was last calibrated. Magnetic stirrers are not
 calibratable (matching the app).
 
-Magnetic stirrers (`DYMIXR`) expose one stir switch and a speed number
-(0-100 %, device default 40) per channel; the pre-run number (0-999 s) is
+Magnetic stirrers (`DYMIXR`) expose one stir switch and a unitless speed number
+(0-20, app default 20) per channel; the pre-run number (0-999 s) is
 created **disabled by default** because it only matters while the stirrer
 runs as a slave of a linked dosing pump. Setup asks how many stir channels to
 expose (2, 4, or all 8; changeable later from the integration's Configure
@@ -196,6 +203,10 @@ dialog). The stirrer sends no status notifications, so stirrer states are
 optimistic and restored across Home Assistant restarts. Do not build
 automations on the switch *state* — use it (or `chihiros.stir_for`) to
 *drive* the channel.
+
+Speed values above 20 saved by older integration versions are discarded on
+restore; those channels use the local default of 20 without sending a command.
+Valid saved speeds are preserved.
 
 ```yaml
 service: chihiros.stir_for
@@ -422,10 +433,10 @@ uv run chihirosctl dosing <device-address> totals
 uv run chihirosctl dosing <device-address> today
 
 # magnetic stirrer: start/stop, speed/pre-run, and timer schedule
-uv run chihirosctl stirrer <device-address> on 1 --seconds 300
-uv run chihirosctl stirrer <device-address> off 1
-uv run chihirosctl stirrer <device-address> speed 1 60 --pre-seconds 30
-uv run chihirosctl stirrer <device-address> schedule 1 08:00:10 20:30:5 --weekdays monday
+uv run chihirosctl stirrer on <device-address> 1 --seconds 300
+uv run chihirosctl stirrer off <device-address> 1
+uv run chihirosctl stirrer speed <device-address> 1 20 --pre-seconds 30
+uv run chihirosctl stirrer schedule <device-address> 1 08:00:10 20:30:5 --weekdays monday
 
 # heater: set both manual values atomically because power cannot be read back
 uv run chihirosctl heater manual-set <device-address> 26.5 800

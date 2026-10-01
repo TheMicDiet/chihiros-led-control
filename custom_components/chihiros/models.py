@@ -8,13 +8,14 @@ from dataclasses import dataclass, field
 from .coordinator import ChihirosDataUpdateCoordinator
 from .dosing import DosingCalibrationTracker, DosingDailyTotals, DosingProgrammingTracker
 from .runtime import BaseChihirosClient, DosingChihirosClient, StirrerChihirosClient
+from .vendor.chihiros_led_control.protocol.stirrer import STIRRER_SPEED_DEFAULT
 
 
 @dataclass
 class StirrerChannelState:
     """Locally tracked state of one magnetic-stirrer channel."""
 
-    speed: int = 40
+    speed: int = STIRRER_SPEED_DEFAULT
     pre_seconds: int = 0
     running: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)

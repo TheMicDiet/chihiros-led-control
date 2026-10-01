@@ -313,10 +313,8 @@ class ChihirosDosingSensorBase(
 
     @property
     def available(self) -> bool:
-        """Return whether the dosing sensor is available."""
-        if self.coordinator.always_available:
-            return True
-        return super().available
+        """Keep persisted dosing history readable independently of Bluetooth."""
+        return True
 
 
 class ChihirosDosingDailyTotalSensor(ChihirosDosingSensorBase):
@@ -428,8 +426,8 @@ class ChihirosDosingDeviceCounterSensor(
 
     @property
     def available(self) -> bool:
-        """Use the same Bluetooth availability as the locally tracked sensors."""
-        if self.coordinator.always_available:
+        """Retain lifetime readouts through Bluetooth gaps; daily counters stay live."""
+        if self.entity_description.key == ATTR_DOSING_LIFETIME_UL or self.coordinator.always_available:
             return True
         return super().available
 
