@@ -9,7 +9,6 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
 from .dosing import derive_first_setting, serialize_points
@@ -30,20 +29,15 @@ from .vendor.chihiros_led_control.protocol.stirrer import (
 )
 
 SERVICE_SET_STIR_SCHEDULE = "set_stir_schedule"
-SERVICE_STIR_FOR = "stir_for"
 ATTR_CHANNEL = "channel"
 ATTR_STIR_POINTS = "points"
 ATTR_FREQUENCY = "frequency"
-ATTR_DURATION = "duration"
 ATTR_ACTIVE = "active"
 ATTR_FIRST_SETTING = "first_setting"
 
 # App-side run-time limit (DOSING_CONTROL.md §6.5): work points are capped at
 # 999 minutes (duplicateJudge's iteration bound).
 STIRRER_MAX_MINUTES = 999
-# The tempRun duration field is [minutes, seconds] — one byte each, so a
-# bounded manual stir is capped at 255 min 59 s (create_general_temp_run_command).
-STIRRER_MAX_TEMP_RUN_SECONDS = 255 * 60 + 59
 
 STIR_POINT_SCHEMA = vol.Schema(
     {
@@ -65,14 +59,6 @@ STIR_SCHEDULE_SCHEMA = vol.Schema(
         # Derived from the programming record when omitted (first write of the
         # day for the channel); exposed for advanced/backwards-compatible use.
         vol.Optional(ATTR_FIRST_SETTING): vol.Boolean(),
-    }
-)
-
-STIR_FOR_SCHEMA = vol.Schema(
-    {
-        **DEVICE_SELECTOR_SCHEMA,
-        vol.Required(ATTR_CHANNEL): _CHANNEL_VALIDATOR,
-        vol.Required(ATTR_DURATION): cv.time_period,
     }
 )
 
@@ -145,21 +131,6 @@ async def _async_set_stir_schedule(hass: HomeAssistant, call: ServiceCall) -> No
     )
 
 
-async def _async_stir_for(hass: HomeAssistant, call: ServiceCall) -> None:
-    """Stir one channel for a bounded duration (minutes + seconds)."""
-    data = resolve_service_device(hass, call.data)
-    if not isinstance(data, StirrerChihirosData):
-        raise HomeAssistantError(f"{data.device.name} is not a magnetic stirrer")
-    channel = int(call.data[ATTR_CHANNEL]) - 1
-    _validate_channel(data, channel)
-    duration: datetime.timedelta = call.data[ATTR_DURATION]
-    seconds = int(duration.total_seconds())
-    if not 1 <= seconds <= STIRRER_MAX_TEMP_RUN_SECONDS:
-        max_min, max_sec = divmod(STIRRER_MAX_TEMP_RUN_SECONDS, 60)
-        raise HomeAssistantError(f"Duration must be between 1 second and {max_min} minutes {max_sec} seconds")
-    await stirrer_client(data.device).stir(channel, True, seconds=seconds)
-
-
 def async_register_stirrer_service(hass: HomeAssistant) -> None:
     """Register the stirrer services for configured stirrers."""
     if hass.services.has_service(DOMAIN, SERVICE_SET_STIR_SCHEDULE):
@@ -170,16 +141,9 @@ def async_register_stirrer_service(hass: HomeAssistant) -> None:
         functools.partial(_async_set_stir_schedule, hass),
         schema=STIR_SCHEDULE_SCHEMA,
     )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_STIR_FOR,
-        functools.partial(_async_stir_for, hass),
-        schema=STIR_FOR_SCHEMA,
-    )
 
 
 def async_remove_stirrer_service(hass: HomeAssistant) -> None:
     """Remove the stirrer services if registered."""
-    for service in (SERVICE_SET_STIR_SCHEDULE, SERVICE_STIR_FOR):
-        if hass.services.has_service(DOMAIN, service):
-            hass.services.async_remove(DOMAIN, service)
+    if hass.services.has_service(DOMAIN, SERVICE_SET_STIR_SCHEDULE):
+        hass.services.async_remove(DOMAIN, SERVICE_SET_STIR_SCHEDULE)

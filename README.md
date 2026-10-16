@@ -201,20 +201,17 @@ runs as a slave of a linked dosing pump. Setup asks how many stir channels to
 expose (2, 4, or all 8; changeable later from the integration's Configure
 dialog). The stirrer sends no status notifications, so stirrer states are
 optimistic and restored across Home Assistant restarts. Do not build
-automations on the switch *state* — use it (or `chihiros.stir_for`) to
-*drive* the channel.
+automations on the switch *state* — use the switch to *drive* the channel.
 
 Speed values above 20 saved by older integration versions are discarded on
 restore; those channels use the local default of 20 without sending a command.
 Valid saved speeds are preserved.
 
-```yaml
-service: chihiros.stir_for
-data:
-  device_id: <device id>
-  channel: 1
-  duration: "00:05:00"   # or seconds: 300
-```
+`chihiros.stir_for` has been removed because device-side timed manual stirring
+is unverified. Migrate existing calls to an explicit switch-on, delay, switch-off
+automation. Such an automation requires Home Assistant to remain running and
+Bluetooth to be reachable when it sends the stop command; a crash, power loss,
+or connection failure can leave the stirrer running.
 
 Replace a channel's timer schedule with `chihiros.set_stir_schedule`; run
 times are given in minutes and must be at least 2 minutes apart (the

@@ -644,6 +644,13 @@ notifications.
 | `165` | `42` | `[ch, sec_hi, sec_lo, speed]` | Pre-stir seconds (0 to 999) and unitless app speed setting (0 to 20, default 20) — the only wire carrier for speed (`stirrerPreSecond`) |
 | `165` | `20` | `[min][sec][8 channel bytes]` | Manual run/stop: duration bytes first (binary-verified 2.8.59: `[min,sec]` built then `addAll(channel bytes)`), channel bytes default `255`, overlaid with `1` (run) / `0` (stop); duration `255/255` = unlimited (`generalTempSet`, the app's `tempRun`) |
 
+The shared encoder accepts a duration, but the app's stirrer-specific `tempRun`
+at `0xaa7f64` passes only `codeString`, leaving the duration unlimited. Its
+test-button callbacks start on press and explicitly stop on release/cancel.
+This does not establish that stirrer firmware honors finite duration bytes.
+Use explicit manual start/stop commands or programmed timer schedules rather
+than relying on finite duration bytes to stop a magnetic stirrer.
+
 The app's speed is an integer setting from 0 to 20 (default 20), not a
 percentage; it is sent directly in the `speed` byte. The app's internal slider
 uses 0–100 and displays/saves `floor(slider / 5)`. The model's raw default
