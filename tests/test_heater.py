@@ -5,13 +5,16 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from bleak.exc import BleakError
 from typer.testing import CliRunner
 
 from chihiros_led_control import cli
 from chihiros_led_control.devices import ChihirosDevice, ChihirosHeater
 from chihiros_led_control.factory import create_device, detect_model
 from chihiros_led_control.protocol.heater import (
+    HeaterBacklightSchedule,
     create_heater_backlight_command,
+    create_heater_backlight_schedule_command,
     create_heater_calibrate_command,
     create_heater_protector_temperature_command,
     create_heater_set_command,
@@ -103,11 +106,11 @@ def test_heater_temperature_and_power_encoding() -> None:
 
 
 def test_heater_frames_match_captured_app_traffic() -> None:
-    """The heater frames reproduce the byte-exact frames captured from the app.
+    """Reproduce captured heater frames and the APK-verified backlight polarity.
 
-    Source: a capture of the vendor app driving a DYHET heater
-    (``setHeaterCode`` defaults, the protection-temperature slider, calibration
-    and the backlight toggle).
+    Temperature, protection and calibration examples come from vendor-app
+    traffic on DYHET; backlight Boolean meaning is verified by issue #133's
+    executed My Chihiros 2.8.59 builders.
     """
     assert (
         create_heater_set_command((0, 5), auto=False, temperature_c=25.0, power_watts=200).hex(" ")
@@ -120,8 +123,51 @@ def test_heater_frames_match_captured_app_traffic() -> None:
     assert create_heater_protector_temperature_command((0, 5), 36.9).hex(" ") == "5a 01 07 00 05 2f 24 5a 52"
     assert create_heater_protector_temperature_command((0, 5), 36.5).hex(" ") == "5a 01 07 00 05 2f 24 32 3a"
     assert create_heater_calibrate_command((0, 5), 23.0).hex(" ") == "5a 01 07 00 05 30 17 00 24"
-    assert create_heater_backlight_command((0, 7), enabled=True).hex(" ") == "a5 01 0a 00 07 38 64 64 64 64 7f 4b"
-    assert create_heater_backlight_command((0, 7), enabled=False).hex(" ") == "a5 01 0a 00 07 38 c8 c8 c8 c8 7f 4b"
+    assert create_heater_backlight_command((0, 7), enabled=True).hex(" ") == "a5 01 0a 00 07 38 c8 c8 c8 c8 7f 4b"
+    assert create_heater_backlight_command((0, 7), enabled=False).hex(" ") == "a5 01 0a 00 07 38 64 64 64 64 7f 4b"
+
+
+@pytest.mark.parametrize(
+    ("schedule", "payload"),
+    [
+        (HeaterBacklightSchedule(8, 15, 21, 30, 81), [8, 15, 21, 30, 81]),
+        (HeaterBacklightSchedule(0, 0, 23, 59), [0, 0, 23, 59, 127]),
+        (HeaterBacklightSchedule(23, 59, 0, 0, 0), [23, 59, 0, 0, 0]),
+    ],
+)
+def test_heater_backlight_schedule_encoding(schedule: HeaterBacklightSchedule, payload: list[int]) -> None:
+    """Schedules preserve clock boundaries, overnight windows and all seven mask bits."""
+    frame = create_heater_backlight_schedule_command((0, 7), schedule)
+    assert frame[0] == 0xA5
+    assert frame[5] == 0x38
+    assert list(frame[6:-1]) == payload
+    if schedule.weekdays == 81:
+        assert frame.hex(" ") == "a5 01 0a 00 07 38 08 0f 15 1e 51 69"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("start_hour", -1),
+        ("start_hour", 24),
+        ("end_hour", -1),
+        ("end_hour", 24),
+        ("start_minute", -1),
+        ("start_minute", 60),
+        ("end_minute", -1),
+        ("end_minute", 60),
+        ("weekdays", -1),
+        ("weekdays", 128),
+        ("start_hour", 8.5),
+        ("weekdays", True),
+    ],
+)
+def test_heater_backlight_schedule_rejects_invalid_fields(field: str, value: object) -> None:
+    """Sentinel levels cannot be passed off as schedule clock fields."""
+    fields = dict(start_hour=8, start_minute=15, end_hour=21, end_minute=30, weekdays=81)
+    fields[field] = value
+    with pytest.raises(ValueError, match=field):
+        HeaterBacklightSchedule(**fields)
 
 
 def _fast_waits(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -237,8 +283,8 @@ def test_scripted_heater_settings_commands(monkeypatch: pytest.MonkeyPatch) -> N
             (5, [46, 255, 255]),
             (5, [47, 255, 255]),
             (5, [45, 255, 255]),
-            (56, [200, 200, 200, 200, 127]),
             (56, [100, 100, 100, 100, 127]),
+            (56, [200, 200, 200, 200, 127]),
             (47, [37, 0]),
             (48, [25, 50]),
             (5, [58, 255, 255]),
@@ -247,6 +293,71 @@ def test_scripted_heater_settings_commands(monkeypatch: pytest.MonkeyPatch) -> N
         assert device.is_celsius is False
         assert device.backlight is True
         assert device.protector_temperature_celsius == 37.0
+
+    asyncio.run(run())
+
+
+def test_scripted_heater_backlight_schedule_and_always_modes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The production transport writes each form and tracks scheduled state distinctly."""
+    transport = ScriptedTransport(name="DYHET-test")
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = _make_heater(transport)
+        try:
+            await device.set_backlight_schedule(8, 15, 21, 30, weekdays=81)
+            assert device.backlight is None
+            assert device.backlight_schedule == HeaterBacklightSchedule(8, 15, 21, 30, 81)
+            await device.set_backlight(False)
+            assert device.backlight is False
+            assert device.backlight_schedule is None
+            await device.set_backlight_schedule(0, 0, 23, 59)
+            assert device.backlight is None
+            await device.set_backlight(True)
+            assert device.backlight is True
+            assert device.backlight_schedule is None
+            assert _sent_frames(transport) == [
+                (56, [8, 15, 21, 30, 81]),
+                (56, [100, 100, 100, 100, 127]),
+                (56, [0, 0, 23, 59, 127]),
+                (56, [200, 200, 200, 200, 127]),
+            ]
+            assert all(frame[0] == 0xA5 for frame in transport.writes if frame[5] == 56)
+        finally:
+            await device.disconnect()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("scheduled", [True, False])
+@pytest.mark.parametrize("enabled", [True, False, None])
+def test_scripted_heater_failed_backlight_write_preserves_state(
+    monkeypatch: pytest.MonkeyPatch, enabled: bool | None, scheduled: bool
+) -> None:
+    """Failed schedule and Boolean writes never replace the last successful setting."""
+    transport = ScriptedTransport(name="DYHET-test")
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = _make_heater(transport)
+        try:
+            if scheduled:
+                await device.set_backlight_schedule(8, 15, 21, 30, weekdays=81)
+            else:
+                await device.set_backlight(False)
+            original = device.backlight_schedule
+            original_backlight = device.backlight
+            payload = [9, 0, 20, 0, 127] if enabled is None else [200 if enabled else 100] * 4 + [127]
+            transport.expect(165, 56, payload, fail=True)
+            with pytest.raises(BleakError, match="scripted write failure"):
+                if enabled is None:
+                    await device.set_backlight_schedule(9, 0, 20, 0)
+                else:
+                    await device.set_backlight(enabled)
+            assert device.backlight is original_backlight
+            assert device.backlight_schedule == original
+        finally:
+            await device.disconnect()
 
     asyncio.run(run())
 
@@ -417,6 +528,10 @@ def test_heater_validates_before_touching_the_device() -> None:
                 await device.set_auto_defaults(20.0, 805)
             with pytest.raises(ValueError, match="temperature"):
                 await device.set_protector_temperature(200.0)
+            with pytest.raises(ValueError, match="start_hour"):
+                await device.set_backlight_schedule(24, 0, 21, 30)
+            with pytest.raises(ValueError, match="weekdays"):
+                await device.set_backlight_schedule(8, 15, 21, 30, weekdays=128)
         assert transport.connections == 0
         assert transport.writes == []
 
@@ -502,6 +617,89 @@ def test_heater_cli_rejects_unrepresentable_power_before_device_resolution(
     assert "divisible by 10" in manual.output
     assert "divisible by 10" in auto.output
     assert resolutions == 0
+
+
+@pytest.mark.parametrize(
+    ("options", "payload"),
+    [
+        ([], [8, 15, 21, 30, 127]),
+        (["--weekdays", "monday", "--weekdays", "wednesday", "--weekdays", "sunday"], [8, 15, 21, 30, 81]),
+    ],
+)
+def test_heater_cli_backlight_schedule_writes_production_transport(
+    monkeypatch: pytest.MonkeyPatch, options: list[str], payload: list[int]
+) -> None:
+    """The distinct CLI schedule operation encodes clocks and named weekdays over BLE."""
+    _fast_waits(monkeypatch)
+    transports: list[ScriptedTransport] = []
+    devices: list[ChihirosHeater] = []
+
+    async def get_device_from_address(address: str) -> ChihirosHeater:
+        assert address == TEST_ADDRESS
+        transport = ScriptedTransport(name="DYHET-test")
+        device = _make_heater(transport)
+        transports.append(transport)
+        devices.append(device)
+        return device
+
+    monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
+    result = RUNNER.invoke(cli.app, ["heater", "backlight-schedule", TEST_ADDRESS, "08:15", "21:30", *options])
+    assert result.exit_code == 0, result.output
+    assert _sent_frames(transports[0]) == [(56, payload)]
+    assert devices[0].backlight is None
+    assert devices[0].backlight_schedule == HeaterBacklightSchedule(*payload)
+    assert not transports[0].is_connected
+
+
+@pytest.mark.parametrize(("option", "level"), [("--enable", 200), ("--disable", 100)])
+def test_heater_cli_backlight_always_modes_write_production_transport(
+    monkeypatch: pytest.MonkeyPatch, option: str, level: int
+) -> None:
+    """The Boolean CLI command replaces scheduled mode with the corrected sentinel."""
+    _fast_waits(monkeypatch)
+    transports: list[ScriptedTransport] = []
+    devices: list[ChihirosHeater] = []
+
+    async def get_device_from_address(_address: str) -> ChihirosHeater:
+        transport = ScriptedTransport(name="DYHET-test")
+        device = _make_heater(transport)
+        await device.set_backlight_schedule(8, 15, 21, 30, weekdays=81)
+        transports.append(transport)
+        devices.append(device)
+        return device
+
+    monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
+    result = RUNNER.invoke(cli.app, ["heater", "backlight", TEST_ADDRESS, option])
+    assert result.exit_code == 0, result.output
+    assert _sent_frames(transports[0]) == [(56, [8, 15, 21, 30, 81]), (56, [level] * 4 + [127])]
+    assert devices[0].backlight is (option == "--enable")
+    assert devices[0].backlight_schedule is None
+    assert not transports[0].is_connected
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["24:00", "21:30"],
+        ["08:60", "21:30"],
+        ["08:15", "-1:30"],
+        ["08:15", "21:60"],
+        ["08:15", "bad"],
+        ["08:15", "21:30", "--weekdays", "noday"],
+        ["08:15", "21:30", "--disable"],
+    ],
+)
+def test_heater_cli_backlight_schedule_rejects_invalid_input_before_resolution(
+    monkeypatch: pytest.MonkeyPatch, arguments: list[str]
+) -> None:
+    """Schedules cannot select always-off sentinels or invalid clocks and weekdays."""
+
+    async def get_device_from_address(_address: str) -> ChihirosHeater:
+        raise AssertionError("device resolution must not run")
+
+    monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
+    result = RUNNER.invoke(cli.app, ["heater", "backlight-schedule", TEST_ADDRESS, *arguments])
+    assert result.exit_code == 2, result.output
 
 
 def test_heater_cli_status_does_not_present_write_only_defaults(

@@ -5,6 +5,14 @@ Chihiros LED devices. They are based on the working implementation in this
 repository plus reverse-engineering notes from the old Chihiros Magic app, the
 newer Flutter app, and BLE captures.
 
+Corrections tracked in [issue #133](https://github.com/TheMicDiet/chihiros-led-control/issues/133)
+are grounded in My Chihiros **2.8.59, versionCode 759**, Dart 3.5.3.
+The inspected `libapp.so` SHA-256 is
+`d9c3de6693760fc1f4900a7f92bca8a0a15181f6d2ab6161c697cc142780285e`.
+ELF execution establishes command construction and app routing, not successful
+operation on every physical device. Representative hardware/HCI comparison is
+still required for the changed indicator/protection commands and legacy framing.
+
 ## BLE Transport
 
 Most supported devices use a Nordic UART-style BLE service:
@@ -27,12 +35,25 @@ Some legacy app paths also reference these characteristics:
 | Legacy write/notify characteristic | `0000ffe1-0000-1000-8000-00805f9b34fb` |
 | Legacy AT characteristic | `0000ffab-0000-1000-8000-00805f9b34fb` |
 
+When FFE1 supports notifications, the app uses **that same characteristic** for
+writing and notification subscription. Nordic UART instead pairs write `...0002`
+with notify `...0003`; these layouts must not be mixed.
+`8ec90003-f315-4f60-9fb8-838830daea50` belongs to the app's **DFU** map, not
+ordinary control/status notifications.
+
+The official app uses **write-with-response** and a **30 ms queue gap**
+(`provider/bluetooth.dart @ 0x91349c–0x9134cc`). The library retains its
+30 ms inter-frame pacing; its current transport requests writes without response.
+The app's ordinary BLE queue explicitly filters out frames whose header is
+`0x5f` (`batchWrite` predicate at `0x9136e4–0x91373c`). A recovered `0x5f`
+sync builder is not evidence that those frames should be transmitted over BLE.
+
 
 ### Connection Lifetime
 
 The client reuses one configured GATT connection for multiple successful
-transactions. The connection prelude (`0x90 / 0x04` followed by two
-`0x90 / 0x09` time-sync frames), characteristic discovery, and notification
+transactions. The connection prelude (`0x5a / 0x04` followed by two
+`0x5a / 0x09` time-sync frames), characteristic discovery, and notification
 subscription run once per physical connection.
 
 After each successful transaction, the client arms a 120-second idle
@@ -83,21 +104,22 @@ Example manual brightness frame before checksum:
 
 ## Message IDs And Reserved Bytes
 
-The two message ID bytes are maintained by the app and incremented for each
-command.
+Message ID high and low bytes skip **only** `0x5a`: `0x59` advances to `0x5b`,
+and `0xffff` wraps to `0x0001`. This sequence-counter rule is independent of
+payload and checksum handling.
 
-Older LED protocol paths avoid the reserved byte `0x5a` in message ID bytes,
-parameters, and checksums:
+Parameters are copied **verbatim**, including `0x5a` (brightness 90). The XOR
+checksum is also preserved when it equals `0x5a`; it does not advance the ID.
+There is no escaping option or alternate legacy sanitizing path.
 
-- Message ID high and low bytes skip `0x5a` (the legacy command header). The
-  2.8.59 app's sequence counters skip **only** `0x5a` (`0x59` → `0x5b`), so
-  `0x5b` *can* appear as a sequence byte even though it is the notification
-  header.
-- Parameter bytes equal to `0x5a` are sent as `0x59`.
-- If the calculated checksum would be `0x5a`, the message ID is incremented and
-  the frame is rebuilt.
+Executed app output for channel 0, level 90, message ID `0001`:
 
-This repository implements those rules in `src/chihiros_led_control/protocol/frame.py`.
+```text
+5a 01 07 00 01 07 00 5a 5a
+```
+
+Evidence: `dataMaker.dart::formatData @ 0x8e8e78`, copy loop
+`0x8e9060–0x8e90ec`, checksum helper `_addVerifyByte @ 0x8e921c`.
 
 ## Checksum
 
@@ -129,7 +151,7 @@ Set a single channel to a specific brightness:
 Parameter details:
 
 - `color`: channel ID
-- `brightness`: `0` to `100`
+- `brightness`: model-specific wire level (see below), not a universal percentage
 
 Known channel IDs:
 
@@ -150,69 +172,51 @@ Captured example for channel `0` at `100%`:
 
 ### Max Brightness Per Channel
 
-The vendor app's offline device registry (`config/device_offline.dart`)
-assigns a per-channel `max_level` to every LED device. Every LED model this
-repository supports is registered as a plain `BleLed` with
-`max_level: [100, ...]`, so the wire level `0..100` is both the UI percentage
-and the channel maximum. The registry also defines the channel layout used by
-`SUPPORTED_MODELS`:
+Library LED inputs use **raw model channel levels**. `LedSpec` describes each
+channel's maximum and its normalization; omitted maxima retain the existing
+100-level model contract. The frame builder accepting a byte is not evidence
+that any particular model supports that level.
 
-| Device label(s) | Category | `device_type` | `max_level` | Channels |
+Verified embedded metadata:
+
+| Prefix | App device type | Channels | Raw maxima | Wire normalization |
 | --- | --- | --- | --- | --- |
-| `DYLED` | Commander 4 / 四路控制器 | `BleLed` | `[100, 100, 100, 100]` | 4 (red/green/blue/white) |
-| `DYNLED` | Commander 4 / 四路控制器 | `SeaLed` | `[100, 100, 100, 100]` | 4 (red/green/blue/white) |
-| `DYARGB`, `DYRGBA+`, `DYNARGB` | RGB+APLUS | `BleLed` | `[100, 100, 100]` | 3 (RGB) |
-| `DYREE` | RGB VIVID | `BleLed` | `[100, 100, 100]` | 3 (RGB) |
-| `DYONE` | Commander X / 一路控制器 | `BleLed` | `[100]` | 1 |
-| `DYTWO` | X300 | `BleLed` | `[100, 100]` | 2 (white/warm) |
-| `DYA` | A series / A系列 | `BleLed` | `[100]` | 1 |
-| `DYWRGB` | WRGB2 | `BleLed` | `[100, 100, 100]` | 3 (RGB) |
-| `DYNWRGB`, `DYNW90`, `DYNW30/45/60/12P` | WRGB2 | `SeaLed` | `[100, 100, 100]` | 3 (RGB) |
-| `DYC` | New C / C系列 | `BleLed` | `[100]` | 1 |
-| `DYNC2`, `DYNC2N` | New C / C II | `SeaLed` | `[100]` | 1 |
-| `DYSEA` | SEA_LED / 海水灯 | `SeaLed` | `[100, 100, 100, 100]` | 4 (WRGB) |
-| `DYRGBV` | RGB VIVID2 | `NewBleLed` | `[115, 130, 200]` | 3 (RGB) |
-| `DYNVVD`, `DYNV` | RGB VIVID2 | `SeaLed` | `[115, 130, 200]` | 3 (RGB) |
-| `DYWPRO30–90`, `DYWPR120` | WRGB II Pro | `SeaLed`¹ | `[100, 100, 100, 100]` | 4 (WRGB) |
-| `DYSILN`, `DYSL30–120` | WRGB II Slim | `SeaLed`¹ | `[100, 100, 100]` | 3 (RGB) |
-| `DYU550–1500` | Universal WRGB | `SeaLed`¹ | `[100, 100, 100, 100]` | 4 (WRGB) |
-| `DYVVD3` | WRGB VIVID III | `SeaLed`² | `[100, 100, 100, 100]` | 4 (WRGB) + fan |
+| `DYRGBV` | `NewBleLed` | RGB | `[115, 130, 200]` | unchanged |
 
-¹ device_type is server metadata (not in the 2.8.59 offline registry); SeaLed
-is inferred from the vendor's new-gen convention and the numeric suffix being
-light length (see `models.py`).
+The app passes these maxima to its slider, and base `ChihirosLed::setManual`
+forwards the selected raw level unchanged. Thus this model can transmit values
+above 100 in manual commands and custom-curve points. Do not extrapolate its
+maxima to server-only models or similarly named prefixes.
 
-² binary-verified: the VIVID III's device_type is `"NewVivid3"` (factory key
-`pp+0xfe08` → `NewVivid3` class, which has no `setAuto` override), and
-`"NewVivid3"` is not in `{BleLed, NewBleLed}`, so `_judgeNewLed` sets
-`field_147` true → SeaLed family.
+`NewASeriesLed` and its `MagneticLed` subclass instead send
+`floor(requested * 100 / max_level[channel])`, except requested **1 stays 1**
+and **0 stays 0**. With maximum 125, requests `0, 1, 2, 90, 125` encode as
+`0, 1, 1, 72, 100`. This normalization is explicit model metadata; it is not
+selected by a guessed physical prefix or applied universally to levels above 100.
+Schedule snapshots use the selected model's wire limits and normalization rather
+than dropping every level above 100.
 
-Findings from the 2.8.59 app decompilation:
+Home Assistant brightness (`0..255`) and schedule/curve service levels
+(`0..100` percent) remain percentage-based and convert channel-by-channel to
+raw model units. They are not silently reinterpreted as raw levels.
+The library and CLI accept raw channel units.
 
-- The model factory maps `BleLed`, `NewBleLed`, and `SeaLed` to the base
-  `ChihirosLed` class, whose `setManual(channel, level)` sends the level
-  verbatim on the wire (`0x5a / 0x07`). Even `RGB VIVID2` with a `[115, 130,
-  200]` max level therefore uses `0..100` wire values; `max_level` is metadata
-  (used by the app for power/display estimation), not a wire scale.
-- Only the `NewA2Led` device type maps to the scaling `NewASeriesLed` class,
-  which converts `level` to `max(1, floor(level * 100 / max_level[channel]))`
-  before sending. No repository-supported model uses this class.
-- This matches the existing behaviour: brightness validation is `0..100` and
-  schedule snapshot levels above `100` are treated as invalid.
+Evidence: embedded `config/device_offline.dart @ 0x920834–0x920848`,
+slider maxima path `0xca81d4–0xca852c`, base setter `0xe6455c`, scaled setter
+`0xe64374`. No speculative DYDD/DYCOM channel-layout or max125 mappings are added.
 
 ## Auto Mode
 
-Auto mode can be enabled with:
+The driver selects the automatic controller explicitly:
 
-- Command ID: `0x5a` / `90`
-- Mode: `0x05` / `5`
-- Parameters: `[18, 255, 255]`
+| Operation | Mode-switch payload (`0x5a / 0x05`) | Data frames |
+| --- | --- | --- |
+| Custom curve | `[3, 255, 255]` (`switchToAuto`) | `0x5a / 0x06` |
+| Sunrise/sunset scene | `[18, 255, 255]` (`switchToScene`) | `0xa5 / 0x19` |
 
-The same payload is the vendor app's `switchToScene()` frame: it activates the
-stored auto schedule. Manual mode uses the vendor app's `switchToManual()`
-frame `[11, 255, 255]` (see below). The vendor app's own `switchToAuto()`
-frame uses `[3, 255, 255]`; this repository keeps the `[18, 255, 255]`
-schedule-driven form used by LED devices.
+`enable_auto_mode` syncs time and enables the selected controller. Manual
+brightness or `set_manual_mode` leaves auto operation without forgetting which
+automatic controller was selected.
 
 Manual mode can be entered with:
 
@@ -220,11 +224,9 @@ Manual mode can be entered with:
 - Mode: `0x05` / `5`
 - Parameters: `[11, 255, 255]`
 
-Auto mode and its settings can be reset with:
-
-- Command ID: `0x5a` / `90`
-- Mode: `0x05` / `5`
-- Parameters: `[5, 255, 255]`
+Reset depends on the selected automatic controller: custom curves use
+`0x5a / 0x05 [5, 255, 255]`, scenes use `[40, 255, 255]` (`0x28`).
+They are not interchangeable resets.
 
 Other observed `0x5a / 0x05` first parameters:
 
@@ -237,9 +239,9 @@ Other observed `0x5a / 0x05` first parameters:
 | `11` / `0x0b` | `switchToManual`; sent by the vendor app before manual slider control on the WRGB VIVID III |
 | `17` | `autoFan` (the 2.8.59 app's fan-auto-mode switch, `[0x11, 0xFF, 0xFF]`) |
 | `18` | `switchToScene` / enable auto schedule |
-| `40` | `resetLedQuick`, reset scene data (used after scene delete) |
-| `48` / `49` | VIVID III `vvd3tempProtect` off / on (`[0x30\|0x31, 0xFF, 0xFF]`) |
-| `49` / `50` | VIVID III `vvd3BluetoothLed` off / on (`[0x31\|0x32, 0xFF, 0xFF]`) |
+| `40` / `0x28` | `resetLedQuick`, reset scene data |
+| `48` / `49` | VIVID III `vvd3tempProtect` on / off (`[0x30\|0x31, 0xff, 0xff]`) |
+| `51` / `50` | VIVID III `vvd3BluetoothLed` on / off (`[0x33\|0x32, 0xff, 0xff]`) |
 | `0x22` / `0x23` | `setFanEco` on / off (standalone fan echo mode) |
 | `0x2c` / `0x2d` | `setTemType` °C / °F (heater) |
 | `0x2e` / `0x2f` | `setHeaterAuto` on / off |
@@ -253,6 +255,32 @@ Create or update an automatic schedule setting:
 - Mode: `0x19` / `25`
 - Parameters:
   `[sunrise hour, sunrise minute, sunset hour, sunset minute, ramp up minutes, weekdays, brightness values by channel id, 255 padding...]`
+
+Only a scene ending at **total minutes zero** (`00:00`) is rewritten to
+`23:59`; `12:00`, for example, remains unchanged.
+
+`replace_settings(Sequence[LedSchedule])` syncs time, sends scene reset
+`5a/05 [28, ff, ff]`, selects scene mode `5a/05 [12, ff, ff]`, then writes
+`a5/19` entries (these payloads are hexadecimal). The entire sequence is paced
+as one transaction. Incremental `add_setting`/`remove_setting` do not claim
+ownership of previously unknown device schedules.
+
+`LedSpec.scene_min_firmware` makes the firmware/capability gate explicit.
+Known firmware below the configured minimum (normally 20), or an explicit
+`None` capability, rejects scenes. Unknown firmware retains the established
+scene API; a successful write is not capability confirmation.
+Custom `5a/06` curves remain available independently of this scene gate.
+
+After a successful full replacement, the driver retains immutable wire payloads
+as its authoritative, in-memory replay schedule. Lite auto initialization
+replays them after reset/mode selection even when unchanged; it does not trust
+a matching schedule hash. Without an authoritative schedule it never resets
+the device on reconnect. Failed/incremental mutations relinquish replay
+authority rather than clearing and replaying stale data.
+
+The HA replacement services select auto mode after a successful transaction.
+Validation errors (unsupported weekdays, firmware, or levels) do not trigger
+a cleanup reset of an existing device schedule.
 
 The parameter payload is 14 bytes total. Brightness values are written in
 protocol channel order. RGB models use red, green, and blue brightness fields:
@@ -311,15 +339,12 @@ depends on the device family (`field_147 = device_type not in
   slot (a remainder above 14 advances to the next slot); the app's BleLed
   capacity allows up to 96 slots for 48-hour cross-day curves
 
-Payload bytes are sent **verbatim**: the 2.8.59 app's `formatData` does not
-escape `0x5A` payload bytes, so a level of 90 stays `0x5A` on the wire. The
-`create_auto_point_command` helper in this repository follows the app here
-(`avoid_reserved_byte=False`). A full curve is a burst of these frames, 30 ms
-apart, sent in one BLE transaction; clear the stored curve first with
-`0x5a / 0x05 [5, 255, 255]`. The Home Assistant `chihiros.set_auto_curve`
-service writes curves in this format. (Note: the BleLed/SeaLed *model lists*
-above are inferred from each model's registry `device_type`; the encoding
-selection itself is binary-verified.)
+Payload and checksum bytes are sent **verbatim**, including level 90 (`0x5a`).
+A full curve is a burst of point frames, 30 ms apart. Custom points remain a
+separate controller mode from `0xa5 / 0x19` sunrise/sunset scenes. Firmware
+>=20 does **not** universally eliminate point commands; the app's `_setAuto`
+retains an independent point path. Choose the operation and model capabilities
+explicitly rather than converting all schedules to scenes.
 
 Single-channel A2 devices also have a distinct point-based custom-curve
 protocol using a four-parameter `0x5a / 0x06` command. It is not interchangeable
@@ -344,6 +369,19 @@ Weekdays are encoded as a 7-bit mask:
 
 For example, Monday, Wednesday, and Sunday encode as `64 + 16 + 1 = 81`.
 
+The app suppresses weekday selection for these exact Lite-class prefixes:
+
+```text
+DYZSD DYNA2N DYNA2 DYNC2N DYCXD DYECO MDTM DYDD
+DYCOM DYNCM DYFISHDL DYLITE DYZLPD DYZPRO
+```
+
+Such devices require an everyday schedule. This classification also controls
+library-owned auto initialization/reconnect replay; it does not establish
+channel layouts, maxima, or server device types for unknown prefixes.
+Evidence: weekday guide `0xa97778–0xa97928`; Lite replay override
+`led_info.dart @ 0xa9a5f4–0xa9a648`.
+
 ## Set Time
 
 The current time is required for auto mode and can be set with:
@@ -364,6 +402,10 @@ Captured newer-style examples use the weekday-like form.
 Old LED notifications can start with `0x5b`. For these notifications, byte `1`
 is a firmware/protocol version byte rather than the TX marker. One captured LED
 reported firmware/protocol version `0x17` / `23`.
+
+The generic app dispatcher recognizes both `0x5b` and `0xb5`, but several
+model/widget parsers explicitly require `0x5b`. This does **not** establish a
+shared layout for every `0xb5` message; the library does not blanket-alias headers.
 
 Runtime/status query:
 
@@ -450,11 +492,13 @@ connected. It uses the `0x5b` header with mode `0x0b`:
 | `1` | Firmware/protocol version | `0x1b` / `27` on the captured VIVID III |
 | `6..7` | Fan RPM | Big-endian measured fan speed; `0x0258 = 600` rpm at 25%, about `1980` rpm at 100% |
 | `8` | Temperature | Whole degrees Celsius |
+| `10` | Fan present | `data[10] == 1` updates the app's `have_fan`, not temperature protection |
 | `16` | Uptime counter | Increments between periodic notifications |
 
-The trailing byte is not a valid XOR checksum for this mode, so parsers should
-treat bytes after offset `8` as opaque. Fan speed is set with the
-`0x5a / 0x0f` command listed above; measured RPM follows the set percentage.
+The trailing byte is not a valid XOR checksum for this mode. The library
+preserves bytes beyond its decoded fan/temperature fields as raw data; byte 10
+must not overwrite the optimistic temperature-protection setting.
+Fan speed is set with `0x5a / 0x0f`; measured RPM follows the set percentage.
 
 The vendor app's `vvd3_fan_widget` reads this same `0x5b`/`0x0b` frame — its
 disassembly immediates `#0xb6`/`#0x16` are Dart smis, i.e. `0x5b`/`0x0b`:
@@ -477,22 +521,23 @@ numbers.
 
 ### VIVID III Switches
 
-The 2.8.59 app's `Vivid3Info` (beyond the shared `LedInfo` set) adds two
-boolean settings, both binary-verified in the encoder disassembly. Neither has
-a readback notification, so state is tracked optimistically:
+The 2.8.59 app forwards both switch Booleans unchanged to the builders.
+Executed `vvd3BluetoothLed @ 0xaa11d4` and `vvd3tempProtect @ 0xaa0c78`
+establish these polarities. Neither has a protection/indicator readback;
+the library updates optimistic state only after a successful write:
 
 | Action | Frame | Payload |
 | --- | --- | --- |
-| Temperature protection | `0x5a / 0x05` | `[0x31\|0x30, 0xff, 0xff]` — `vvd3tempProtect`, byte 0 = 49 (on) / 48 (off) |
-| Indicator LED | `0x5a / 0x05` | `[0x32\|0x31, 0xff, 0xff]` — `vvd3BluetoothLed`, byte 0 = 50 (on) / 49 (off) |
+| Temperature protection | `0x5a / 0x05` | `[0x30\|0x31, 0xff, 0xff]` — byte 0 = 48 (on) / 49 (off) |
+| Indicator LED | `0x5a / 0x05` | `[0x33\|0x32, 0xff, 0xff]` — byte 0 = 51 (on) / 50 (off) |
 
 Example frames (msg id `00 01`):
 
 ```text
-5a 01 08 00 01 05 31 ff ff 3c   temperature protection ON
-5a 01 08 00 01 05 30 ff ff 3d   temperature protection OFF
-5a 01 08 00 01 05 32 ff ff 3f   indicator LED ON
-5a 01 08 00 01 05 31 ff ff 3c   indicator LED OFF
+5a 01 08 00 01 05 30 ff ff 3d   temperature protection ON
+5a 01 08 00 01 05 31 ff ff 3c   temperature protection OFF
+5a 01 08 00 01 05 33 ff ff 3e   indicator LED ON
+5a 01 08 00 01 05 32 ff ff 3f   indicator LED OFF
 ```
 
 The integration exposes both as optimistic switch entities that restore their
@@ -673,7 +718,8 @@ bitfield are read back from the device.
 | `90` | `43` / `0x2b` | `[flag, temp_whole, temp_hundredths, power]` | `setHeaterCode`: target temperature and power. `flag` is `0` for the manual setting (sent right after `switchToManual`) and `1` for the auto-mode defaults (`initAutoDefault`). Temperatures split into whole degrees plus the fraction in **hundredths** (`CommonTool.getDec`, the same 2-digit convention as the dosing calibration volume: 36.9 °C = `[36, 90]`), and power rides as exact 10 W increments (800 W = `80`); values not divisible by 10 cannot be represented |
 | `90` | `47` / `0x2f` | `[temp_whole, temp_hundredths]` | `setHeaterProtectedTemp`: overheat protection limit |
 | `90` | `48` / `0x30` | `[temp_whole, temp_hundredths]` | `setHeaterCalibrate`: measured reference temperature the sensor should read |
-| `165` | `56` / `0x38` | `[level, level, level, level, 127]` | `deviceBacklight`: display backlight on (`100`) / off (`200`); the app's backlight widget also writes the schedule (start/end hour and weekday mask) through this mode |
+| `165` | `56` / `0x38` | `[level, level, level, level, 127]` | `deviceBacklight`: always on (`200`) / always off (`100`) |
+| `165` | `56` / `0x38` | `[start_hour, start_minute, end_hour, end_minute, weekmask]` | Scheduled display backlight |
 | `90` | `5` | `[3, 255, 255]` | `switchToAuto` |
 | `90` | `5` | `[11, 255, 255]` | `switchToManual` (shared with the LED family) |
 | `90` | `5` | `[18, 255, 255]` | `switchToScene`: apply the stored scene/schedule |
@@ -681,6 +727,17 @@ bitfield are read back from the device.
 | `90` | `5` | `[46\|47, 255, 255]` | `setHeaterAuto`: auto heating on (46) / off (47) |
 | `90` | `5` | `[44\|45, 255, 255]` | `setTemType`: display Celsius (44) / Fahrenheit (45) |
 | `90` | `5` | `[58, 255, 255]` | `heaterResetWorkTime`: zero the runtime counter after cleaning |
+
+Backlight operations are distinct: Boolean writes select always-on/off and
+replace a prior schedule. `set_backlight_schedule(8, 15, 21, 30, weekdays=81)`
+sends `[8, 15, 21, 30, 81]`. Hours are `0..23`, minutes `0..59`, and the
+weekday mask uses `0..127`. After a successful schedule write, `backlight`
+is `None` (not a measured on/off state) and `backlight_schedule` holds the
+schedule. Failed writes leave tracked state unchanged.
+
+Polarity evidence is executed `deviceBacklight @ 0x9e8364`; the widget's
+`change @ 0x9e8a50` forwards the Boolean unchanged. These byte mappings do not
+by themselves prove successful operation on physical heaters.
 
 `setTemperature` and `setPower` both send `switchToManual` immediately followed
 by the mode-43 state frame in one 30 ms-paced batch, so the heater also enters
@@ -731,8 +788,8 @@ repository's encoders (message id `0005`, checksum omitted):
 | `5a 01 09 … 2b 01 14 00 32` | `setHeaterCode` auto defaults: 20.0 °C at 500 W |
 | `5a 01 07 … 2f 24 5a` | `setHeaterProtectedTemp` 36.9 °C (consecutive slider steps send `24 32`/`24 3c`/`24 46`/`24 50` for 36.5/36.6/36.7/36.8) |
 | `5a 01 07 … 30 17 00` | `setHeaterCalibrate` 23.0 °C |
-| `a5 01 0a … 38 64 64 64 64 7f` | `deviceBacklight` on (the backlight toggle's `change(true)`) |
-| `a5 01 0a … 38 c8 c8 c8 c8 7f` | `deviceBacklight` off (`change(false)`) |
+| `a5 01 0a … 38 64 64 64 64 7f` | `deviceBacklight` always off (`change(false)`, APK-executed polarity) |
+| `a5 01 0a … 38 c8 c8 c8 c8 7f` | `deviceBacklight` always on (`change(true)`, APK-executed polarity) |
 
 The protection-temperature series is what pins the temperature fraction to
 hundredths rather than tenths, and the 25.0 °C / 200 W pair confirms the
@@ -741,14 +798,19 @@ immediates, i.e. twice these values).
 
 ## Decompiler Notes
 
-The Flutter app's central frame builder appears as
-`sub_8c25ac(parameterLength, commandId, mode, parameterBytes)` in decompiled
-pseudocode, with a checksum helper around native address `0x8c2950`.
+For the identified 2.8.59 ELF, the Flutter app's central frame builder is
+`dataMaker.dart::formatData @ 0x8e8e78` with `_addVerifyByte @ 0x8e921c`.
+Addresses from other builds or old local verifiers are not interchangeable.
 
 Many integer arguments in the decompiled Dart AOT pseudocode are tagged small
 integers. A displayed first argument of `4` often means an actual parameter
 length of `2`, `6` means `3`, and `0xa` means `5`. Command ID and mode values
 listed in these docs are actual byte values.
+
+Boolean decoding needs separate care: Dart `true = null + 0x20` and
+`false = null + 0x30`; a set bit in `tst #0x10` therefore means **false**.
+The old local verifier inverted this condition. Do not use its output as
+independent evidence for switch polarity.
 
 The old app also contains an unused `0xaa ...` frame builder. No callers were
 found, so it should not be treated as the active BLE protocol.

@@ -28,9 +28,14 @@ from .coordinator import ChihirosDataUpdateCoordinator
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .models import ChihirosData
 from .runtime import LedChihirosClient, is_device_kind
-from .vendor.chihiros_led_control.models import DeviceKind
+from .vendor.chihiros_led_control.models import DeviceKind, LedSpec
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _channel_maximum(device: LedChihirosClient, color: str) -> int:
+    """Return the raw model-unit maximum for a Home Assistant channel."""
+    return cast(LedSpec, device.model.spec).max_level(device.colors[color])
 
 
 async def async_setup_entry(
@@ -134,7 +139,7 @@ class ChihirosLightEntity(
         """Instruct the light to turn on."""
         if ATTR_BRIGHTNESS in kwargs:
             hass_brightness = int(kwargs[ATTR_BRIGHTNESS])
-            brightness = max(1, math.ceil((hass_brightness / 255) * 100))
+            brightness = math.ceil(hass_brightness * _channel_maximum(self._device, self._color) / 255)
             _LOGGER.debug("Turning on: %s to %s", self.name, brightness)
             await self._set_entity_brightness(brightness)
             self._attr_brightness = hass_brightness
@@ -142,7 +147,7 @@ class ChihirosLightEntity(
             # Restore the last known brightness instead of snapping to full,
             # so toggling off/on keeps the previous level.
             hass_brightness = self._attr_brightness or 255
-            brightness = max(1, math.ceil((hass_brightness / 255) * 100))
+            brightness = math.ceil(hass_brightness * _channel_maximum(self._device, self._color) / 255)
             _LOGGER.debug("Turning on: %s to %s", self.name, brightness)
             await self._set_entity_brightness(brightness)
             self._attr_brightness = hass_brightness
@@ -289,10 +294,9 @@ class ChihirosRGBLightEntity(
         self.schedule_update_ha_state()
         _LOGGER.debug("Turned off: %s", self.name)
 
-    @staticmethod
-    def _scale_channel(value: int, master_brightness: int) -> int:
-        """Scale a 0-255 colour value by master brightness to a 0-100 device level."""
-        return max(0, math.ceil((value * master_brightness) / 255 / 255 * 100))
+    def _scale_channel(self, channel: str, value: int, master_brightness: int) -> int:
+        """Convert HA colour/brightness units to this channel's raw model units."""
+        return math.ceil(value * master_brightness * _channel_maximum(self._device, channel) / (255 * 255))
 
     async def _set_rgb_brightness(
         self,
@@ -304,17 +308,17 @@ class ChihirosRGBLightEntity(
         if len(color) == 4:
             r, g, b, w = color
             channels = {
-                "red": self._scale_channel(r, master_brightness),
-                "green": self._scale_channel(g, master_brightness),
-                "blue": self._scale_channel(b, master_brightness),
-                "white": self._scale_channel(w, master_brightness),
+                "red": self._scale_channel("red", r, master_brightness),
+                "green": self._scale_channel("green", g, master_brightness),
+                "blue": self._scale_channel("blue", b, master_brightness),
+                "white": self._scale_channel("white", w, master_brightness),
             }
         else:
             r, g, b = color
             channels = {
-                "red": self._scale_channel(r, master_brightness),
-                "green": self._scale_channel(g, master_brightness),
-                "blue": self._scale_channel(b, master_brightness),
+                "red": self._scale_channel("red", r, master_brightness),
+                "green": self._scale_channel("green", g, master_brightness),
+                "blue": self._scale_channel("blue", b, master_brightness),
             }
 
         _LOGGER.debug("Setting RGB brightness on %s: %s", self.name, channels)

@@ -674,11 +674,13 @@ def test_set_auto_curve_sends_all_points_in_one_transaction() -> None:
     asyncio.run(run())
 
     assert len(sent_batches) == 1
-    assert len(sent_batches[0]) == 3
+    assert len(sent_batches[0]) == 5
+    assert sent_batches[0][0][5:9] == bytes([5, 5, 255, 255])
+    assert sent_batches[0][1][5:9] == bytes([5, 3, 255, 255])
     # SeaLed encoding (DYNLED): [channel, hour, minute, level]
-    assert sent_batches[0][0][5:10] == bytes([6, 0, 8, 0, 100])  # 480 min = 08:00
-    assert sent_batches[0][1][5:10] == bytes([6, 1, 8, 0, 60])
-    assert sent_batches[0][2][5:10] == bytes([6, 2, 12, 0, 0])  # 720 min = 12:00
+    assert sent_batches[0][2][5:10] == bytes([6, 0, 8, 0, 100])  # 480 min = 08:00
+    assert sent_batches[0][3][5:10] == bytes([6, 1, 8, 0, 60])
+    assert sent_batches[0][4][5:10] == bytes([6, 2, 12, 0, 0])  # 720 min = 12:00
 
 
 def test_set_auto_curve_rejects_empty_or_out_of_range_points() -> None:
@@ -929,8 +931,8 @@ def test_set_temp_protect_sends_command_and_tracks_state() -> None:
 
     asyncio.run(run())
 
-    assert sent_commands[0][5:8] == bytes([5, 0x31, 0xFF])
-    assert sent_commands[1][5:8] == bytes([5, 0x30, 0xFF])
+    assert sent_commands[0][5:8] == bytes([5, 0x30, 0xFF])
+    assert sent_commands[1][5:8] == bytes([5, 0x31, 0xFF])
 
 
 def test_set_bluetooth_led_sends_command_and_tracks_state() -> None:
@@ -963,7 +965,7 @@ def test_set_bluetooth_led_sends_command_and_tracks_state() -> None:
 
     asyncio.run(run())
 
-    assert sent_commands[0][5:8] == bytes([5, 0x32, 0xFF])
+    assert sent_commands[0][5:8] == bytes([5, 0x33, 0xFF])
 
 
 def test_vivid3_switches_reject_non_vivid3_models() -> None:

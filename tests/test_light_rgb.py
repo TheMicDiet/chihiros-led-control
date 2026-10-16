@@ -876,3 +876,63 @@ async def test_rgb_entity_restore_without_color_keeps_default_color(
 
 
 # --- availability (not always available) ---
+
+
+@pytest.mark.parametrize(
+    ("brightness", "expected"),
+    [
+        (255, {"red": 115, "green": 130, "blue": 200}),
+        (128, {"red": 58, "green": 66, "blue": 101}),
+        (1, {"red": 1, "green": 1, "blue": 1}),
+    ],
+)
+async def test_extended_model_ha_brightness_uses_channel_maxima(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    brightness: int,
+    expected: dict[str, int],
+) -> None:
+    """HA brightness remains 0..255 while driver calls use raw channel units."""
+    model = DeviceModel("RGB VIVID II", ("DYRGBV",), LedSpec(RGB_CHANNELS, channel_maxima={0: 115, 1: 130, 2: 200}))
+    _entry, client = await _setup(hass, monkeypatch, model)
+    entity_id = _entity_id(er.async_get(hass), "rgb")
+    await hass.services.async_call(
+        LIGHT_DOMAIN,
+        SERVICE_TURN_ON,
+        {ATTR_ENTITY_ID: entity_id, ATTR_RGB_COLOR: [255, 255, 255], ATTR_BRIGHTNESS: brightness},
+        blocking=True,
+    )
+    await _flush()
+    assert client.brightness_calls[-1] == expected
+    assert hass.states.get(entity_id).attributes[ATTR_BRIGHTNESS] == brightness
+
+
+async def test_extended_model_rgb_color_uses_each_channel_scale(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RGB values and master brightness multiply before conversion to raw units."""
+    model = DeviceModel("RGB VIVID II", ("DYRGBV",), LedSpec(RGB_CHANNELS, channel_maxima={0: 115, 1: 130, 2: 200}))
+    _entry, client = await _setup(hass, monkeypatch, model)
+    entity_id = _entity_id(er.async_get(hass), "rgb")
+    await hass.services.async_call(
+        LIGHT_DOMAIN,
+        SERVICE_TURN_ON,
+        {ATTR_ENTITY_ID: entity_id, ATTR_RGB_COLOR: [255, 128, 0], ATTR_BRIGHTNESS: 128},
+        blocking=True,
+    )
+    assert client.brightness_calls[-1] == {"red": 58, "green": 33, "blue": 0}
+
+
+async def test_explicit_single_channel_maximum_ha_brightness(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Single-channel HA entities also convert 0..255 to raw model units."""
+    model = DeviceModel("Explicit maximum", (), LedSpec(WHITE_CHANNELS, channel_maxima={0: 125}))
+    _entry, client = await _setup(hass, monkeypatch, model)
+    entity_id = _entity_id(er.async_get(hass), "white")
+    await hass.services.async_call(
+        LIGHT_DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: entity_id, ATTR_BRIGHTNESS: 128}, blocking=True
+    )
+    assert client.brightness_calls[-1] == {"white": 63}
+    await hass.services.async_call(LIGHT_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: entity_id}, blocking=True)
+    assert client.brightness_calls[-1] == {"white": 0}

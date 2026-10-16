@@ -1,9 +1,9 @@
 # A2 Custom Schedule Protocol
 
 This note records BLE traffic captured from a single-channel Chihiros A2 while
-the official app created custom brightness schedules. It is intended as a
-reference for adding custom-curve support later. The behavior described here is
-not implemented by the library yet.
+the official app created custom brightness schedules. The library implements
+raw point transmission and reset/custom-mode setup through `set_auto_curve`;
+app-side interpolation is not reproduced.
 
 ## Capture Context
 
@@ -57,9 +57,9 @@ commands:
 5a / 05 [03, ff, ff]  initialize or select custom-curve mode
 ```
 
-The meaning of `[03, ff, ff]` is inferred from its position in the sequence and
-needs confirmation. It consistently follows the reset and precedes the point
-writes.
+The reset and `[03, ff, ff]` (`switchToAuto`) commands precede point writes.
+This custom-curve setup is separate from sunrise/sunset scene setup
+(`resetLedQuick [28, ff, ff]`, then `switchToScene [12, ff, ff]`, hex bytes).
 
 The first profile's final commit was:
 
@@ -74,8 +74,8 @@ The first profile's final commit was:
 5a010900cf0600070000c6     channel 0, 07:00, 0%
 ```
 
-The points were not transmitted chronologically. A future implementation
-should not rely on write order to determine curve order.
+The points were not transmitted chronologically. The library preserves the
+caller's transmission order; callers should model the curve by point times.
 
 ## App Curve Expansion
 
@@ -156,20 +156,19 @@ interpretation is strong but not yet proven by a capture made at another time.
 
 ## Implementation Guidance
 
-A future custom-schedule implementation should:
+The library's `set_auto_curve`:
 
-- represent this as a separate capability from the `0xa5 / 0x19` sunrise and
-  sunset schedule API;
-- add a four-parameter `0x5a / 0x06` command builder without removing support
-  for the older indexed three-parameter variant;
-- send the reset/setup sequence before committing all points;
-- validate channel, hour, minute, and percentage ranges;
-- preserve the caller's point order only for transmission, and treat schedule
-  semantics as time-sorted;
-- avoid claiming that a save succeeded based on a snapshot notification,
-  because this capture contains no post-save application acknowledgement; and
-- keep app-side interpolation separate from raw point transmission until its
-  endpoint behavior is understood.
+- selects three- or four-parameter point encoding from `LedSpec.protocol`;
+- sends reset `[5, 255, 255]`, custom-auto mode `[3, 255, 255]`, then points
+  in one paced transaction;
+- validates channel, time and per-model raw level limits, keeping Home Assistant
+  service percentages distinct from library raw units;
+- keeps custom curves available independently of the firmware-20 scene feature.
+
+There is no post-save application acknowledgement in this capture. Successful
+GATT writes do not prove that a later snapshot will reproduce the curve.
+App-side interpolation remains separate from raw point transmission because
+its endpoint behavior is not established.
 
 ## Follow-up Captures Needed
 

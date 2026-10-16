@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from types import MappingProxyType
 
 from .frame import create_command_encoding
@@ -21,11 +22,9 @@ HEATER_DEFAULT_PROTECTOR_TEMPERATURE_C = 37.0
 # the captured ``initAutoDefault`` frame.
 HEATER_DEFAULT_AUTO_TEMPERATURE_C = 20.0
 HEATER_DEFAULT_AUTO_POWER_WATTS = 500
-# The display backlight toggle sends a uniform four-byte level plus a fixed
-# trailer; the app's own literals (and captured frames) use 100 for on and
-# 200 for off.
-HEATER_BACKLIGHT_ON_LEVEL = 100
-HEATER_BACKLIGHT_OFF_LEVEL = 200
+# APK-verified always-on/off sentinels; scheduled writes use clock fields instead.
+HEATER_BACKLIGHT_ON_LEVEL = 200
+HEATER_BACKLIGHT_OFF_LEVEL = 100
 HEATER_BACKLIGHT_TRAILER = 127
 
 HEATER_ALARM_BITS = MappingProxyType(
@@ -39,6 +38,29 @@ HEATER_ALARM_BITS = MappingProxyType(
         "sensor_failure": 0x40,
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class HeaterBacklightSchedule:
+    """Write-only backlight schedule with Monday bit 6 through Sunday bit 0."""
+
+    start_hour: int
+    start_minute: int
+    end_hour: int
+    end_minute: int
+    weekdays: int = 127
+
+    def __post_init__(self) -> None:
+        """Require clock fields and a seven-bit weekday mask."""
+        for name, value, maximum in (
+            ("start_hour", self.start_hour, 23),
+            ("start_minute", self.start_minute, 59),
+            ("end_hour", self.end_hour, 23),
+            ("end_minute", self.end_minute, 59),
+            ("weekdays", self.weekdays, 127),
+        ):
+            if type(value) is not int or not 0 <= value <= maximum:
+                raise ValueError(f"Backlight {name} must be an integer between 0 and {maximum}")
 
 
 def heater_alarm_names(alarms: int) -> tuple[str, ...]:
@@ -84,7 +106,7 @@ def create_heater_set_command(
     """
     whole, tenths = split_heater_temperature(temperature_c)
     parameters = [1 if auto else 0, whole, tenths, encode_heater_power_watts(power_watts)]
-    return create_command_encoding(90, 43, msg_id, parameters, avoid_reserved_byte=False)
+    return create_command_encoding(90, 43, msg_id, parameters)
 
 
 def create_switch_to_manual_mode_command(msg_id: tuple[int, int]) -> bytearray:
@@ -99,7 +121,7 @@ def create_query_status_command(msg_id: tuple[int, int]) -> bytearray:
 
 def create_heater_auto_mode_command(msg_id: tuple[int, int]) -> bytearray:
     """Create the heater's ``switchToAuto()`` frame ``(0x5A, 5, [3, 255, 255])``."""
-    return create_command_encoding(90, 5, msg_id, [3, 255, 255], avoid_reserved_byte=False)
+    return create_command_encoding(90, 5, msg_id, [3, 255, 255])
 
 
 def create_heater_scene_command(msg_id: tuple[int, int]) -> bytearray:
@@ -108,7 +130,7 @@ def create_heater_scene_command(msg_id: tuple[int, int]) -> bytearray:
     Applies the stored scene/auto schedule; the app sends it 300 ms after
     ``resetLedQuick`` when a scene is edited.
     """
-    return create_command_encoding(90, 5, msg_id, [18, 255, 255], avoid_reserved_byte=False)
+    return create_command_encoding(90, 5, msg_id, [18, 255, 255])
 
 
 def create_heater_auto_heating_command(msg_id: tuple[int, int], enabled: bool) -> bytearray:
@@ -117,7 +139,7 @@ def create_heater_auto_heating_command(msg_id: tuple[int, int], enabled: bool) -
     The boolean is passed through unchanged: auto heating on is sub-command 46
     and off is 47.
     """
-    return create_command_encoding(90, 5, msg_id, [46 if enabled else 47, 255, 255], avoid_reserved_byte=False)
+    return create_command_encoding(90, 5, msg_id, [46 if enabled else 47, 255, 255])
 
 
 def create_heater_temperature_unit_command(msg_id: tuple[int, int], *, celsius: bool) -> bytearray:
@@ -126,7 +148,7 @@ def create_heater_temperature_unit_command(msg_id: tuple[int, int], *, celsius: 
     The boolean is passed through unchanged: Celsius is sub-command 44 and
     Fahrenheit is 45.
     """
-    return create_command_encoding(90, 5, msg_id, [44 if celsius else 45, 255, 255], avoid_reserved_byte=False)
+    return create_command_encoding(90, 5, msg_id, [44 if celsius else 45, 255, 255])
 
 
 def create_heater_protector_temperature_command(msg_id: tuple[int, int], temperature_c: float) -> bytearray:
@@ -136,7 +158,7 @@ def create_heater_protector_temperature_command(msg_id: tuple[int, int], tempera
     protection limit.
     """
     whole, tenths = split_heater_temperature(temperature_c)
-    return create_command_encoding(90, 47, msg_id, [whole, tenths], avoid_reserved_byte=False)
+    return create_command_encoding(90, 47, msg_id, [whole, tenths])
 
 
 def create_heater_calibrate_command(msg_id: tuple[int, int], measured_temperature_c: float) -> bytearray:
@@ -146,7 +168,7 @@ def create_heater_calibrate_command(msg_id: tuple[int, int], measured_temperatur
     temperature the device should treat as current.
     """
     whole, tenths = split_heater_temperature(measured_temperature_c)
-    return create_command_encoding(90, 48, msg_id, [whole, tenths], avoid_reserved_byte=False)
+    return create_command_encoding(90, 48, msg_id, [whole, tenths])
 
 
 def create_heater_reset_work_time_command(msg_id: tuple[int, int]) -> bytearray:
@@ -155,22 +177,28 @@ def create_heater_reset_work_time_command(msg_id: tuple[int, int]) -> bytearray:
     Sent after the user cleans the heating tube; it zeroes the runtime counter
     that drives the cleaning warning.
     """
-    return create_command_encoding(90, 5, msg_id, [58, 255, 255], avoid_reserved_byte=False)
+    return create_command_encoding(90, 5, msg_id, [58, 255, 255])
 
 
 def create_heater_backlight_command(msg_id: tuple[int, int], *, enabled: bool) -> bytearray:
     """Create the app's ``deviceBacklight`` frame ``(0xA5, 56)``.
 
-    The app's backlight toggle (``ScreenBackLightSettingWidget::change``) sends
-    one uniform four-byte payload with a trailing ``127``: ``[100, 100, 100,
-    100, 127]`` turns the display backlight on and ``[200, 200, 200, 200, 127]``
-    turns it off. Both frames appear in captured app traffic (``64 64 64 64 7f``
-    followed by ``c8 c8 c8 c8 7f``); the widget's other mode-56 writes carry the
-    backlight schedule (start/end hour and weekday mask) and are not modelled
-    here.
+    Enabled/always on sends ``[200, 200, 200, 200, 127]``; disabled/always off
+    sends ``[100, 100, 100, 100, 127]``. Use the separate schedule encoder for
+    clock-based operation.
     """
     level = HEATER_BACKLIGHT_ON_LEVEL if enabled else HEATER_BACKLIGHT_OFF_LEVEL
-    return create_command_encoding(165, 56, msg_id, [level] * 4 + [HEATER_BACKLIGHT_TRAILER], avoid_reserved_byte=False)
+    return create_command_encoding(165, 56, msg_id, [level] * 4 + [HEATER_BACKLIGHT_TRAILER])
+
+
+def create_heater_backlight_schedule_command(msg_id: tuple[int, int], schedule: HeaterBacklightSchedule) -> bytearray:
+    """Create ``A5/38 [start_hour, start_minute, end_hour, end_minute, weekmask]``."""
+    return create_command_encoding(
+        165,
+        56,
+        msg_id,
+        [schedule.start_hour, schedule.start_minute, schedule.end_hour, schedule.end_minute, schedule.weekdays],
+    )
 
 
 def parse_notification(data: bytes | bytearray):
@@ -205,6 +233,7 @@ __all__ = [
     "HEATER_BACKLIGHT_ON_LEVEL",
     "HEATER_BACKLIGHT_OFF_LEVEL",
     "HEATER_BACKLIGHT_TRAILER",
+    "HeaterBacklightSchedule",
     "HEATER_ALARM_BITS",
     "split_heater_temperature",
     "encode_heater_power_watts",
@@ -218,6 +247,7 @@ __all__ = [
     "create_heater_calibrate_command",
     "create_heater_reset_work_time_command",
     "create_heater_backlight_command",
+    "create_heater_backlight_schedule_command",
     "heater_alarm_names",
     "parse_notification",
 ]

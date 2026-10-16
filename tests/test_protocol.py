@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime
 
-from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, LedProtocol
+from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, LedProtocol, LedSpec
 from chihiros_led_control.protocol import dosing as dosing_commands
 from chihiros_led_control.protocol import led as commands
 from chihiros_led_control.protocol.dosing import parse_notification as parse_dosing_notification
@@ -86,18 +86,14 @@ def test_calculate_checksum_xors_command_bytes() -> None:
     assert calculate_checksum(bytes([90, 1, 7, 0, 1, 7, 0, 100])) == 100
 
 
-def test_command_encoding_sanitizes_reserved_parameter() -> None:
-    """Command encoding avoids the reserved byte in parameters."""
-    command = create_command_encoding(90, 7, (0, 1), [0, 90])
-
-    assert command == bytearray([90, 1, 7, 0, 1, 7, 0, 89, 89])
+def test_command_encoding_preserves_payload_and_checksum_5a() -> None:
+    """The APK sample retains both 5A bytes without changing its message ID."""
+    assert create_command_encoding(90, 7, (0, 1), [0, 90]) == bytes.fromhex("5a 01 07 00 01 07 00 5a 5a")
 
 
-def test_command_encoding_can_keep_reserved_parameter_for_newer_protocols() -> None:
-    """Command encoding can keep reserved bytes when requested."""
-    command = create_command_encoding(165, 27, (0, 1), [0, 90], avoid_reserved_byte=False)
-
-    assert command == bytearray([165, 1, 7, 0, 1, 27, 0, 90, 70])
+def test_command_encoding_preserves_parameter_for_all_protocols() -> None:
+    """A5 commands follow the same unescaped payload rule."""
+    assert create_command_encoding(165, 27, (0, 1), [0, 90]) == bytes.fromhex("a5 01 07 00 01 1b 00 5a 46")
 
 
 def test_command_encoding_normalizes_reserved_message_id() -> None:
@@ -224,12 +220,12 @@ def test_auto_point_command_sends_reserved_byte_verbatim() -> None:
 
 
 def test_auto_point_command_validates_range() -> None:
-    """Auto point commands reject out-of-range channels, minutes, and levels."""
+    """Low-level auto point commands reject invalid channels, minutes, and wire bytes."""
     for kwargs in (
         {"channel": 8, "minutes": 60, "level": 50},
         {"channel": 0, "minutes": -1, "level": 50},
         {"channel": 0, "minutes": 2881, "level": 50},
-        {"channel": 0, "minutes": 60, "level": 101},
+        {"channel": 0, "minutes": 60, "level": 255},
     ):
         try:
             commands.create_auto_point_command((0, 1), protocol=LedProtocol.BLE_LED, **kwargs)
@@ -321,7 +317,7 @@ def test_parse_schedule_snapshot_notification_for_single_channel_model() -> None
     """Single-channel schedule snapshots use the model channel name."""
     notification = parse_led_notification(
         framed([*SCHEDULE_SNAPSHOT_PREFIX, 0x08, 0x00, 0x32]),
-        WHITE_CHANNELS,
+        LedSpec(WHITE_CHANNELS),
     )
 
     assert notification == ScheduleSnapshotNotification(
@@ -344,7 +340,7 @@ def test_parse_schedule_snapshot_notification_for_rgb_model() -> None:
                 0x3C,
             ]
         ),
-        RGB_CHANNELS,
+        LedSpec(RGB_CHANNELS),
     )
 
     assert notification == ScheduleSnapshotNotification(
@@ -370,7 +366,7 @@ def test_parse_schedule_snapshot_notification_for_true_wrgb_model() -> None:
                 0x50,
             ]
         ),
-        WRGB_CHANNELS,
+        LedSpec(WRGB_CHANNELS),
     )
 
     assert notification == ScheduleSnapshotNotification(
@@ -393,7 +389,7 @@ def test_parse_captured_schedule_snapshot_notification_for_true_wrgb_model() -> 
         )
     )
 
-    notification = parse_led_notification(frame, WRGB_CHANNELS)
+    notification = parse_led_notification(frame, LedSpec(WRGB_CHANNELS))
 
     assert notification == ScheduleSnapshotNotification(
         firmware_version=21,
@@ -429,7 +425,7 @@ def test_parse_schedule_snapshot_notification_skips_metadata_prefix() -> None:
                 0x00,
             ]
         ),
-        WHITE_CHANNELS,
+        LedSpec(WHITE_CHANNELS),
     )
 
     assert notification == ScheduleSnapshotNotification(
@@ -516,20 +512,20 @@ def test_vivid3_fan_start_stop_temp_validates_range() -> None:
 
 
 def test_vivid3_temp_protect_command_encoding() -> None:
-    """VIVID3 temperature protection uses (0x5A, 5, [0x31|0x30, 0xFF, 0xFF])."""
+    """Temperature protection uses 0x30 enabled and 0x31 disabled."""
     assert commands.create_vivid3_temp_protect_command((0, 1), True) == bytearray.fromhex(
-        "5a 01 08 00 01 05 31 ff ff 3c"
+        "5a 01 08 00 01 05 30 ff ff 3d"
     )
     assert commands.create_vivid3_temp_protect_command((0, 1), False) == bytearray.fromhex(
-        "5a 01 08 00 01 05 30 ff ff 3d"
+        "5a 01 08 00 01 05 31 ff ff 3c"
     )
 
 
 def test_vivid3_bluetooth_led_command_encoding() -> None:
-    """VIVID3 indicator LED uses (0x5A, 5, [0x32|0x31, 0xFF, 0xFF])."""
+    """Indicator LED uses 0x33 enabled and 0x32 disabled."""
     assert commands.create_vivid3_bluetooth_led_command((0, 1), True) == bytearray.fromhex(
-        "5a 01 08 00 01 05 32 ff ff 3f"
+        "5a 01 08 00 01 05 33 ff ff 3e"
     )
     assert commands.create_vivid3_bluetooth_led_command((0, 1), False) == bytearray.fromhex(
-        "5a 01 08 00 01 05 31 ff ff 3c"
+        "5a 01 08 00 01 05 32 ff ff 3f"
     )

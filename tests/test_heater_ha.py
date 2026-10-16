@@ -23,6 +23,7 @@ try:
         CONF_ADDRESS,
         STATE_OFF,
         STATE_ON,
+        STATE_UNKNOWN,
         UnitOfTemperature,
     )
     from homeassistant.core import HomeAssistant, State
@@ -86,7 +87,7 @@ class _TrackingHeater:
         self._auto_default_power_watts = 500
         self._auto_heating = False
         self._celsius = True
-        self._backlight = True
+        self._backlight: bool | None = True
         self._callbacks: set[Callable[[Any], None]] = set()
 
     @property
@@ -138,7 +139,7 @@ class _TrackingHeater:
         return self._celsius
 
     @property
-    def backlight(self) -> bool:
+    def backlight(self) -> bool | None:
         return self._backlight
 
     def add_notification_callback(self, callback: Callable[[Any], None]) -> Callable[[], None]:
@@ -601,6 +602,28 @@ async def test_heater_backlight_switch_restores_and_drives_client(
     assert restored_client is not client
     assert hass.states.get(entity_id).state == STATE_OFF
     assert restored_client.backlight_calls == []
+
+
+async def test_heater_scheduled_backlight_is_unknown_instead_of_off(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scheduled setting must not be coerced to the Boolean always-off state."""
+    client = _TrackingHeater()
+    client._backlight = None
+    _entry, client = await _setup_heater(hass, monkeypatch, client=client)
+    entity_id = _entity_id(hass, SWITCH_DOMAIN, "heater_backlight")
+    assert hass.states.get(entity_id).state == STATE_UNKNOWN
+
+    await hass.services.async_call(
+        SWITCH_DOMAIN,
+        "turn_on",
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
+    await _flush()
+    assert client.backlight_calls == [True]
+    assert hass.states.get(entity_id).state == STATE_ON
 
 
 async def test_heater_unit_select_writes_client(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:

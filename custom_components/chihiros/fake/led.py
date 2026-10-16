@@ -9,7 +9,8 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
-from ..vendor.chihiros_led_control.models import LedFeature, LedSpec
+from ..vendor.chihiros_led_control.devices.led import LedSchedule
+from ..vendor.chihiros_led_control.models import LedControllerMode, LedFeature, LedSpec, supports_weekdays
 from ..vendor.chihiros_led_control.protocol.notifications import (
     FanStatusNotification,
     RuntimeNotification,
@@ -30,6 +31,8 @@ class FakeLedDevice(FakeBaseDevice):
         self._brightness = {color: 0 for color in spec.channels}
         self._auto_mode = False
         self._auto_curve_points: list[tuple[int, int, int]] = []
+        self._scene_settings: list[LedSchedule] = []
+        self._controller_mode = LedControllerMode.SCENE
         self._fan_speed = 0
         self._fan_auto = False
         self._fan_start_temp = 38
@@ -43,6 +46,14 @@ class FakeLedDevice(FakeBaseDevice):
     @property
     def colors(self) -> dict[str, int]:
         return dict(self.model.spec.channels)  # type: ignore[union-attr]
+
+    @property
+    def controller_mode(self) -> LedControllerMode:
+        return self._controller_mode
+
+    @property
+    def supports_weekdays(self) -> bool:
+        return self.model.supports_weekdays and supports_weekdays(self.name)
 
     async def query_status(self) -> None:
         await asyncio.sleep(0)
@@ -60,6 +71,7 @@ class FakeLedDevice(FakeBaseDevice):
 
     async def set_brightness(self, brightness: int | Sequence[int] | Mapping[str | int, int]) -> None:
         await asyncio.sleep(0)
+        self._auto_mode = False
         if isinstance(brightness, int):
             self._set_uniform_brightness(brightness)
         elif isinstance(brightness, Mapping):
@@ -81,13 +93,17 @@ class FakeLedDevice(FakeBaseDevice):
             self._brightness[color] = level
 
     async def turn_on(self) -> None:
-        await self.set_brightness(100)
+        await self.set_brightness({color: self.model.spec.max_level(channel) for color, channel in self.colors.items()})
 
     async def turn_off(self) -> None:
         await self.set_brightness(0)
 
-    async def enable_auto_mode(self, timestamp: datetime | None = None) -> None:
+    async def enable_auto_mode(
+        self, timestamp: datetime | None = None, *, controller_mode: LedControllerMode | None = None
+    ) -> None:
         del timestamp
+        if controller_mode is not None:
+            self._controller_mode = controller_mode
         self._auto_mode = True
         await self.query_status()
 
@@ -100,18 +116,39 @@ class FakeLedDevice(FakeBaseDevice):
 
     async def set_auto_curve(self, points: Sequence[tuple[int, int, int]]) -> None:
         await asyncio.sleep(0)
-        self._auto_curve_points.extend(points)
+        if not points:
+            raise ValueError("Auto curve must contain at least one point")
+        self._auto_curve_points = list(points)
+        self._scene_settings.clear()
+        self._controller_mode = LedControllerMode.CUSTOM_CURVE
+        self._auto_mode = True
 
     async def add_setting(self, sunrise, sunset, max_brightness=100, ramp_up_in_minutes=0, weekdays=None) -> None:
-        del sunrise, sunset, max_brightness, ramp_up_in_minutes, weekdays
+        self._scene_settings.append(LedSchedule(sunrise, sunset, max_brightness, ramp_up_in_minutes, weekdays))
+        self._controller_mode = LedControllerMode.SCENE
+        await self.query_status()
+
+    async def replace_settings(self, settings: Sequence[LedSchedule]) -> None:
+        self._scene_settings = list(settings)
+        self._auto_curve_points.clear()
+        self._controller_mode = LedControllerMode.SCENE
+        self._auto_mode = True
         await self.query_status()
 
     async def remove_setting(self, sunrise, sunset, ramp_up_in_minutes=0, weekdays=None) -> None:
-        del sunrise, sunset, ramp_up_in_minutes, weekdays
+        self._scene_settings = [
+            setting
+            for setting in self._scene_settings
+            if (setting.sunrise, setting.sunset, setting.ramp_up_in_minutes, setting.weekdays)
+            != (sunrise, sunset, ramp_up_in_minutes, weekdays)
+        ]
         await self.query_status()
 
-    async def reset_settings(self) -> None:
+    async def reset_settings(self, *, controller_mode: LedControllerMode | None = None) -> None:
+        if controller_mode is not None:
+            self._controller_mode = controller_mode
         self._auto_curve_points.clear()
+        self._scene_settings.clear()
         await self.query_status()
 
     async def set_fan_speed(self, speed_percent: int) -> None:

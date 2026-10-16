@@ -47,21 +47,12 @@ try:
     from custom_components.chihiros.dosing_services import ATTR_ML, ATTR_PUMP, SERVICE_DOSE_ML
     from custom_components.chihiros.runtime import ChihirosRuntime
     from custom_components.chihiros.schedule_services import (
-        ATTR_BRIGHTNESS as ATTR_SCHEDULE_BRIGHTNESS,
-    )
-    from custom_components.chihiros.schedule_services import (
-        ATTR_END,
-        ATTR_LEVELS,
-        ATTR_PERIODS,
-        ATTR_RAMP_UP_MINUTES,
-        ATTR_START,
-        ATTR_WEEKDAYS,
         SERVICE_ADD_SCHEDULE,
         SERVICE_REMOVE_SCHEDULE,
         SERVICE_RESET_SCHEDULE,
         SERVICE_SET_SCHEDULE,
     )
-    from custom_components.chihiros.service_utils import ATTR_ADDRESS, ATTR_ENTRY_ID
+    from custom_components.chihiros.service_utils import ATTR_ENTRY_ID
 except ImportError as err:
     pytest.skip(
         f"Home Assistant test group is not installed or is incompatible: {err}",
@@ -640,82 +631,6 @@ async def test_schedule_services_are_not_registered_for_dosing_only(
     assert hass.services.has_service(DOMAIN, SERVICE_DOSE_ML)
     assert client.remove_setting_calls == []
     assert client.reset_settings_calls == 0
-
-
-async def test_schedule_services_drive_client(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Drive schedule services through Home Assistant's service registry."""
-    entry, client = await _setup_entry(hass, monkeypatch)
-
-    await hass.services.async_call(
-        DOMAIN,
-        SERVICE_ADD_SCHEDULE,
-        {
-            ATTR_ENTRY_ID: entry.entry_id,
-            ATTR_START: "08:00",
-            ATTR_END: "18:30",
-            ATTR_LEVELS: {"red": 80, "green": 70, "blue": 60},
-            ATTR_RAMP_UP_MINUTES: 20,
-            ATTR_WEEKDAYS: ["monday", "wednesday"],
-        },
-        blocking=True,
-    )
-
-    add_call = client.add_setting_calls[-1]
-    assert add_call["sunrise"].strftime("%H:%M") == "08:00"
-    assert add_call["sunset"].strftime("%H:%M") == "18:30"
-    assert add_call["max_brightness"] == {"red": 80, "green": 70, "blue": 60}
-    assert add_call["ramp_up_in_minutes"] == 20
-    assert [weekday.value for weekday in add_call["weekdays"]] == ["monday", "wednesday"]
-
-    await hass.services.async_call(
-        DOMAIN,
-        SERVICE_REMOVE_SCHEDULE,
-        {
-            ATTR_ADDRESS: TEST_ADDRESS.lower(),
-            ATTR_START: "08:00",
-            ATTR_END: "18:30",
-            ATTR_RAMP_UP_MINUTES: 20,
-            ATTR_WEEKDAYS: ["monday"],
-        },
-        blocking=True,
-    )
-
-    remove_call = client.remove_setting_calls[-1]
-    assert remove_call["sunrise"].strftime("%H:%M") == "08:00"
-    assert remove_call["sunset"].strftime("%H:%M") == "18:30"
-    assert [weekday.value for weekday in remove_call["weekdays"]] == ["monday"]
-
-    await hass.services.async_call(DOMAIN, SERVICE_RESET_SCHEDULE, {}, blocking=True)
-    assert client.reset_settings_calls == 1
-
-    await hass.services.async_call(
-        DOMAIN,
-        SERVICE_SET_SCHEDULE,
-        {
-            ATTR_PERIODS: [
-                {
-                    ATTR_START: "07:00",
-                    ATTR_END: "09:00",
-                    ATTR_SCHEDULE_BRIGHTNESS: 40,
-                    ATTR_WEEKDAYS: ["tuesday"],
-                },
-                {
-                    ATTR_START: "17:00",
-                    ATTR_END: "20:00",
-                    ATTR_SCHEDULE_BRIGHTNESS: {"red": 10, "green": 20, "blue": 30},
-                    ATTR_WEEKDAYS: ["thursday"],
-                },
-            ]
-        },
-        blocking=True,
-    )
-
-    assert client.reset_settings_calls == 2
-    assert client.add_setting_calls[-2]["max_brightness"] == 40
-    assert client.add_setting_calls[-1]["max_brightness"] == {"red": 10, "green": 20, "blue": 30}
 
 
 async def test_dosing_button_press_triggers_dose_with_configured_volume(

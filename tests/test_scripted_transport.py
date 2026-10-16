@@ -16,7 +16,7 @@ import pytest
 from bleak_retry_connector import BleakError
 
 from chihiros_led_control import testing as testing_module
-from chihiros_led_control.const import UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
+from chihiros_led_control.const import DFU_CHAR_UUID, HM10_RX_CHAR_UUID, UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
 from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump
 from chihiros_led_control.devices import base as device_base
 from chihiros_led_control.models import WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel, LedFeature, LedSpec
@@ -81,12 +81,7 @@ def test_scripted_query_status_round_trip(monkeypatch: pytest.MonkeyPatch) -> No
 def test_scripted_fire_and_forget_without_notify_characteristic(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Commands still work when no app-subscribed notify characteristic exists.
-
-    Some classic devices (e.g. RGB A Plus) expose no 8ec90003/6e400003
-    endpoint; the client skips the subscription and writes fire-and-forget, so
-    replies are dropped instead of parsed.
-    """
+    """Write-only control endpoints must not subscribe to the separate DFU endpoint."""
     transport = ScriptedTransport(notify_characteristics=False)
     transport.expect(90, 4, [1], respond=[RUNTIME_FRAME])
     _fast_waits(monkeypatch)
@@ -106,6 +101,43 @@ def test_scripted_fire_and_forget_without_notify_characteristic(
         # No handler is registered, so scripted replies are never delivered.
         assert device.last_runtime_notification is None
         assert "No notify characteristic" in caplog.text
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("endpoints", "notify_uuid"),
+    [
+        (frozenset({HM10_RX_CHAR_UUID}), HM10_RX_CHAR_UUID),
+        (frozenset({UART_RX_CHAR_UUID, UART_TX_CHAR_UUID, DFU_CHAR_UUID}), UART_TX_CHAR_UUID),
+        (frozenset({HM10_RX_CHAR_UUID, DFU_CHAR_UUID}), HM10_RX_CHAR_UUID),
+    ],
+)
+def test_scripted_control_notification_pairing(
+    monkeypatch: pytest.MonkeyPatch, endpoints: frozenset[str], notify_uuid: str
+) -> None:
+    """Production resolution subscribes only to the selected control family's endpoint."""
+    transport = ScriptedTransport()
+    original_establish = transport._establish_ble_client
+
+    async def establish_filtered() -> object:
+        client = await original_establish()
+        monkeypatch.setattr(client, "services", _FilteredServices(client.services, endpoints))
+        return client
+
+    monkeypatch.setattr(transport, "_establish_ble_client", establish_filtered)
+    transport.expect(90, 4, [1], respond=[RUNTIME_FRAME])
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
+        await device.query_status()
+        assert transport._read_char.uuid == notify_uuid
+        assert device.last_runtime_notification == RuntimeNotification(27, 511, RUNTIME_FRAME)
 
     asyncio.run(run())
 
@@ -250,7 +282,7 @@ def test_scripted_turn_on_and_off_write_manual_switch_and_levels(monkeypatch: py
 
 def test_scripted_remove_setting_writes_delete_frame(monkeypatch: pytest.MonkeyPatch) -> None:
     """remove_setting writes the delete auto-setting frame with padded channels."""
-    transport = ScriptedTransport()
+    transport = ScriptedTransport(name="DYA-test")
     _fast_waits(monkeypatch)
 
     async def run() -> None:
@@ -281,7 +313,7 @@ def test_scripted_remove_setting_writes_delete_frame(monkeypatch: pytest.MonkeyP
 
 
 def test_scripted_reset_settings_writes_reset_frame(monkeypatch: pytest.MonkeyPatch) -> None:
-    """reset_settings writes the reset auto-settings frame."""
+    """A fresh client's reset clears scenes, not the independent custom curve."""
     transport = ScriptedTransport()
     _fast_waits(monkeypatch)
 
@@ -298,7 +330,7 @@ def test_scripted_reset_settings_writes_reset_frame(monkeypatch: pytest.MonkeyPa
         assert len(writes) == 4  # prelude (3) + reset frame
         reset = writes[3]
         assert reset[0] == 90 and reset[5] == 5
-        assert reset[6:9] == bytes([5, 255, 255])
+        assert reset[6:9] == bytes([0x28, 255, 255])
 
     asyncio.run(run())
 
@@ -452,3 +484,68 @@ def test_recorded_calibration_volume_retries_transient_write_failure(monkeypatch
     asyncio.run(run())
     assert transport.connections == 2
     assert writes == 2
+
+
+@pytest.mark.parametrize(
+    ("method", "state", "feature", "on", "off"),
+    [
+        ("set_temp_protect", "temp_protect", LedFeature.TEMPERATURE_PROTECTION, 0x30, 0x31),
+        ("set_bluetooth_led", "bluetooth_led", LedFeature.INDICATOR_LED, 0x33, 0x32),
+    ],
+)
+def test_scripted_switch_polarity_and_failed_write_state(
+    monkeypatch: pytest.MonkeyPatch, method: str, state: str, feature: LedFeature, on: int, off: int
+) -> None:
+    """Both polarities traverse production BLE; failed writes cannot change state."""
+    transport = ScriptedTransport()
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("VIVID3", (), LedSpec(WRGB_CHANNELS, features=frozenset({feature}))),
+            transport=transport,
+        )
+        switch = getattr(device, method)
+        await switch(True)
+        assert getattr(device, state) is True
+        await switch(False)
+        assert getattr(device, state) is False
+        frames = [frame for frame in transport.writes if frame[5] == 5 and frame[6] in (on, off)]
+        assert [frame[6:-1] for frame in frames] == [bytes([on, 255, 255]), bytes([off, 255, 255])]
+        transport.expect(90, 5, [on, 255, 255], fail=True)
+        with pytest.raises(BleakError, match="scripted write failure"):
+            await switch(True)
+        assert getattr(device, state) is False
+        transport.responder._rules.clear()
+        await switch(True)
+        transport.expect(90, 5, [off, 255, 255], fail=True)
+        with pytest.raises(BleakError, match="scripted write failure"):
+            await switch(False)
+        assert getattr(device, state) is True
+
+    asyncio.run(run())
+
+
+def test_scripted_brightness_90_preserves_payload_and_checksum(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Driver writes preserve level 90; production transport also preserves the exact APK sample."""
+    transport = ScriptedTransport()
+    _fast_waits(monkeypatch)
+
+    async def run() -> None:
+        device = ChihirosDevice(
+            ScriptedBLEDevice(transport.name, transport.address),
+            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+            transport=transport,
+        )
+        await device.set_brightness(90)
+        frames = [frame for frame in transport.writes if frame[5] == 7]
+        assert len(frames) == 1
+        assert frames[0][6:-1] == bytes([0, 90])
+        # Apart from the sequence bytes, the header contributes XOR 1.
+        assert frames[0][-1] == 90 ^ frames[0][3] ^ frames[0][4] ^ 1
+        sample = bytes.fromhex("5a 01 07 00 01 07 00 5a 5a")
+        await transport.send([sample], attempts=1, notification_wait=0)
+        assert transport.writes[-1] == sample
+
+    asyncio.run(run())

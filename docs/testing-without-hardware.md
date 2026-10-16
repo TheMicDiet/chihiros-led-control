@@ -83,3 +83,31 @@ The scripted transport does not simulate radio behavior (connection intervals,
 advertisement, actual GATT round-trips). For that, run the vendor app with a
 BLE sniffer to capture real frames and add them as fixtures, or drive an
 ESP32 advertising the Chihiros UART service as a test peripheral.
+
+## Issue #133 regression scenarios
+
+`test_led_levels.py`, `test_led_levels_ha.py`, and
+`test_schedule_lifecycle.py` exercise model-unit conversion, scene/custom-curve
+selection, safe validation failures, and authoritative Lite reconnect replay.
+The heater and scripted-transport suites cover backlight scheduling, VIVID
+switch polarities, FFE1 subscription, and unescaped framing.
+
+A smoke session through the real Home Assistant service registry, coordinator,
+vendored LED driver, and production transport with scripted BLE emitted:
+
+```text
+a5 01 13 00 02 19 08 00 17 3b 00 7f 73 41 00 ff ff ff ff ff 9f
+5a 01 08 00 0a 06 02 11 c8 de
+5a 01 08 00 0b 06 02 14 00 12
+```
+
+The scene represents 08:00–midnight (encoded 23:59), RGB service percentages
+100/50/0 converted to raw 115/65/0. The custom points set blue at 08:30 to
+raw 200 (100%) and at 10:00 to zero. Each replacement selected its respective
+automatic controller and left the coordinator's `auto_mode` true.
+
+These are scripted output frames, not official-app HCI captures. No physical
+Bluetooth adapter or representative Chihiros hardware was available for this
+verification. Radio behavior, protection behavior, and legacy-hardware framing
+still require the comparison described in
+[capturing-ble-traffic.md](capturing-ble-traffic.md).

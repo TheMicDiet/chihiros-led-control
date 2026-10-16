@@ -36,7 +36,8 @@ class ChihirosHeater(BaseChihirosDevice):
         self._auto_default_power_watts = commands.HEATER_DEFAULT_AUTO_POWER_WATTS
         self._auto_heating = False
         self._celsius = True
-        self._backlight = True
+        self._backlight: bool | None = True
+        self._backlight_schedule: commands.HeaterBacklightSchedule | None = None
         self.last_heater_temperature_notification: HeaterTemperatureNotification | None = None
         self.last_heater_status_notification: HeaterStatusNotification | None = None
 
@@ -100,9 +101,14 @@ class ChihirosHeater(BaseChihirosDevice):
         return self._celsius
 
     @property
-    def backlight(self) -> bool:
-        """Return whether the tracked display-backlight state is on."""
+    def backlight(self) -> bool | None:
+        """Return always-on/off state, or ``None`` when a schedule controls it."""
         return self._backlight
+
+    @property
+    def backlight_schedule(self) -> commands.HeaterBacklightSchedule | None:
+        """Return the tracked schedule, or ``None`` for always-on/off operation."""
+        return self._backlight_schedule
 
     @property
     def work_time_hours(self) -> int | None:
@@ -231,6 +237,28 @@ class ChihirosHeater(BaseChihirosDevice):
             cmd = commands.create_heater_backlight_command(self.get_next_msg_id(), enabled=enabled)
             await self._send_command(cmd, 3)
             self._backlight = enabled
+            self._backlight_schedule = None
+
+    async def set_backlight_schedule(
+        self,
+        start_hour: int,
+        start_minute: int,
+        end_hour: int,
+        end_minute: int,
+        *,
+        weekdays: int = 127,
+    ) -> None:
+        """Schedule the backlight, tracking the setting only after a successful write.
+
+        Weekdays use Monday bit 6 through Sunday bit 0; 127 selects every day.
+        No current on/off state is inferred from the clock or the weekday mask.
+        """
+        schedule = commands.HeaterBacklightSchedule(start_hour, start_minute, end_hour, end_minute, weekdays)
+        async with self._state_lock:
+            cmd = commands.create_heater_backlight_schedule_command(self.get_next_msg_id(), schedule)
+            await self._send_command(cmd, 3)
+            self._backlight = None
+            self._backlight_schedule = schedule
 
     async def set_manual_state(self, temperature_c: float, power_watts: int) -> None:
         """Atomically set both manual values and switch the heater to manual mode."""

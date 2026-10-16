@@ -38,7 +38,7 @@ from typing import cast
 from bleak_retry_connector import BleakClientWithServiceCache, BleakError
 
 from .const import (
-    CUSTOM_NOTIFY_CHAR_UUID,
+    DFU_CHAR_UUID,
     HM10_RX_CHAR_UUID,
     UART_RX_CHAR_UUID,
     UART_TX_CHAR_UUID,
@@ -73,11 +73,9 @@ class _ScriptedCharacteristic:
 class _ScriptedServices:
     """GATT service collection answering for Chihiros UART UUIDs.
 
-    Exposes the Nordic UART pair (NUS) plus the classic BleLed layouts: FFE1
-    write + 8ec90003 notify and a full-duplex FFE1 (notify + write +
-    write-without-response) used by devices with no separate notify endpoint.
-    With ``include_notify=False`` the notify-only characteristics are omitted,
-    emulating devices that force the client into fire-and-forget mode.
+    Exposes the Nordic UART write/notify pair, full-duplex FFE1 control, and
+    the separate DFU endpoint. ``include_notify=False`` removes control
+    notification support while retaining DFU to catch accidental pairing.
     """
 
     def __init__(self, *, include_notify: bool = True) -> None:
@@ -85,14 +83,14 @@ class _ScriptedServices:
         self._characteristics = {
             UART_RX_CHAR_UUID: _ScriptedCharacteristic(UART_RX_CHAR_UUID, ("write", "write-without-response")),
             HM10_RX_CHAR_UUID: _ScriptedCharacteristic(
-                HM10_RX_CHAR_UUID, ("notify", "write", "write-without-response")
+                HM10_RX_CHAR_UUID, ("write", "write-without-response", *(("notify",) if include_notify else ()))
             ),
+            DFU_CHAR_UUID: _ScriptedCharacteristic(DFU_CHAR_UUID, ("notify",)),
         }
         if include_notify:
             self._characteristics.update(
                 {
                     UART_TX_CHAR_UUID: _ScriptedCharacteristic(UART_TX_CHAR_UUID, ("notify", "read")),
-                    CUSTOM_NOTIFY_CHAR_UUID: _ScriptedCharacteristic(CUSTOM_NOTIFY_CHAR_UUID, ("notify",)),
                 }
             )
 

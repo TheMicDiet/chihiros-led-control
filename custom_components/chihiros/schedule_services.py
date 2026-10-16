@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
-from typing import Any
+from typing import Any, cast
 
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -14,7 +14,8 @@ from .const import DOMAIN
 from .models import ChihirosData
 from .runtime import is_device_kind
 from .service_utils import DEVICE_SELECTOR_SCHEMA, resolve_service_device
-from .vendor.chihiros_led_control.models import DeviceKind
+from .vendor.chihiros_led_control.devices.led import LedSchedule
+from .vendor.chihiros_led_control.models import DeviceKind, LedSpec, supports_weekdays
 from .vendor.chihiros_led_control.protocol.led import AUTO_POINT_MAX_MINUTES
 from .vendor.chihiros_led_control.schedule_validation import (
     find_duplicate_schedule_weekdays,
@@ -113,17 +114,8 @@ async def _async_set_schedule_service(call: ServiceCall) -> None:
     ensure_light_device(data)
     validate_schedule_periods(data, call.data[ATTR_PERIODS])
     await async_replace_schedule(data, call.data[ATTR_PERIODS])
+    data.coordinator.async_set_auto_mode(True)
     await async_refresh_status(data)
-
-
-async def _async_start_curve_replacement(data: ChihirosData) -> None:
-    """Clear the stored curve so the replacement starts from a clean slate."""
-    try:
-        await data.device.reset_settings()
-    except Exception as ex:
-        raise HomeAssistantError(
-            f"Failed to start auto curve update for {data.device.name}; the existing curve may remain"
-        ) from ex
 
 
 async def _async_rollback_partial_curve(data: ChihirosData) -> None:
@@ -138,6 +130,8 @@ async def _async_write_auto_curve(data: ChihirosData, points: list[tuple[int, in
     """Write auto curve points, rolling back a partial replacement on failure."""
     try:
         await data.device.set_auto_curve(points)
+    except ValueError as ex:
+        raise HomeAssistantError(str(ex)) from ex
     except Exception as ex:
         await _async_rollback_partial_curve(data)
         raise HomeAssistantError(
@@ -154,10 +148,12 @@ async def _async_set_auto_curve_service(call: ServiceCall) -> None:
     curve = call.data[ATTR_CURVE]
     validate_auto_curve(data, curve)
     points = [
-        (channel, minutes, level) for channel, channel_points in curve.items() for minutes, level in channel_points
+        (channel, minutes, cast(LedSpec, data.device.model.spec).percent_to_level(channel, level))
+        for channel, channel_points in curve.items()
+        for minutes, level in channel_points
     ]
-    await _async_start_curve_replacement(data)
     await _async_write_auto_curve(data, points)
+    data.coordinator.async_set_auto_mode(True)
     await async_refresh_status(data)
 
 
@@ -215,19 +211,32 @@ def validate_schedule_period(chihiros_data: ChihirosData, data: dict[str, Any]) 
     end = parse_schedule_time(data[ATTR_END])
     validate_time_range(start, end)
     validate_schedule_brightness(chihiros_data, data)
-    return {"weekdays": normalize_schedule_weekdays(parse_weekdays(data.get(ATTR_WEEKDAYS)))}
+    weekdays = normalize_schedule_weekdays(parse_weekdays(data.get(ATTR_WEEKDAYS)))
+    device = chihiros_data.device
+    if (not device.model.supports_weekdays or not supports_weekdays(device.name)) and len(weekdays) != 7:
+        raise HomeAssistantError(f"{device.name} does not support weekday selection")
+    return {"weekdays": weekdays}
 
 
 def validate_time_range(start: datetime, end: datetime) -> None:
-    """Validate schedule start/end ordering."""
-    if start >= end:
+    """Treat only midnight as the scene endpoint 23:59."""
+    effective_end = end.replace(hour=23, minute=59) if end.hour == 0 and end.minute == 0 else end
+    if start >= effective_end:
         raise HomeAssistantError("Schedule start time must be before end time")
+
+
+def _validate_schedule_percentages(brightness: int | dict[str, int]) -> None:
+    """Keep percentage service inputs separate from raw model-unit limits."""
+    percentages = [brightness] if isinstance(brightness, int) else brightness.values()
+    if any(not 0 <= level <= 100 for level in percentages):
+        raise HomeAssistantError("Schedule brightness percentages must be between 0 and 100")
 
 
 def validate_schedule_brightness(chihiros_data: ChihirosData, data: dict[str, Any]) -> None:
     """Validate schedule channel levels against the device model."""
     supported = set(chihiros_data.device.colors)
     brightness = brightness_from_service_data(data)
+    _validate_schedule_percentages(brightness)
     if isinstance(brightness, int):
         if not supported:
             raise HomeAssistantError(f"{chihiros_data.device.name} does not expose any controllable channels")
@@ -246,7 +255,7 @@ async def async_add_schedule_period(chihiros_data: ChihirosData, data: dict[str,
     await chihiros_data.device.add_setting(
         parse_schedule_time(data[ATTR_START]),
         parse_schedule_time(data[ATTR_END]),
-        max_brightness=brightness_from_service_data(data),
+        max_brightness=model_brightness_from_service_data(chihiros_data, data),
         ramp_up_in_minutes=data[ATTR_RAMP_UP_MINUTES],
         weekdays=parse_weekdays(data.get(ATTR_WEEKDAYS)),
     )
@@ -254,15 +263,21 @@ async def async_add_schedule_period(chihiros_data: ChihirosData, data: dict[str,
 
 async def async_replace_schedule(chihiros_data: ChihirosData, periods: list[dict[str, Any]]) -> None:
     """Replace a schedule and clear any partial replacement after failure."""
+    settings = [
+        LedSchedule(
+            sunrise=parse_schedule_time(period[ATTR_START]),
+            sunset=parse_schedule_time(period[ATTR_END]),
+            max_brightness=model_brightness_from_service_data(chihiros_data, period),
+            ramp_up_in_minutes=period[ATTR_RAMP_UP_MINUTES],
+            weekdays=parse_weekdays(period.get(ATTR_WEEKDAYS)),
+        )
+        for period in periods
+    ]
     try:
-        await chihiros_data.device.reset_settings()
-    except Exception as ex:
-        raise HomeAssistantError(
-            f"Failed to start schedule replacement for {chihiros_data.device.name}; the existing schedule may remain"
-        ) from ex
-    try:
-        for period in periods:
-            await async_add_schedule_period(chihiros_data, period)
+        await chihiros_data.device.replace_settings(settings)
+    except ValueError as ex:
+        # Validation failed before any device mutation; never clear an unknown schedule.
+        raise HomeAssistantError(str(ex)) from ex
     except Exception as ex:
         try:
             await chihiros_data.device.reset_settings()
@@ -280,16 +295,17 @@ def _validate_curve_channels(chihiros_data: ChihirosData, curve: dict[int, list[
     if not channels:
         raise HomeAssistantError(f"{chihiros_data.device.name} does not expose any controllable channels")
     channel_count = max(channels.values()) + 1
-    if unsupported := sorted({channel for channel in curve if not 0 <= channel < channel_count}):
+    if unsupported := sorted(set(curve) - set(channels.values())):
         raise HomeAssistantError(
             f"Channel {', '.join(str(channel) for channel in unsupported)} is not supported by "
-            f"{chihiros_data.device.name}; supported channel ids: {', '.join(str(i) for i in range(channel_count))}"
+            f"{chihiros_data.device.name}; supported channel ids: "
+            f"{', '.join(str(i) for i in sorted(channels.values()))}"
         )
     return channel_count
 
 
 def _validate_curve_channel_points(chihiros_data: ChihirosData, channel: int, points: list[list[int]]) -> None:
-    """Validate the minutes/level values of one curve channel."""
+    """Validate minutes and percentage levels (not raw model units)."""
     if not points:
         raise HomeAssistantError(
             f"Auto curve channel {channel} for {chihiros_data.device.name} must contain at least one point"
@@ -307,7 +323,7 @@ def _validate_curve_channel_points(chihiros_data: ChihirosData, channel: int, po
 
 
 def validate_auto_curve(chihiros_data: ChihirosData, curve: dict[int, list[list[int]]]) -> None:
-    """Validate auto-curve points against the selected device before writing."""
+    """Validate percentage auto-curve points before any destructive writes."""
     if not curve:
         raise HomeAssistantError("Auto curve must contain at least one channel with at least one point")
     _validate_curve_channels(chihiros_data, curve)
@@ -325,11 +341,22 @@ def parse_schedule_time(value: str) -> datetime:
 
 
 def brightness_from_service_data(data: dict[str, Any]) -> int | dict[str, int]:
-    """Return brightness data accepted by the runtime client."""
+    """Return existing service brightness/levels as percentages, not raw model units."""
     if ATTR_LEVELS in data:
         return dict(data[ATTR_LEVELS])
     brightness = data[ATTR_BRIGHTNESS]
     return dict(brightness) if isinstance(brightness, dict) else brightness
+
+
+def model_brightness_from_service_data(chihiros_data: ChihirosData, data: dict[str, Any]) -> int | dict[str, int]:
+    """Convert service percentages channel-wise to the public driver's raw units."""
+    brightness = brightness_from_service_data(data)
+    channels = chihiros_data.device.colors
+    spec = cast(LedSpec, chihiros_data.device.model.spec)
+    if isinstance(brightness, int):
+        primary = "white" if "white" in channels else min(channels, key=channels.__getitem__)
+        return spec.percent_to_level(channels[primary], brightness)
+    return {color: spec.percent_to_level(channels[color], level) for color, level in brightness.items()}
 
 
 def parse_weekdays(value: list[str] | None) -> list[WeekdaySelect] | None:

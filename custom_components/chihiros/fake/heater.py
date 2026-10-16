@@ -32,7 +32,7 @@ class FakeHeaterDevice(FakeBaseDevice):
         self._heater_auto_power_watts = HEATER_DEFAULT_AUTO_POWER_WATTS
         self._heater_auto_heating = False
         self._heater_celsius = True
-        self._heater_backlight = True
+        self._heater_backlight: bool | None = True
         self._heater_work_hours = 120
         self._heater_alarms = 0
         self.last_heater_temperature_notification: HeaterTemperatureNotification | None = None
@@ -163,7 +163,7 @@ class FakeHeaterDevice(FakeBaseDevice):
         return self._heater_celsius
 
     @property
-    def backlight(self) -> bool:
+    def backlight(self) -> bool | None:
         return self._heater_backlight
 
     @property

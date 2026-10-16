@@ -372,7 +372,7 @@ class ChihirosHeaterOptimisticSwitch(ChihirosHeaterEntity, SwitchEntity, Restore
             self._restored_state = last_state.state == "on"
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         """Return the tracked switch state."""
         if self._restored_state is not None:
             return self._restored_state
@@ -419,6 +419,13 @@ class ChihirosHeaterBacklightSwitch(ChihirosHeaterOptimisticSwitch):
     _unique_id_suffix = "heater_backlight"
     _name_suffix = "Backlight"
     _attr_entity_category = EntityCategory.CONFIG
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return unknown while a backlight schedule controls the display."""
+        if self._client.backlight is None:
+            return None
+        return super().is_on
 
     async def _async_write(self, enabled: bool) -> None:
         """Turn the display backlight on or off."""
