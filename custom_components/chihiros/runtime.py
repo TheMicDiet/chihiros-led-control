@@ -18,8 +18,9 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from .dosing import entry_pump_count
 from .fake import create_fake_device, fake_devices_enabled, is_fake_address
 from .vendor.chihiros_led_control import create_device, needs_device_type
+from .vendor.chihiros_led_control.devices.led import LedSchedule
 from .vendor.chihiros_led_control.exceptions import UnsupportedDeviceError
-from .vendor.chihiros_led_control.models import DeviceKind, DeviceModel, LedFeature, LedSpec
+from .vendor.chihiros_led_control.models import DeviceKind, DeviceModel, LedControllerMode, LedFeature, LedSpec
 from .vendor.chihiros_led_control.protocol.dosing import DosingMode, DosingWorkPoint
 from .vendor.chihiros_led_control.protocol.notifications import (
     DosingDailyNotification,
@@ -93,6 +94,14 @@ class LedChihirosClient(BaseChihirosClient, Protocol):
         """Return supported color channels."""
 
     @property
+    def controller_mode(self) -> LedControllerMode:
+        """Return the selected scene or custom-curve controller."""
+
+    @property
+    def supports_weekdays(self) -> bool:
+        """Return whether the app exposes a weekday selector."""
+
+    @property
     def fan_auto(self) -> bool:
         """Return whether the fan is in automatic mode."""
 
@@ -118,7 +127,9 @@ class LedChihirosClient(BaseChihirosClient, Protocol):
 
     async def turn_off(self) -> None: ...
 
-    async def enable_auto_mode(self, timestamp: datetime | None = None) -> None: ...
+    async def enable_auto_mode(
+        self, timestamp: datetime | None = None, *, controller_mode: LedControllerMode | None = None
+    ) -> None: ...
 
     async def set_manual_mode(self) -> None: ...
 
@@ -145,6 +156,8 @@ class LedChihirosClient(BaseChihirosClient, Protocol):
         weekdays: list[WeekdaySelect] | None = None,
     ) -> None: ...
 
+    async def replace_settings(self, settings: Sequence[LedSchedule]) -> None: ...
+
     async def remove_setting(
         self,
         sunrise: datetime,
@@ -153,7 +166,7 @@ class LedChihirosClient(BaseChihirosClient, Protocol):
         weekdays: list[WeekdaySelect] | None = None,
     ) -> None: ...
 
-    async def reset_settings(self) -> None: ...
+    async def reset_settings(self, *, controller_mode: LedControllerMode | None = None) -> None: ...
 
 
 class DosingChihirosClient(BaseChihirosClient, Protocol):
@@ -262,7 +275,7 @@ class HeaterChihirosClient(BaseChihirosClient, Protocol):
     def is_celsius(self) -> bool: ...
 
     @property
-    def backlight(self) -> bool: ...
+    def backlight(self) -> bool | None: ...
 
     async def set_temperature(self, temperature_c: float) -> None: ...
 

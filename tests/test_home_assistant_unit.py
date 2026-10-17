@@ -53,7 +53,7 @@ from custom_components.chihiros.service_utils import (
 from custom_components.chihiros.service_utils import (
     resolve_service_device as _resolve_service_device,
 )
-from custom_components.chihiros.vendor.chihiros_led_control.models import DeviceKind, LedFeature, LedSpec
+from custom_components.chihiros.vendor.chihiros_led_control.models import DeviceKind, DeviceModel, LedFeature, LedSpec
 from custom_components.chihiros.vendor.chihiros_led_control.protocol.led import (
     FanStatusNotification,
     RuntimeNotification,
@@ -70,19 +70,31 @@ async def test_schedule_replacement_clears_partial_schedule_after_failure() -> N
 
     class Device:
         name = "Test light"
+        colors = {"white": 0}
+        model = DeviceModel("Test", (), LedSpec(colors))
 
         async def reset_settings(self) -> None:
             events.append("reset")
 
-        async def add_setting(self, *_args: object, **_kwargs: object) -> None:
-            events.append("add")
+        async def replace_settings(self, settings: object) -> None:
+            del settings
+            events.append("replace")
             raise RuntimeError("radio lost")
 
     data = SimpleNamespace(device=Device())
     period = {ATTR_START: "08:00", ATTR_END: "18:00", ATTR_BRIGHTNESS: 50, ATTR_RAMP_UP_MINUTES: 0}
     with pytest.raises(HomeAssistantError, match="cannot be restored"):
         await _async_replace_schedule(data, [period])
-    assert events == ["reset", "add", "reset"]
+    assert events == ["replace", "reset"]
+
+
+def test_schedule_midnight_is_valid_but_other_reverse_ranges_are_not() -> None:
+    """HA permits the scene-only midnight sentinel without accepting hh:00 reversal."""
+    data = _data(colors={"white": 0})
+    period = {ATTR_START: "08:00", ATTR_END: "00:00", ATTR_BRIGHTNESS: 50, ATTR_RAMP_UP_MINUTES: 0}
+    _validate_schedule_period(data, period)
+    with pytest.raises(HomeAssistantError, match="before end"):
+        _validate_schedule_period(data, {**period, ATTR_END: "07:00"})
 
 
 def _data(*, colors: dict[str, int] | None = None, dosing: bool = False) -> SimpleNamespace:
@@ -92,6 +104,7 @@ def _data(*, colors: dict[str, int] | None = None, dosing: bool = False) -> Simp
         name="Test light",
         colors={"red": 1, "green": 2, "blue": 3} if colors is None else colors,
     )
+    device.model = DeviceModel("Test", (), LedSpec(device.colors))
     return SimpleNamespace(device=device, dosing_totals=object() if dosing else None)
 
 

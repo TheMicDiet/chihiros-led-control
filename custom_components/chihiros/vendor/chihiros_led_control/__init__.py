@@ -9,7 +9,7 @@ from .factory import (
     needs_device_type,
     resolve_model,
 )
-from .models import DeviceKind, DeviceModel, LedFeature, LedProtocol
+from .models import DeviceKind, DeviceModel, LedControllerMode, LedFeature, LedLevelScale, LedProtocol
 
 __all__ = [
     "ChihirosDevice",
@@ -18,7 +18,9 @@ __all__ = [
     "ChihirosMagStirrer",
     "DeviceKind",
     "DeviceModel",
+    "LedControllerMode",
     "LedFeature",
+    "LedLevelScale",
     "LedProtocol",
     "UnsupportedDeviceError",
     "create_device",

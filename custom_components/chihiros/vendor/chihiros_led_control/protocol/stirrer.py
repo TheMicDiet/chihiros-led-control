@@ -78,7 +78,7 @@ def create_stirrer_pre_second_command(
     if not 0 <= speed <= STIRRER_MAX_SPEED:
         raise ValueError(f"Stir speed must be between 0 and {STIRRER_MAX_SPEED}")
     parameters = [channel, seconds >> 8, seconds & 0xFF, speed]
-    return create_command_encoding(165, 42, msg_id, parameters, avoid_reserved_byte=False)
+    return create_command_encoding(165, 42, msg_id, parameters)
 
 
 __all__ = [

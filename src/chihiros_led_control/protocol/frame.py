@@ -41,10 +41,8 @@ def calculate_checksum(input_bytes: bytes | bytearray) -> int:
     return checksum
 
 
-def normalize_message_id(msg_id: tuple[int, int], *, avoid_reserved_byte: bool = True) -> tuple[int, int]:
-    """Return a message ID that is safe for the selected protocol variant."""
-    if not avoid_reserved_byte:
-        return msg_id
+def normalize_message_id(msg_id: tuple[int, int]) -> tuple[int, int]:
+    """Skip reserved sequence bytes independently of payload and checksum."""
     if msg_id[0] in RESERVED_MESSAGE_ID_BYTES or msg_id[1] in RESERVED_MESSAGE_ID_BYTES:
         return next_message_id(msg_id)
     return msg_id
@@ -55,29 +53,11 @@ def create_command_encoding(
     cmd_mode: int,
     msg_id: tuple[int, int],
     parameters: list[int],
-    *,
-    avoid_reserved_byte: bool = True,
 ) -> bytearray:
-    """Encode a Chihiros BLE command."""
-    safe_msg_id = normalize_message_id(msg_id, avoid_reserved_byte=avoid_reserved_byte)
-    sanitized_params = [
-        value if not avoid_reserved_byte or value != RESERVED_BYTE else RESERVED_BYTE - 1 for value in parameters
-    ]
-    command = bytearray(
-        [cmd_id, 1, len(sanitized_params) + 5, safe_msg_id[0], safe_msg_id[1], cmd_mode] + sanitized_params
-    )
-
-    verification_byte = calculate_checksum(command)
-    if avoid_reserved_byte and verification_byte == RESERVED_BYTE:
-        return create_command_encoding(
-            cmd_id,
-            cmd_mode,
-            next_message_id(safe_msg_id),
-            sanitized_params,
-            avoid_reserved_byte=avoid_reserved_byte,
-        )
-
-    return command + bytes([verification_byte])
+    """Encode a command, preserving all parameter and checksum bytes verbatim."""
+    safe_msg_id = normalize_message_id(msg_id)
+    command = bytearray([cmd_id, 1, len(parameters) + 5, *safe_msg_id, cmd_mode] + parameters)
+    return command + bytes([calculate_checksum(command)])
 
 
 def encode_timestamp(ts: datetime.datetime) -> list[int]:

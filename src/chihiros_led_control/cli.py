@@ -14,7 +14,7 @@ from typing_extensions import Annotated
 
 from .devices import ChihirosDevice, ChihirosDosingPump, ChihirosHeater, ChihirosMagStirrer
 from .factory import detect_model, get_device_from_address
-from .models import DeviceKind
+from .models import DeviceKind, LedControllerMode
 from .protocol.dosing import (
     DOSE_VOLUME_MAX_ML,
     MANUAL_DOSE_VOLUME_MAX_ML,
@@ -260,15 +260,39 @@ def remove_setting(
 
 
 @app.command()
-def reset_settings(device_address: str) -> None:
-    """Reset settings from a light."""
-    _run_device_func(device_address, lambda dev: dev.reset_settings())
+def reset_settings(
+    device_address: str,
+    controller_mode: Annotated[
+        LedControllerMode | None,
+        typer.Option(help="Select scene periods or custom-curve points to clear; defaults to scene."),
+    ] = None,
+) -> None:
+    """Reset settings for the selected automatic light controller."""
+    _run_device_func(
+        device_address,
+        lambda dev: (
+            dev.reset_settings(controller_mode=controller_mode) if controller_mode is not None else dev.reset_settings()
+        ),
+    )
 
 
 @app.command()
-def enable_auto_mode(device_address: str) -> None:
-    """Enable auto mode in a light."""
-    _run_device_func(device_address, lambda dev: dev.enable_auto_mode())
+def enable_auto_mode(
+    device_address: str,
+    controller_mode: Annotated[
+        LedControllerMode | None,
+        typer.Option(help="Select scene periods or custom-curve points; defaults to scene on a fresh client."),
+    ] = None,
+) -> None:
+    """Enable the selected automatic controller in a light."""
+    _run_device_func(
+        device_address,
+        lambda dev: (
+            dev.enable_auto_mode(controller_mode=controller_mode)
+            if controller_mode is not None
+            else dev.enable_auto_mode()
+        ),
+    )
 
 
 @dosing_app.command("dose")
@@ -558,8 +582,25 @@ def heater_backlight(
     device_address: str,
     enable: Annotated[bool, typer.Option("--enable/--disable")] = True,
 ) -> None:
-    """Turn a heater's display backlight on or off."""
+    """Set a heater's display backlight always on or always off (replaces its schedule)."""
     _run_heater_func(device_address, lambda dev: dev.set_backlight(enable))
+
+
+@heater_app.command("backlight-schedule")
+def heater_backlight_schedule(
+    device_address: str,
+    start: Annotated[str, typer.Argument(help="Backlight start time HH:MM")],
+    end: Annotated[str, typer.Argument(help="Backlight end time HH:MM")],
+    weekdays: Annotated[list[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday],
+) -> None:
+    """Schedule a heater's display backlight instead of using always-on/off mode."""
+    start_hour, start_minute = _parse_clock(start)
+    end_hour, end_minute = _parse_clock(end)
+    weekmask = encode_selected_weekdays(weekdays)
+    _run_heater_func(
+        device_address,
+        lambda dev: dev.set_backlight_schedule(start_hour, start_minute, end_hour, end_minute, weekdays=weekmask),
+    )
 
 
 @heater_app.command("unit")

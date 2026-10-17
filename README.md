@@ -1,6 +1,11 @@
 ﻿# Chihiros LED Control
 
-This repository contains a python **CLI** script as well as a **Home Assistant integration** that can be used to control Chihiros LEDs for aquariums via bluetooth without the vendor app. It also includes first Home Assistant support for Chihiros dosing pumps. For this purpose, the protocol to control the devices has been reversed engineered and is based on both the old *Magic App* and the new *My Chihiros App*: the old app was decompiled from its Android sources, the new app's Flutter binary was unpacked to extract and analyze its Dart snapshot, and the resulting frame encoding was verified byte-for-byte against the app's `dataMaker.dart` logic as well as sniffed Bluetooth traffic.
+This repository contains a Python **CLI** and a **Home Assistant integration**
+for controlling Chihiros aquarium LEDs over Bluetooth without the vendor app.
+It also supports dosing pumps, magnetic stirrers, and heaters. Protocol work
+combines old Magic App sources, the My Chihiros Flutter binary, and Bluetooth
+captures. APK-verified command construction is distinct from hardware-verified
+compatibility; see [protocol evidence and limits](docs/protocol.md).
 
 > [!WARNING]
 > This is an independent, unofficial, community-developed project. It is not
@@ -65,9 +70,8 @@ The integration provides services for changing the auto mode schedule from
 - `chihiros.set_schedule`: replace the complete schedule.
 - `chihiros.set_auto_curve`: replace the device's stored auto curve with the
   vendor app's per-point `0x5A/0x06` format (channel id → list of
-  `[minutes, level]` pairs). Clears the stored curve first. The curve is
-  stored but only active while the device is in auto mode (toggle the
-  Auto Mode switch).
+  `[minutes, level]` percentage pairs). Clears the stored curve and selects
+  custom-curve auto mode before writing points.
 
 > **Upgrade note:** Commander 4 (`DYLED`/`DYNLED`) now auto-detects its
 > verified 4-channel layout instead of asking for a generic device type.
@@ -140,8 +144,28 @@ Schedule writes are validated before sending commands to the device. Unsupported
 channels, invalid brightness values, invalid weekdays, empty replacement
 schedules, and multiple replacement periods for the same weekday are rejected.
 Known devices replace the previous period for a weekday when another one is
-written, so `set_schedule` accepts at most one period per weekday. After writing
-a schedule, enable the `Auto Mode` switch to run it.
+written, so `set_schedule` accepts at most one period per weekday. Full schedule
+and curve replacements select their respective auto controller and update the
+`Auto Mode` switch after a successful write. After incremental edits, enable
+the switch to run the stored schedule.
+
+Home Assistant light brightness and schedule/curve levels retain their existing
+percentage units. Percentages are converted to each channel's raw maximum:
+for the verified `DYRGBV` profile, 100% RGB means raw `[115, 130, 200]`, not
+`[100, 100, 100]`. The Python library and CLI instead take raw model levels;
+other profiles keep their configured limits, normally 100.
+
+Scene end time `00:00` is encoded as `23:59`; other exact hours are unchanged.
+Scene replacement uses scene-specific reset and mode selection. Custom point
+curves remain a separate operation, including on firmware >=20.
+Known firmware below 20 cannot use the new scene replacement operation;
+unknown firmware retains the existing scene API until capabilities are known.
+
+Lite-class controllers do not support weekday selection; use every day.
+A successful full replacement gives the library an authoritative schedule to
+replay when that Lite device reconnects in auto mode, even if unchanged.
+Incremental edits to an unknown device schedule do not authorize clearing it.
+Replay ownership is in memory, not a backup of schedules written by the app.
 
 Dosing pumps expose one manual dose button and one dose-volume number control per
 channel. The main volume sensors are `dosed today` and `total ml`, read from the
@@ -258,8 +282,10 @@ Heaters expose the controls of the vendor app as ordinary entities:
 - **Calibration temperature** (number, °C, configuration) — tell the heater
   which temperature its sensor should currently read (from a reference
   thermometer).
-- **Backlight** (switch, configuration) — turns the heater's own display
-  backlight on or off (the app's `deviceBacklight` toggle).
+- **Backlight** (switch, configuration) — selects always-on or always-off.
+  The library and CLI also expose scheduled operation through a distinct
+  `backlight-schedule` command; while a schedule is tracked, its instantaneous
+  Boolean state is unknown.
 - **Temperature unit** (select) — what the heater's own display shows. Home
   Assistant always shows temperatures in the unit system configured for your
   instance, so this only affects the device itself.
@@ -368,6 +394,11 @@ vendor app and Home Assistant links are independent.
 - [uv](https://docs.astral.sh/uv/) for Python environment and dependency management
 
 ## Using the CLI
+
+LED brightness arguments use raw per-channel model units, not percentages.
+For example, `DYRGBV` accepts RGB maxima `115 130 200`. Generic profiles still
+use `0..100`; arbitrary byte values are not accepted as a universal range.
+
 ```bash
 # setup the environment
 uv sync --extra cli
@@ -408,11 +439,17 @@ uv run chihirosctl add-setting <device-address> 9:00 18:00 35 55 75 40
 # enable auto mode to activate the created timed settings
 uv run chihirosctl enable-auto-mode <device-address>
 
+# explicitly select custom-curve mode instead of sunrise/sunset scenes
+uv run chihirosctl enable-auto-mode <device-address> --controller-mode custom_curve
+
 # delete a created setting
 uv run chihirosctl remove-setting <device-address> 8:00 18:00
 
 # reset all created settings
 uv run chihirosctl reset-settings <device-address>
+
+# clear custom-curve points instead of scenes
+uv run chihirosctl reset-settings <device-address> --controller-mode custom_curve
 
 # trigger a manual dose on a dosing pump: channel 1, 2.5 mL
 uv run chihirosctl dosing <device-address> dose 1 2.5
@@ -442,6 +479,8 @@ uv run chihirosctl heater mode <device-address> manual
 uv run chihirosctl heater mode <device-address> auto
 uv run chihirosctl heater auto-heating <device-address> --disable
 uv run chihirosctl heater backlight <device-address> --disable
+uv run chihirosctl heater backlight-schedule <device-address> 08:15 21:30 \
+    --weekdays monday --weekdays wednesday --weekdays sunday
 uv run chihirosctl heater unit <device-address> f
 uv run chihirosctl heater protector <device-address> 37
 uv run chihirosctl heater calibrate <device-address> 26.0
@@ -455,9 +494,12 @@ uv run chihirosctl heater status <device-address>
 ## Protocol
 
 The Bluetooth command format and known modes are documented in
-[docs/protocol.md](docs/protocol.md). Command encodings were verified against
-the 2.8.59 build of the official My Chihiros app (see
-[docs/protocol.md](docs/protocol.md) for the app-verified details).
+[docs/protocol.md](docs/protocol.md). Corrections in
+[issue #133](https://github.com/TheMicDiet/chihiros-led-control/issues/133)
+use My Chihiros **2.8.59, versionCode 759**, not 2.8.61. Scripted BLE checks
+exercise the production transport, but cannot establish physical-device
+compatibility. Official-app HCI comparison on representative hardware remains
+required for the changed radio/protection behavior and legacy framing.
 
 ## Contributing
 Reusable library and CLI code lives in `src/chihiros_led_control/`. The Home

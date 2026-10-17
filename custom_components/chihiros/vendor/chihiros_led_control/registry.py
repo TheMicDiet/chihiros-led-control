@@ -28,6 +28,7 @@ def _led(
     channels,
     *,
     protocol: LedProtocol = LedProtocol.BLE_LED,
+    channel_maxima=None,
     features: frozenset[LedFeature] = frozenset(),
     min_fan_speed: int = 0,
     needs_device_type: bool = False,
@@ -36,7 +37,7 @@ def _led(
     return DeviceModel(
         name,
         codes,
-        LedSpec(channels, protocol, features, min_fan_speed),
+        LedSpec(channels, protocol, features, min_fan_speed, channel_maxima=channel_maxima or {}),
         needs_device_type=needs_device_type,
         fallback=fallback,
     )
@@ -60,7 +61,13 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     _led("RGB+APLUS", ("DYARGB", "DYRGBA+", "DYRGBA"), RGB_CHANNELS),
     _led("RGB+APLUS", ("DYNARGB",), RGB_CHANNELS, protocol=LedProtocol.SEA_LED),
     _led("RGB VIVID", ("DYREE",), RGB_CHANNELS),
-    _led("RGB VIVID II", ("DYRGBV",), RGB_CHANNELS, protocol=LedProtocol.NEW_BLE_LED),
+    _led(
+        "RGB VIVID II",
+        ("DYRGBV",),
+        RGB_CHANNELS,
+        protocol=LedProtocol.NEW_BLE_LED,
+        channel_maxima={0: 115, 1: 130, 2: 200},
+    ),
     _led("RGB VIVID II", ("DYNVVD", "DYNV"), RGB_CHANNELS, protocol=LedProtocol.SEA_LED),
     _led("SEA_LED", ("DYSEA",), WRGB_CHANNELS, protocol=LedProtocol.SEA_LED),
     _led("Commander X", ("DYONE",), WHITE_CHANNELS),

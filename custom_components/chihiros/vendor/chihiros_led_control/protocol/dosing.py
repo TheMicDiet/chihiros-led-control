@@ -100,7 +100,7 @@ def create_dosing_set_command(
         raise ValueError("Frequency must be between 0 and 255")
     volume = [255, 255] if dose_per_day_ml is None else list(encode_dose_volume_ml(dose_per_day_ml))
     parameters = [channel, frequency, 1, 0 if is_first_setting else 1, *volume]
-    return create_command_encoding(165, 27, msg_id, parameters, avoid_reserved_byte=False)
+    return create_command_encoding(165, 27, msg_id, parameters)
 
 
 def _validate_work_point_time(point: DosingWorkPoint) -> None:
@@ -147,10 +147,10 @@ def _flush_batched_frames(
     for record in records:
         accumulator.extend(record)
         if len(accumulator) > DOSING_SCHEDULE_MAX_PAYLOAD:
-            frames.append(create_command_encoding(165, cmd_mode, msg_id, accumulator, avoid_reserved_byte=False))
+            frames.append(create_command_encoding(165, cmd_mode, msg_id, accumulator))
             accumulator = list(header)
     if accumulator != header:
-        frames.append(create_command_encoding(165, cmd_mode, msg_id, accumulator, avoid_reserved_byte=False))
+        frames.append(create_command_encoding(165, cmd_mode, msg_id, accumulator))
     return frames
 
 
@@ -172,9 +172,7 @@ def create_dosing_schedule_command(
         raise ValueError("At least one work point is required")
     if mode in (DosingMode.SINGLE, DosingMode.AUTO):
         return [
-            create_command_encoding(
-                165, 21, msg_id, [channel, int(mode), *_single_volume_record(point)], avoid_reserved_byte=False
-            )
+            create_command_encoding(165, 21, msg_id, [channel, int(mode), *_single_volume_record(point)])
             for point in points
         ]
     if mode is DosingMode.TIMER:
@@ -187,7 +185,7 @@ def create_dosing_schedule_command(
 def create_reset_dosing_channel_command(msg_id: tuple[int, int], channel: int) -> bytearray:
     """Create the app's ``resetDosingChannel`` frame ``(0xA5, 5, [ch+25, 255, 255])``."""
     _validate_dosing_channel(channel)
-    return create_command_encoding(165, 5, msg_id, [channel + 25, 255, 255], avoid_reserved_byte=False)
+    return create_command_encoding(165, 5, msg_id, [channel + 25, 255, 255])
 
 
 def create_reset_total_dosing_command(msg_id: tuple[int, int], channel: int) -> bytearray:
@@ -197,7 +195,7 @@ def create_reset_total_dosing_command(msg_id: tuple[int, int], channel: int) -> 
     counter for the channel.
     """
     _validate_dosing_channel(channel)
-    return create_command_encoding(165, 5, msg_id, [channel + 21, 255, 255], avoid_reserved_byte=False)
+    return create_command_encoding(165, 5, msg_id, [channel + 21, 255, 255])
 
 
 def create_dosing_calibrate_command(
@@ -232,12 +230,12 @@ def create_dosing_calibrate_command(
         # Round the 2-digit fraction half-up like the app (LibcRound @
         # 0xa69398); the result may be 100 = the next whole mL.
         volume = [whole_ml, (remainder_ul + 5) // 10]
-    return create_command_encoding(165, 22, msg_id, [channel, time_byte, *volume], avoid_reserved_byte=False)
+    return create_command_encoding(165, 22, msg_id, [channel, time_byte, *volume])
 
 
 def create_set_dosing_delay_command(msg_id: tuple[int, int], enabled: bool) -> bytearray:
     """Create the app's ``setDosingDelay`` frame ``(0xA5, 31, [enabled?1:0])``."""
-    return create_command_encoding(165, 31, msg_id, [1 if enabled else 0], avoid_reserved_byte=False)
+    return create_command_encoding(165, 31, msg_id, [1 if enabled else 0])
 
 
 def create_dosing_active_compensation_command(
@@ -254,7 +252,7 @@ def create_dosing_active_compensation_command(
     """
     _validate_dosing_channel(channel)
     parameters = [channel, 1 if compensate else 0, 1 if active else 0]
-    return create_command_encoding(165, 32, msg_id, parameters, avoid_reserved_byte=False)
+    return create_command_encoding(165, 32, msg_id, parameters)
 
 
 def create_dosing_channel_color_command(msg_id: tuple[int, int], channel: int, color: int) -> bytearray:
@@ -262,7 +260,7 @@ def create_dosing_channel_color_command(msg_id: tuple[int, int], channel: int, c
     _validate_dosing_channel(channel)
     if not 0 <= color <= 255:
         raise ValueError("Color must be between 0 and 255")
-    return create_command_encoding(165, 59, msg_id, [channel, color], avoid_reserved_byte=False)
+    return create_command_encoding(165, 59, msg_id, [channel, color])
 
 
 def create_general_temp_run_command(
@@ -292,7 +290,7 @@ def create_general_temp_run_command(
             raise ValueError("Duration must be between 0 and 15359 seconds")
         minutes, remainder = divmod(seconds, 60)
         duration = [minutes, remainder]
-    return create_command_encoding(165, 20, msg_id, [*duration, *channel_bytes], avoid_reserved_byte=False)
+    return create_command_encoding(165, 20, msg_id, [*duration, *channel_bytes])
 
 
 def create_dose_auth_1_command(msg_id: tuple[int, int]) -> bytearray:
@@ -315,7 +313,7 @@ def create_manual_dose_command(msg_id: tuple[int, int], pump_idx: int, volume_ml
     if pump_idx < 0 or pump_idx > 7:
         raise ValueError("Pump index must be between 0 and 7")
     high, low = split_dose_volume_ml(volume_ml)
-    return create_command_encoding(165, 27, msg_id, [pump_idx, 0, 0, high, low], avoid_reserved_byte=False)
+    return create_command_encoding(165, 27, msg_id, [pump_idx, 0, 0, high, low])
 
 
 def parse_notification(data: bytes | bytearray):

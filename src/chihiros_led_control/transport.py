@@ -20,7 +20,7 @@ from bleak_retry_connector import (
     establish_connection,
 )
 
-from .const import CUSTOM_NOTIFY_CHAR_UUID, HM10_RX_CHAR_UUID, UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
+from .const import HM10_RX_CHAR_UUID, UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
 from .exceptions import CharacteristicMissingError
 
 BLEAK_BACKOFF_TIME = 0.25
@@ -68,9 +68,14 @@ def pair_notify_characteristic(
     services: BleakGATTServiceCollection, write_char: BleakGATTCharacteristic | None
 ) -> BleakGATTCharacteristic | None:
     """Return the notify characteristic paired with the resolved write endpoint."""
-    if write_char is not None and write_char.uuid.lower() == UART_RX_CHAR_UUID.lower():
-        return services.get_characteristic(UART_TX_CHAR_UUID)
-    return services.get_characteristic(CUSTOM_NOTIFY_CHAR_UUID) or services.get_characteristic(UART_TX_CHAR_UUID)
+    if write_char is None:
+        return None
+    if write_char.uuid.lower() == UART_RX_CHAR_UUID.lower():
+        notify_char = services.get_characteristic(UART_TX_CHAR_UUID)
+        return notify_char if notify_char is not None and "notify" in notify_char.properties else None
+    if write_char.uuid.lower() == HM10_RX_CHAR_UUID.lower() and "notify" in write_char.properties:
+        return write_char
+    return None
 
 
 class BleTransport:
@@ -268,7 +273,7 @@ class BleTransport:
             await client.start_notify(self._read_char, callback)
         else:
             self._logger.warning(
-                "%s: No notify characteristic (8ec90003/6e400003) found; "
+                "%s: No notify characteristic (FFE1/6e400003) found; "
                 "running fire-and-forget without state notifications; RSSI: %s",
                 self.name,
                 self.rssi,
