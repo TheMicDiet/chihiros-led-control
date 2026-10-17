@@ -28,7 +28,6 @@ try:
         ATTR_CHANNEL,
         ATTR_STIR_POINTS,
         SERVICE_SET_STIR_SCHEDULE,
-        SERVICE_STIR_FOR,
     )
     from custom_components.chihiros.stirrer_services import (
         validate_stir_points as _validate_stir_points,
@@ -57,7 +56,7 @@ class _TrackingStirrer:
 
     def __init__(self) -> None:
         self.model = MAG_STIRRER
-        self.stir_calls: list[tuple[int, bool]] = []
+        self.stir_calls: list[tuple[int, bool, int | None]] = []
         self.pre_second_calls: list[tuple[int, int, int]] = []
         self.restart_calls: list[tuple[int, int, int]] = []
         self.schedule_calls: list[dict[str, Any]] = []
@@ -193,39 +192,6 @@ async def test_stir_switch_drives_client_and_tracks_state(hass: HomeAssistant, m
     assert hass.states.is_state(entity_id, "off")
 
 
-async def test_stir_for_service(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The stir_for service runs a channel for a bounded duration."""
-    _entry, client = await _setup_stirrer(hass, monkeypatch)
-    await hass.async_block_till_done()
-
-    await hass.services.async_call(
-        DOMAIN,
-        SERVICE_STIR_FOR,
-        {ATTR_ADDRESS: TEST_ADDRESS, ATTR_CHANNEL: 2, "duration": 300},
-        blocking=True,
-    )
-    assert client.stir_calls == [(1, True, 300)]
-
-    # A HH:MM:SS string is accepted too.
-    await hass.services.async_call(
-        DOMAIN,
-        SERVICE_STIR_FOR,
-        {ATTR_ADDRESS: TEST_ADDRESS, ATTR_CHANNEL: 2, "duration": "00:01:30"},
-        blocking=True,
-    )
-    assert client.stir_calls == [(1, True, 300), (1, True, 90)]
-
-    # Durations beyond the device's [minutes, seconds] wire cap are rejected.
-    with pytest.raises(HomeAssistantError, match="255 minutes 59 seconds"):
-        await hass.services.async_call(
-            DOMAIN,
-            SERVICE_STIR_FOR,
-            {ATTR_ADDRESS: TEST_ADDRESS, ATTR_CHANNEL: 2, "duration": 256 * 60},
-            blocking=True,
-        )
-    assert client.stir_calls == [(1, True, 300), (1, True, 90)]
-
-
 async def test_stirrer_channel_count_config(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
     """A stirrer entry configured with 2 channels exposes only 2 channels."""
     entry, client = await _setup_stirrer(hass, monkeypatch, channel_count=2)
@@ -237,11 +203,11 @@ async def test_stirrer_channel_count_config(hass: HomeAssistant, monkeypatch: py
     with pytest.raises(HomeAssistantError, match="has 2 stir channels configured"):
         await hass.services.async_call(
             DOMAIN,
-            SERVICE_STIR_FOR,
-            {ATTR_ADDRESS: TEST_ADDRESS, ATTR_CHANNEL: 3, "duration": 300},
+            SERVICE_SET_STIR_SCHEDULE,
+            {ATTR_ADDRESS: TEST_ADDRESS, ATTR_CHANNEL: 3, ATTR_STIR_POINTS: [{"start": "08:00", "minutes": 5}]},
             blocking=True,
         )
-    assert client.stir_calls == []
+    assert client.schedule_calls == []
 
 
 async def test_stir_numbers_write_pre_second_frame(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -462,20 +428,23 @@ async def test_set_stir_schedule_service_rejects_non_stirrer(
         )
 
 
-async def test_stir_services_accept_device_id_target(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Services accept the Home Assistant device selector value (``device_id``)."""
-    _entry, client = await _setup_stirrer(hass, monkeypatch)
+async def test_stir_schedule_accepts_device_id_target(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The device selector resolves the stirrer whose schedule is programmed and recorded."""
+    entry, _client = await _setup_stirrer(hass, monkeypatch)
     await hass.async_block_till_done()
     device = dr.async_get(hass).async_get_device(connections={(dr.CONNECTION_BLUETOOTH, TEST_ADDRESS)})
     assert device is not None
 
     await hass.services.async_call(
         DOMAIN,
-        SERVICE_STIR_FOR,
-        {"device_id": device.id, ATTR_CHANNEL: 1, "duration": 30},
+        SERVICE_SET_STIR_SCHEDULE,
+        {"device_id": device.id, ATTR_CHANNEL: 1, ATTR_STIR_POINTS: [{"start": "08:00", "minutes": 5}]},
         blocking=True,
     )
-    assert client.stir_calls == [(0, True, 30)]
+    recorded = hass.data[DOMAIN][entry.entry_id].dosing_programming.channels[0]
+    assert recorded["mode"] == "timer"
+    assert recorded["points"][0]["start_hour"] == 8
+    assert recorded["points"][0]["volume_ml"] == pytest.approx(3.0)
 
 
 async def test_options_flow_changes_stirrer_channel_count(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:

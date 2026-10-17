@@ -68,8 +68,10 @@ class ChihirosMagStirrer(BaseChihirosDevice):
     async def stir(self, channel: int, on: bool, *, seconds: int | None = None) -> None:
         """Manually start/stop one stir channel (app's ``tempRun``).
 
-        Other channel bytes stay 255; ``seconds`` bounds the run time and
-        defaults to unlimited.
+        Other channel bytes stay 255. ``seconds`` encodes the shared duration
+        field, defaulting to unlimited; the vendor app's stirrer controls omit
+        it, so firmware-enforced expiry is not guaranteed. Send an explicit
+        stop when a bounded run is required.
         """
         cmd = dosing.create_general_temp_run_command(self.get_next_msg_id(), {channel: on}, seconds)
         await self._send_command(cmd, 3)

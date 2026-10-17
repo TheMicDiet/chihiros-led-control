@@ -356,51 +356,6 @@ set_stir_schedule:
       selector:
         boolean:
 
-stir_for:
-  name: Stir for duration
-  description: >
-    Manually stir one magnetic stirrer channel for a bounded duration
-    (unlike the stir switch, which runs until switched off). The device
-    supports minute+second resolution, up to 255 min 59 s.
-  fields:
-    device_id:
-      name: Stirrer
-      description: The magnetic stirrer to control. Required only when more than one Chihiros device is configured.
-      selector:
-        device:
-          filter:
-            - integration: chihiros
-    entry_id:
-      name: Config entry ID
-      description: The stirrer's config entry ID.
-      selector:
-        text:
-    address:
-      name: Bluetooth address
-      description: The stirrer's Bluetooth address.
-      example: AA:BB:CC:DD:EE:FF
-      selector:
-        text:
-    channel:
-      name: Channel
-      description: Stirrer channel number.
-      required: true
-      example: 1
-      selector:
-        number:
-          min: 1
-          max: 8
-          step: 1
-          mode: box
-    duration:
-      name: Duration
-      description: How long to stir (up to 255 minutes 59 seconds).
-      required: true
-      example: "00:05:00"
-      selector:
-        duration:
-          enable_day: false
-
 set_dosing_schedule:
   name: Set dosing schedule
   description: >
