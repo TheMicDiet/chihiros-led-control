@@ -17,7 +17,7 @@ from .const import DOMAIN
 from .coordinator import ChihirosDataUpdateCoordinator
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .heater import (
-    ChihirosHeaterAutoHeatingSwitch,
+    ChihirosHeaterAutomaticPowerSwitch,
     ChihirosHeaterBacklightSwitch,
     heater_client,
     is_heater_capable,
@@ -66,7 +66,7 @@ def _accessory_switches(chihiros_data: ChihirosData) -> list[SwitchEntity]:
         device = heater_client(chihiros_data.device)
         entities.extend(
             (
-                ChihirosHeaterAutoHeatingSwitch(chihiros_data.coordinator, device),
+                ChihirosHeaterAutomaticPowerSwitch(chihiros_data.coordinator, device),
                 ChihirosHeaterBacklightSwitch(chihiros_data.coordinator, device),
             )
         )

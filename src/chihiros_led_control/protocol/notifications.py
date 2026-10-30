@@ -61,10 +61,19 @@ class DosingDailyNotification:
 
 @dataclass(frozen=True)
 class HeaterTemperatureNotification:
-    """Setting and measured temperatures pushed by a Chihiros heater."""
+    """Measured power and water temperature pushed by a Chihiros heater."""
 
-    setting_temperature_celsius: float
+    measured_power_watts: int
     current_temperature_celsius: float
+    raw: bytes = field(default=b"", compare=False)
+
+
+@dataclass(frozen=True)
+class HeaterPowerNotification:
+    """Configured power and lifetime heating time reported by a heater."""
+
+    power_watts: int
+    heating_time_seconds: int
     raw: bytes = field(default=b"", compare=False)
 
 
@@ -72,7 +81,6 @@ class HeaterTemperatureNotification:
 class HeaterStatusNotification:
     """Runtime/alarm status pushed by a Chihiros heater."""
 
-    firmware_version: int
     work_time_hours: int
     alarms: int
     raw: bytes = field(default=b"", compare=False)
@@ -85,5 +93,6 @@ ParsedNotification = (
     | DosingTotalsNotification
     | DosingDailyNotification
     | HeaterTemperatureNotification
+    | HeaterPowerNotification
     | HeaterStatusNotification
 )

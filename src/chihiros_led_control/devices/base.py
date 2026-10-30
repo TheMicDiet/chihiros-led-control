@@ -154,7 +154,6 @@ class BaseChihirosDevice:
         prelude = [
             create_command_encoding(90, 4, self.get_next_msg_id(), [1]),
             create_command_encoding(90, 9, self.get_next_msg_id(), encode_timestamp(datetime.datetime.now())),
-            create_command_encoding(90, 9, self.get_next_msg_id(), encode_timestamp(datetime.datetime.now())),
         ]
         self._logger.debug(
             "%s: Sending connection prelude %s",

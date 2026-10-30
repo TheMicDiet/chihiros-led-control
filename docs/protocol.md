@@ -41,9 +41,13 @@ with notify `...0003`; these layouts must not be mixed.
 `8ec90003-f315-4f60-9fb8-838830daea50` belongs to the app's **DFU** map, not
 ordinary control/status notifications.
 
-The official app uses **write-with-response** and a **30 ms queue gap**
-(`provider/bluetooth.dart @ 0x91349c–0x9134cc`). The library retains its
-30 ms inter-frame pacing; its current transport requests writes without response.
+The official app uses **write-with-response** followed by a **30 ms queue gap**
+(`provider/bluetooth.dart @ 0x91349c–0x9134cc`). The library likewise awaits
+acknowledged writes when the control characteristic advertises `write`, using
+no-response writes only for legacy endpoints without that property. Its 30 ms
+inter-frame gap starts after the awaited write completes, not when it is queued.
+An ATT acknowledgement confirms the GATT write, not the applied heater state;
+device state readback still arrives through notifications.
 The app's ordinary BLE queue explicitly filters out frames whose header is
 `0x5f` (`batchWrite` predicate at `0x9136e4–0x91373c`). A recovered `0x5f`
 sync builder is not evidence that those frames should be transmitted over BLE.
@@ -52,8 +56,8 @@ sync builder is not evidence that those frames should be transmitted over BLE.
 ### Connection Lifetime
 
 The client reuses one configured GATT connection for multiple successful
-transactions. The connection prelude (`0x5a / 0x04` followed by two
-`0x5a / 0x09` time-sync frames), characteristic discovery, and notification
+transactions. The connection prelude (`0x5a / 0x04` followed by one
+`0x5a / 0x09` time-sync frame), characteristic discovery, and notification
 subscription run once per physical connection.
 
 After each successful transaction, the client arms a 120-second idle
@@ -580,7 +584,7 @@ and checksum. The current implementation recognizes devices whose BLE name
 starts with `DYDOSE` and supports manual one-shot dosing.
 
 Dosing pump interactions use the normal connection prelude (`90 / 4`, then
-two `90 / 9` time sync commands), followed by two dosing auth commands:
+one `90 / 9` time sync command), followed by two dosing auth commands:
 
 | Command ID | Mode | Parameters | Meaning |
 | ---: | ---: | --- | --- |
@@ -706,61 +710,92 @@ The app changes the speed of a running channel by stopping it, re-sending
 
 ### Heater (DYHET / DYH1T)
 
-The heater (`DYHET...` / `DYH1T...` names) is a plain-BLE accessory: it uses
-the standard `0x5a` framing with heater-specific modes, and pushes two `0x5b`
-notification frames. The vendor app's model persists a setting temperature, a
-power, an auto-heating flag, a display unit and an overheat protection
-temperature; only the temperatures, the runtime, the firmware and the alarm
-bitfield are read back from the device.
+The heater uses standard `0x5a` command framing. The corrections below are
+grounded in `DYHET-6.zip` (`uart_app.bin`, SHA-256
+`a4c9f3ca11f64f24b33dcc117d8b58359f53e60620baa36f5a599d03fa02d664`),
+loaded at `0x26000`, and the official-app HCI capture attached to
+[issue #57](https://github.com/TheMicDiet/chihiros-led-control/issues/57).
+Firmware command handlers and notification builders were executed in an ARM
+emulator with peripheral/logging calls intercepted; this is not a physical
+heater test. APK-only assumptions about two temperature fields, separate
+manual/auto setpoint banks, and an Auto-mode heating-enable switch were wrong.
 
 | Command ID | Mode | Parameters | Meaning |
 | ---: | ---: | --- | --- |
-| `90` | `43` / `0x2b` | `[flag, temp_whole, temp_hundredths, power]` | `setHeaterCode`: target temperature and power. `flag` is `0` for the manual setting (sent right after `switchToManual`) and `1` for the auto-mode defaults (`initAutoDefault`). Temperatures split into whole degrees plus the fraction in **hundredths** (`CommonTool.getDec`, the same 2-digit convention as the dosing calibration volume: 36.9 °C = `[36, 90]`), and power rides as exact 10 W increments (800 W = `80`); values not divisible by 10 cannot be represented |
-| `90` | `47` / `0x2f` | `[temp_whole, temp_hundredths]` | `setHeaterProtectedTemp`: overheat protection limit |
-| `90` | `48` / `0x30` | `[temp_whole, temp_hundredths]` | `setHeaterCalibrate`: measured reference temperature the sensor should read |
-| `165` | `56` / `0x38` | `[level, level, level, level, 127]` | `deviceBacklight`: always on (`200`) / always off (`100`) |
+| `90` | `43` / `0x2b` | `[flag, temp_whole, temp_hundredths, power]` | Write the shared target and configured power. Flag `0` also selects manual mode; flag `1` preserves the current mode |
+| `90` | `47` / `0x2f` | `[temp_whole, temp_hundredths]` | Overheat protection limit |
+| `90` | `48` / `0x30` | `[temp_whole, temp_hundredths]` | Measured reference temperature for calibration |
+| `165` | `56` / `0x38` | `[level, level, level, level, 127]` | Backlight always on (`200`) / always off (`100`) |
 | `165` | `56` / `0x38` | `[start_hour, start_minute, end_hour, end_minute, weekmask]` | Scheduled display backlight |
-| `90` | `5` | `[3, 255, 255]` | `switchToAuto` |
-| `90` | `5` | `[11, 255, 255]` | `switchToManual` (shared with the LED family) |
-| `90` | `5` | `[18, 255, 255]` | `switchToScene`: apply the stored scene/schedule |
-| `90` | `5` | `[5, 255, 255]` | `resetAuto` (shared with the LED family's reset-settings frame) |
-| `90` | `5` | `[46\|47, 255, 255]` | `setHeaterAuto`: auto heating on (46) / off (47) |
-| `90` | `5` | `[44\|45, 255, 255]` | `setTemType`: display Celsius (44) / Fahrenheit (45) |
-| `90` | `5` | `[58, 255, 255]` | `heaterResetWorkTime`: zero the runtime counter after cleaning |
+| `90` | `5` | `[11, 255, 255]` | Select manual mode |
+| `90` | `5` | `[18, 255, 255]` | Select auto mode using the stored scene/schedule |
+| `90` | `5` | `[40, 255, 255]` | Delete the five stored scenes; never send as a routine mode-switch prerequisite |
+| `90` | `5` | `[46\|47, 255, 255]` | Enable / disable automatic configured-power increases, in either mode |
+| `90` | `5` | `[44\|45, 255, 255]` | Display Celsius / Fahrenheit |
+| `90` | `5` | `[58, 255, 255]` | Reset the cleaning-runtime hours/seconds counters |
 
-Backlight operations are distinct: Boolean writes select always-on/off and
-replace a prior schedule. `set_backlight_schedule(8, 15, 21, 30, weekdays=81)`
-sends `[8, 15, 21, 30, 81]`. Hours are `0..23`, minutes `0..59`, and the
-weekday mask uses `0..127`. After a successful schedule write, `backlight`
-is `None` (not a measured on/off state) and `backlight_schedule` holds the
-schedule. Failed writes leave tracked state unchanged.
+The handler at `0x2fbba` decodes temperature as
+`10 * whole + floor(hundredths / 10)`, internally in tenths of a degree:
+36.9 °C is `[36, 90]`. Configured power is the wire byte multiplied by 10 W.
+Both flag values write the same target at `0x20002af0` and power at
+`0x20002af8`. A flag-1 write while in manual mode changes its active setpoints;
+it does not enter auto mode or populate a separate setpoint bank.
 
-Polarity evidence is executed `deviceBacklight @ 0x9e8364`; the widget's
-`change @ 0x9e8a50` forwards the Boolean unchanged. These byte mappings do not
-by themselves prove successful operation on physical heaters.
+`set_temperature`, `set_power` and `set_manual_state` send manual mode followed
+by the flag-0 state frame in one 30 ms-paced batch. `set_state` sends flag `1`,
+updates the same tracked pair, and preserves mode. `set_auto_mode` sends
+`[18, 255, 255]`; `[3, 255, 255]` has no handler in DYHET-6. Mode switches
+neither resend stale app presets nor delete the stored schedule.
 
-`setTemperature` and `setPower` both send `switchToManual` immediately followed
-by the mode-43 state frame in one 30 ms-paced batch, so the heater also enters
-manual mode when only one of the two values changes.
+Before a paired write, the client completes a status refresh under its state
+lock. Temperature-only writes then resend the device's configured power, not
+a stale default. Connection-prelude readback is consumed before the write's
+power-generation snapshot, so old startup status cannot undo the new setting.
 
-Those three are separate controls rather than variants of one: `switchToAuto`
-and `switchToScene` choose the mode, while `setHeaterAuto` (`46`/`47`) only arms
-the heating element inside auto mode. No recorded app flow emits `switchToAuto`
-for a heater — scene edits and the state page use `switchToScene` followed by
-the flag-1 auto defaults — so the integration exposes `[18]` as its mode select
-and leaves `[3]` to the CLI (`heater mode auto`). The heater reports neither its
-mode nor its auto-heating state, so an integration tracks both itself and treats
-every manual state frame (mode-43 flag `0`, always preceded by
-`switchToManual`) as leaving auto mode.
+The regulator at `0x31596–0x315d6` uses the automatic-power flag to increase
+configured wattage when its adjustment threshold is reached, even in manual
+mode. Disabling this flag does not disable heating.
 
-Heater notifications use the legacy `0x5b` header:
+Backlight Boolean writes replace a prior schedule. Scheduled writes use clock
+hours `0..23`, minutes `0..59`, and a seven-bit weekday mask `0..127`.
+For example, `set_backlight_schedule(8, 15, 21, 30, weekdays=81)` sends
+`[8, 15, 21, 30, 81]`. While scheduled, `backlight` is `None`: instantaneous
+on/off state is not inferred. Failed writes leave tracked settings unchanged.
 
-| Mode | Length | Layout | Meaning |
+Heater notifications use header `0x5b`; offsets below are zero-based:
+
+| Mode | Exact length | Fields | Meaning |
 | ---: | ---: | --- | --- |
-| `0x25` / `37` | 13 | `data[6..7]` = setting, `data[10..11]` = current | Temperatures as big-endian 16-bit tenths of a degree |
-| `0x0a` / `10` | 16 | `data[7..8]` = runtime hours, `data[11..12]` = firmware, `data[14]` = alarms | Runtime/alarm status. The mode byte is shared with the LED runtime frame, so the fixed 16-byte length is what tells the two apart |
+| `0x25` | 13 | `data[6..7]` = measured watts, `data[10..11]` = temperature × 10; both big-endian | Periodic measured power and current temperature, **not target temperature** |
+| `0x0b` | 18 | `data[12] * 10` = configured watts, `data[13..16]` = big-endian heating seconds | Configured-power readback and accumulated heating time |
+| `0x0a` | 16 | `data[7..8]` = big-endian runtime hours, `data[14]` = alarms | Cleaning-runtime/alarm status |
 
-The alarm bitfield sets one bit per fault; the app tests bits 0-6:
+The builder at `0x26c80` packs measured power from state `+0x64`, current
+temperature from `+0x4c`, configured power from `+0x50`, and runtime hours
+from `+0x58`. The target is a different field (`+0x48`) and is not reported
+by these notifications. `0x0a` bytes 11–12 are template constants `ff 22`,
+not a firmware version; no heater firmware version is inferred from them.
+The UART conversion at `0x3349c–0x334ae` populates measured power separately
+from the temperature-sensor path.
+
+Captured examples reproduced by the firmware builder:
+
+```text
+5b 06 0e 01 7b 25 00 1e 0b ff 00 fa 00
+  measured power = 30 W; current temperature = 25.0 °C
+5b 01 10 00 01 0b 00 00 00 00 00 00 14 00 0b 33 50 22
+  configured power = 200 W; accumulated heating time = 734032 s
+5b 06 0e 00 01 0a 00 00 cb ff ff ff 22 05 00 22
+  cleaning runtime = 203 h; alarm bitmap = 0
+```
+
+`query_status` (`04/01`) requests `0x0a`, `0x0b` and the currently uninterpreted
+`0x36` response; periodic `0x25` measurements arrive independently. Device
+configured-power readback takes precedence over optimistic/restored values,
+including a readback arriving while a write is awaiting completion. A periodic
+measurement must never overwrite the target or the configured-power setting.
+
+The alarm bitfield uses the app's established bit mapping:
 
 | Bit | Value | Meaning |
 | ---: | ---: | --- |
@@ -772,29 +807,10 @@ The alarm bitfield sets one bit per fault; the app tests bits 0-6:
 | 5 | `0x20` | Heating device malfunction |
 | 6 | `0x40` | Sensor malfunction |
 
-The cleaning reminder is driven by the runtime counter rather than a bit: the
-app warns once `runtime_hours / 2160 > 0.9` (~1944 h) and offers
-`heaterResetWorkTime` after cleaning. The device never reports the power,
-auto-heating, backlight, unit or protection settings, so an integration has to
-track them itself.
-
-A capture of the vendor app driving a heater confirms the layout and the app's
-own defaults; every frame below is reproduced byte-for-byte by this
-repository's encoders (message id `0005`, checksum omitted):
-
-| Captured payload | Meaning |
-| --- | --- |
-| `5a 01 09 … 2b 00 19 00 14` | `setHeaterCode` manual state: 25.0 °C at 200 W (the app's manual defaults) |
-| `5a 01 09 … 2b 01 14 00 32` | `setHeaterCode` auto defaults: 20.0 °C at 500 W |
-| `5a 01 07 … 2f 24 5a` | `setHeaterProtectedTemp` 36.9 °C (consecutive slider steps send `24 32`/`24 3c`/`24 46`/`24 50` for 36.5/36.6/36.7/36.8) |
-| `5a 01 07 … 30 17 00` | `setHeaterCalibrate` 23.0 °C |
-| `a5 01 0a … 38 64 64 64 64 7f` | `deviceBacklight` always off (`change(false)`, APK-executed polarity) |
-| `a5 01 0a … 38 c8 c8 c8 c8 7f` | `deviceBacklight` always on (`change(true)`, APK-executed polarity) |
-
-The protection-temperature series is what pins the temperature fraction to
-hundredths rather than tenths, and the 25.0 °C / 200 W pair confirms the
-model's stored defaults (`HEATER_CONTROL.md` §2 quotes the raw Dart smi
-immediates, i.e. twice these values).
+The app also warns once `runtime_hours / 2160 > 0.9` (~1944 h). Resetting
+cleaning runtime does not reset the separate accumulated heating-seconds
+counter reported in `0x0b`. Target temperature, mode, automatic-power flag,
+display unit and protection limit remain locally tracked settings.
 
 ## Decompiler Notes
 

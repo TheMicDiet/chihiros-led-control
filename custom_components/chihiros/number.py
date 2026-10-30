@@ -19,8 +19,6 @@ from homeassistant.helpers.restore_state import async_get as async_get_restore_d
 from .const import DOMAIN
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .heater import (
-    ChihirosHeaterAutoPowerNumber,
-    ChihirosHeaterAutoTemperatureNumber,
     ChihirosHeaterCalibrationNumber,
     ChihirosHeaterPowerNumber,
     ChihirosHeaterProtectorNumber,
@@ -53,6 +51,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up number controls for the configured Chihiros device."""
     chihiros_data: ChihirosData = hass.data[DOMAIN][entry.entry_id]
+    _remove_obsolete_heater_numbers(hass, entry, chihiros_data)
     entities: list[NumberEntity] = []
     if isinstance(chihiros_data, DosingChihirosData):
         entities.extend(
@@ -68,16 +67,25 @@ async def async_setup_entry(
         async_add_entities(entities)
 
 
+def _remove_obsolete_heater_numbers(hass: HomeAssistant, entry: ConfigEntry, data: ChihirosData) -> None:
+    """Remove the current heater's obsolete separate auto-setpoint entities."""
+    if not is_heater_capable(data.device):
+        return
+    registry = er.async_get(hass)
+    for suffix in ("heater_auto_temperature", "heater_auto_power"):
+        entity_id = registry.async_get_entity_id("number", DOMAIN, chihiros_unique_id(data.coordinator.address, suffix))
+        if entity_id is not None and registry.async_get(entity_id).config_entry_id == entry.entry_id:
+            registry.async_remove(entity_id)
+
+
 def _heater_numbers(chihiros_data: ChihirosData) -> list[NumberEntity]:
-    """Build the manual, auto and configuration numbers for a heater."""
+    """Build the shared setpoints and configuration numbers for a heater."""
     if not is_heater_capable(chihiros_data.device):
         return []
     device = heater_client(chihiros_data.device)
     return [
         ChihirosHeaterTemperatureNumber(chihiros_data.coordinator, device),
         ChihirosHeaterPowerNumber(chihiros_data.coordinator, device),
-        ChihirosHeaterAutoTemperatureNumber(chihiros_data.coordinator, device),
-        ChihirosHeaterAutoPowerNumber(chihiros_data.coordinator, device),
         ChihirosHeaterProtectorNumber(chihiros_data.coordinator, device),
         ChihirosHeaterCalibrationNumber(chihiros_data.coordinator, device),
     ]

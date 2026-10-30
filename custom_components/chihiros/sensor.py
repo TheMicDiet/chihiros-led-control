@@ -19,7 +19,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import REVOLUTIONS_PER_MINUTE, UnitOfTemperature, UnitOfTime, UnitOfVolume
+from homeassistant.const import REVOLUTIONS_PER_MINUTE, UnitOfPower, UnitOfTemperature, UnitOfTime, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -35,6 +35,7 @@ from .coordinator import (
     ATTR_FAN_TEMPERATURE_CELSIUS,
     ATTR_FIRMWARE_VERSION,
     ATTR_HEATER_CURRENT_TEMPERATURE_CELSIUS,
+    ATTR_HEATER_MEASURED_POWER_WATTS,
     ATTR_HEATER_WORK_TIME_HOURS,
     ATTR_LAST_NOTIFICATION,
     ATTR_SCHEDULE_POINTS,
@@ -95,6 +96,14 @@ HEATER_SENSOR_DESCRIPTIONS = (
         suggested_display_precision=1,
     ),
     SensorEntityDescription(
+        key=ATTR_HEATER_MEASURED_POWER_WATTS,
+        name="Measured power",
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
+    ),
+    SensorEntityDescription(
         key=ATTR_HEATER_WORK_TIME_HOURS,
         name="Heating runtime",
         native_unit_of_measurement=UnitOfTime.HOURS,
@@ -152,6 +161,14 @@ async def async_setup_entry(
         hass.async_create_task(_async_request_initial_status(chihiros_data.coordinator))
         return
 
+    if is_heater_capable(chihiros_data.device):
+        registry = er.async_get(hass)
+        entity_id = registry.async_get_entity_id(
+            SENSOR_DOMAIN, DOMAIN, chihiros_unique_id(chihiros_data.coordinator.address, ATTR_FIRMWARE_VERSION)
+        )
+        if entity_id is not None and registry.async_get(entity_id).config_entry_id == entry.entry_id:
+            registry.async_remove(entity_id)
+
     async_add_entities(
         ChihirosNotificationSensor(
             chihiros_data.coordinator,
@@ -159,6 +176,7 @@ async def async_setup_entry(
             description,
         )
         for description in SENSOR_DESCRIPTIONS
+        if description.key != ATTR_FIRMWARE_VERSION or not is_heater_capable(chihiros_data.device)
     )
     async_add_entities(_accessory_sensors(chihiros_data))
     hass.async_create_task(_async_request_initial_status(chihiros_data.coordinator))

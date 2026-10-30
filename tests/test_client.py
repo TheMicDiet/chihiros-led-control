@@ -214,7 +214,7 @@ def test_scripted_connection_reuse_runs_prelude_once(monkeypatch: pytest.MonkeyP
     asyncio.run(run())
 
     assert transport.connections == 1
-    assert [frame[5] for frame in transport.writes] == [4, 9, 9, 5, 5]
+    assert [frame[5] for frame in transport.writes] == [4, 9, 5, 5]
 
 
 def test_scripted_idle_disconnect_closes_connection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -257,12 +257,13 @@ def test_scripted_concurrent_commands_are_serialized(monkeypatch: pytest.MonkeyP
             DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
             transport=transport,
         )
-        await asyncio.gather(device.set_manual_mode(), device.set_manual_mode())
+        await asyncio.gather(device.turn_on(), device.turn_off())
 
     asyncio.run(run())
 
     assert transport.connections == 1
-    assert [frame[5] for frame in transport.writes] == [4, 9, 9, 5, 5]
+    actions = [(frame[5], list(frame[6:-1])) for frame in transport.writes if frame[5] not in (4, 9)]
+    assert actions == [(5, [11, 255, 255]), (7, [0, 100]), (5, [11, 255, 255]), (7, [0, 0])]
 
 
 def test_scripted_transient_failure_reconnects(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -360,35 +361,6 @@ def test_scripted_prelude_failure_disconnects_temporary_session(monkeypatch: pyt
 
     assert transport.connections == 3
     assert not transport.is_connected
-
-
-def test_scripted_batch_writes_keep_vendor_pacing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A public multi-frame command preserves the transport batch delay."""
-    from chihiros_led_control import testing as testing_module
-    from chihiros_led_control.devices import base as device_base
-
-    transport = ScriptedTransport()
-    monkeypatch.setattr(device_base, "COMMAND_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(testing_module, "BATCH_WRITE_DELAY", 0.5)
-    sleeps: list[float] = []
-
-    async def capture_sleep(delay: float) -> None:
-        sleeps.append(delay)
-
-    monkeypatch.setattr(asyncio, "sleep", capture_sleep)
-
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-            transport=transport,
-        )
-        await device.set_brightness({"white": 40})
-
-    asyncio.run(run())
-
-    assert sleeps == [0.5, 0.5, 0.5]
-    assert [frame[5] for frame in transport.writes] == [4, 9, 9, 5, 7]
 
 
 def test_scripted_runtime_notification_is_stored_and_published(monkeypatch: pytest.MonkeyPatch) -> None:

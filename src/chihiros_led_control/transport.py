@@ -348,10 +348,10 @@ class BleTransport:
         write_char: BleakGATTCharacteristic,
         frame: bytes,
     ) -> None:
-        """Write one frame while checking for a physical disconnect."""
+        """Await acknowledged writes when supported, preserving legacy no-response endpoints."""
         if self._unexpected_disconnect.is_set():
             raise BleakError("Device unexpectedly disconnected during command batch")
-        await client.write_gatt_char(write_char, frame, False)
+        await client.write_gatt_char(write_char, frame, response="write" in write_char.properties)
         if self._unexpected_disconnect.is_set():
             raise BleakError("Device unexpectedly disconnected during command batch")
 
