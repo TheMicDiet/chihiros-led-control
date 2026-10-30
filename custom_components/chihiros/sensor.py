@@ -36,6 +36,7 @@ from .coordinator import (
     ATTR_FIRMWARE_VERSION,
     ATTR_HEATER_CURRENT_TEMPERATURE_CELSIUS,
     ATTR_HEATER_MEASURED_POWER_WATTS,
+    ATTR_HEATER_POWER_WATTS,
     ATTR_HEATER_WORK_TIME_HOURS,
     ATTR_LAST_NOTIFICATION,
     ATTR_SCHEDULE_POINTS,
@@ -98,6 +99,14 @@ HEATER_SENSOR_DESCRIPTIONS = (
     SensorEntityDescription(
         key=ATTR_HEATER_MEASURED_POWER_WATTS,
         name="Measured power",
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
+    ),
+    SensorEntityDescription(
+        key=ATTR_HEATER_POWER_WATTS,
+        name="Configured power",
         device_class=SensorDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.WATT,
         state_class=SensorStateClass.MEASUREMENT,

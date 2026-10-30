@@ -270,6 +270,10 @@ Heaters expose the controls of the vendor app as ordinary entities:
 - **Power** (number, W, 10 W steps) — configured heating power. Writing it
   switches to manual mode. Device readback overrides the last written or
   restored value, including changes made by automatic power adjustment.
+- **Configured power** (sensor, W) — the last configured heating power reported
+  by the device, separate from actual measured consumption. Unlike the **Power**
+  number, it stays unknown until a report arrives and does not change merely
+  because Home Assistant writes a new power setting.
 - **Mode** (select: `manual`/`auto`) — `manual` uses the shared target and power;
   `auto` applies the stored schedule, using the shared target as its fallback.
   Switching modes preserves settings and never deletes schedules.
