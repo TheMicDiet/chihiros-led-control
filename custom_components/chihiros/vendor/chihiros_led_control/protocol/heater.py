@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from .frame import create_command_encoding
-from .notifications import HeaterStatusNotification, HeaterTemperatureNotification
+from .notifications import HeaterPowerNotification, HeaterStatusNotification, HeaterTemperatureNotification
 
 HEATER_MAX_POWER_WATTS = 2000
 HEATER_MAX_TEMPERATURE_C = 100.0
@@ -17,11 +17,6 @@ HEATER_MAX_TEMPERATURE_C = 100.0
 HEATER_DEFAULT_TEMPERATURE_C = 25.0
 HEATER_DEFAULT_POWER_WATTS = 200
 HEATER_DEFAULT_PROTECTOR_TEMPERATURE_C = 37.0
-# The same model keeps the auto-mode defaults that ride in the mode-43 frame
-# with flag 1: the halved 40/1000 smis of §2, i.e. 20.0 °C at 500 W, matching
-# the captured ``initAutoDefault`` frame.
-HEATER_DEFAULT_AUTO_TEMPERATURE_C = 20.0
-HEATER_DEFAULT_AUTO_POWER_WATTS = 500
 # APK-verified always-on/off sentinels; scheduled writes use clock fields instead.
 HEATER_BACKLIGHT_ON_LEVEL = 200
 HEATER_BACKLIGHT_OFF_LEVEL = 100
@@ -94,18 +89,18 @@ def encode_heater_power_watts(power_watts: int) -> int:
 def create_heater_set_command(
     msg_id: tuple[int, int],
     *,
-    auto: bool,
+    manual: bool,
     temperature_c: float,
     power_watts: int,
 ) -> bytearray:
     """Create the app's ``setHeaterCode`` frame ``(0x5A, 43)``.
 
-    Payload ``[flag, temp_whole, temp_tenths, power]``; ``flag`` is 1 for the
-    auto-mode defaults (``initAutoDefault``) and 0 for the manual setting
-    (``initManual``, which the app sends right after ``switchToManual``).
+    Payload ``[flag, temp_whole, temp_hundredths, power]`` writes the same
+    target and power in either mode. Flag 0 also selects manual mode; flag 1
+    preserves the active mode.
     """
-    whole, tenths = split_heater_temperature(temperature_c)
-    parameters = [1 if auto else 0, whole, tenths, encode_heater_power_watts(power_watts)]
+    whole, hundredths = split_heater_temperature(temperature_c)
+    parameters = [0 if manual else 1, whole, hundredths, encode_heater_power_watts(power_watts)]
     return create_command_encoding(90, 43, msg_id, parameters)
 
 
@@ -120,24 +115,15 @@ def create_query_status_command(msg_id: tuple[int, int]) -> bytearray:
 
 
 def create_heater_auto_mode_command(msg_id: tuple[int, int]) -> bytearray:
-    """Create the heater's ``switchToAuto()`` frame ``(0x5A, 5, [3, 255, 255])``."""
-    return create_command_encoding(90, 5, msg_id, [3, 255, 255])
-
-
-def create_heater_scene_command(msg_id: tuple[int, int]) -> bytearray:
-    """Create the heater's ``switchToScene()`` frame ``(0x5A, 5, [18, 255, 255])``.
-
-    Applies the stored scene/auto schedule; the app sends it 300 ms after
-    ``resetLedQuick`` when a scene is edited.
-    """
+    """Select the heater's automatic scene mode without changing stored scenes."""
     return create_command_encoding(90, 5, msg_id, [18, 255, 255])
 
 
-def create_heater_auto_heating_command(msg_id: tuple[int, int], enabled: bool) -> bytearray:
-    """Create the app's ``setHeaterAuto`` frame ``(0x5A, 5, [46|47, 255, 255])``.
+def create_heater_automatic_power_command(msg_id: tuple[int, int], enabled: bool) -> bytearray:
+    """Enable or disable automatic power escalation, including in manual mode.
 
-    The boolean is passed through unchanged: auto heating on is sub-command 46
-    and off is 47.
+    Sub-command 46 enables escalation and 47 disables it; neither turns the
+    heating element on or off.
     """
     return create_command_encoding(90, 5, msg_id, [46 if enabled else 47, 255, 255])
 
@@ -202,21 +188,26 @@ def create_heater_backlight_schedule_command(msg_id: tuple[int, int], schedule: 
 
 
 def parse_notification(data: bytes | bytearray):
-    """Parse heater temperature/status notifications, or return ``None``."""
+    """Parse exact-length heater measurement, status and configured-power frames."""
     if len(data) < 7 or data[0] != 0x5B:
         return None
     mode = data[5]
-    if mode == 0x25 and len(data) >= 12:
+    if mode == 0x25 and len(data) == 13:
         return HeaterTemperatureNotification(
-            setting_temperature_celsius=((data[6] << 8) | data[7]) / 10,
+            measured_power_watts=(data[6] << 8) | data[7],
             current_temperature_celsius=((data[10] << 8) | data[11]) / 10,
             raw=bytes(data),
         )
     if mode == 0x0A and len(data) == 16:
         return HeaterStatusNotification(
-            firmware_version=(data[11] << 8) | data[12],
             work_time_hours=(data[7] << 8) | data[8],
             alarms=data[14],
+            raw=bytes(data),
+        )
+    if mode == 0x0B and len(data) == 18:
+        return HeaterPowerNotification(
+            power_watts=data[12] * 10,
+            heating_time_seconds=int.from_bytes(data[13:17], "big"),
             raw=bytes(data),
         )
     return None
@@ -228,8 +219,6 @@ __all__ = [
     "HEATER_DEFAULT_TEMPERATURE_C",
     "HEATER_DEFAULT_POWER_WATTS",
     "HEATER_DEFAULT_PROTECTOR_TEMPERATURE_C",
-    "HEATER_DEFAULT_AUTO_TEMPERATURE_C",
-    "HEATER_DEFAULT_AUTO_POWER_WATTS",
     "HEATER_BACKLIGHT_ON_LEVEL",
     "HEATER_BACKLIGHT_OFF_LEVEL",
     "HEATER_BACKLIGHT_TRAILER",
@@ -240,8 +229,7 @@ __all__ = [
     "create_switch_to_manual_mode_command",
     "create_query_status_command",
     "create_heater_auto_mode_command",
-    "create_heater_scene_command",
-    "create_heater_auto_heating_command",
+    "create_heater_automatic_power_command",
     "create_heater_temperature_unit_command",
     "create_heater_protector_temperature_command",
     "create_heater_calibrate_command",

@@ -46,8 +46,11 @@ except ImportError as err:
         allow_module_level=True,
     )
 
+from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
+from custom_components.chihiros.vendor.chihiros_led_control.devices import ChihirosHeater
 from custom_components.chihiros.vendor.chihiros_led_control.models import DeviceKind
-from custom_components.chihiros.vendor.chihiros_led_control.protocol.heater import (
+from custom_components.chihiros.vendor.chihiros_led_control.protocol.notifications import (
+    HeaterPowerNotification,
     HeaterStatusNotification,
     HeaterTemperatureNotification,
 )
@@ -72,10 +75,9 @@ class _TrackingHeater:
         self.protector_calls: list[float] = []
         self.manual_state_calls: list[tuple[float, int]] = []
         self.calibration_calls: list[float] = []
-        self.auto_heating_calls: list[bool] = []
-        self.auto_default_calls: list[tuple[float, int]] = []
+        self.automatic_power_calls: list[bool] = []
         self.manual_mode_calls = 0
-        self.scene_calls = 0
+        self.auto_mode_calls = 0
         self.unit_calls: list[bool] = []
         self.backlight_calls: list[bool] = []
         self.reset_work_time_calls = 0
@@ -83,12 +85,11 @@ class _TrackingHeater:
         self._setting_temperature = 25.0
         self._power_watts = 200
         self._protector_temperature = 37.0
-        self._auto_default_temperature = 20.0
-        self._auto_default_power_watts = 500
-        self._auto_heating = False
+        self._automatic_power = False
         self._celsius = True
         self._backlight: bool | None = True
         self._callbacks: set[Callable[[Any], None]] = set()
+        self.last_heater_power_notification: HeaterPowerNotification | None = None
 
     @property
     def address(self) -> str:
@@ -123,16 +124,8 @@ class _TrackingHeater:
         return self._protector_temperature
 
     @property
-    def auto_default_temperature_celsius(self) -> float:
-        return self._auto_default_temperature
-
-    @property
-    def auto_default_power_watts(self) -> int:
-        return self._auto_default_power_watts
-
-    @property
-    def auto_heating(self) -> bool:
-        return self._auto_heating
+    def automatic_power(self) -> bool:
+        return self._automatic_power
 
     @property
     def is_celsius(self) -> bool:
@@ -151,24 +144,33 @@ class _TrackingHeater:
 
         return remove
 
-    def push_temperature(self, setting_celsius: float, current_celsius: float) -> None:
-        """Deliver a heater temperature notification to the coordinator."""
+    def push_temperature(self, measured_power_watts: int, current_celsius: float) -> None:
+        """Deliver measured power and temperature, never a target."""
         notification = HeaterTemperatureNotification(
-            setting_temperature_celsius=setting_celsius,
+            measured_power_watts=measured_power_watts,
             current_temperature_celsius=current_celsius,
             raw=b"",
         )
         for callback in tuple(self._callbacks):
             callback(notification)
 
-    def push_status(self, *, work_time_hours: int, alarms: int, firmware_version: int = 23) -> None:
+    def push_status(self, *, work_time_hours: int, alarms: int) -> None:
         """Deliver a heater status notification to the coordinator."""
         notification = HeaterStatusNotification(
-            firmware_version=firmware_version,
             work_time_hours=work_time_hours,
             alarms=alarms,
             raw=b"",
         )
+        for callback in tuple(self._callbacks):
+            callback(notification)
+
+    def push_power(self, power_watts: int, heating_time_seconds: int = 734032) -> None:
+        """Deliver authoritative configured-power readback."""
+        self._power_watts = power_watts
+        notification = HeaterPowerNotification(
+            power_watts=power_watts, heating_time_seconds=heating_time_seconds, raw=b""
+        )
+        self.last_heater_power_notification = notification
         for callback in tuple(self._callbacks):
             callback(notification)
 
@@ -216,52 +218,29 @@ class _TrackingHeater:
         await self._write()
         self.calibration_calls.append(measured_temperature_c)
 
-    async def set_auto_heating(self, enabled: bool) -> None:
-        """Record an auto-heating write."""
+    async def set_automatic_power(self, enabled: bool) -> None:
+        """Record an automatic-power write."""
         await self._write()
-        self._auto_heating = enabled
-        self.auto_heating_calls.append(enabled)
+        self._automatic_power = enabled
+        self.automatic_power_calls.append(enabled)
 
     async def set_manual_mode(self) -> None:
         """Record a switch to manual mode."""
         await self._write()
         self.manual_mode_calls += 1
 
-    async def apply_scene(self) -> None:
-        """Record an apply of the stored auto schedule."""
+    async def set_auto_mode(self) -> None:
+        """Record selection of the stored auto schedule."""
         await self._write()
-        self.scene_calls += 1
-
-    async def set_auto_defaults(self, temperature_c: float, power_watts: int) -> None:
-        """Record an auto-mode default pair."""
-        await self._write()
-        self._auto_default_temperature = temperature_c
-        self._auto_default_power_watts = power_watts
-        self.auto_default_calls.append((temperature_c, power_watts))
-
-    async def set_auto_default_temperature(self, temperature_c: float) -> None:
-        """Record an auto default temperature write with the tracked power."""
-        await self.set_auto_defaults(temperature_c, self._auto_default_power_watts)
-
-    async def set_auto_default_power(self, power_watts: int) -> None:
-        """Record an auto default power write with the tracked temperature."""
-        await self.set_auto_defaults(self._auto_default_temperature, power_watts)
+        self.auto_mode_calls += 1
 
     def restore_setting_temperature(self, temperature_c: float) -> None:
-        """Restore tracked manual target without recording a device write."""
+        """Restore the shared target without recording a device write."""
         self._setting_temperature = temperature_c
 
-    def restore_manual_power(self, power_watts: int) -> None:
-        """Restore tracked manual power without recording a device write."""
+    def restore_power(self, power_watts: int) -> None:
+        """Restore shared power without recording a device write."""
         self._power_watts = power_watts
-
-    def restore_auto_default_temperature(self, temperature_c: float) -> None:
-        """Restore tracked auto temperature without recording a device write."""
-        self._auto_default_temperature = temperature_c
-
-    def restore_auto_default_power(self, power_watts: int) -> None:
-        """Restore tracked auto power without recording a device write."""
-        self._auto_default_power_watts = power_watts
 
     async def set_temperature_unit(self, *, celsius: bool) -> None:
         """Record a display-unit write."""
@@ -361,20 +340,53 @@ async def test_heater_setup_creates_all_entities(hass: HomeAssistant, monkeypatc
     assert {
         "heater_temperature",
         "heater_power",
-        "heater_auto_temperature",
-        "heater_auto_power",
         "heater_protector_temperature",
         "heater_calibration_temperature",
     } <= registered[NUMBER_DOMAIN]
+    assert {"heater_auto_temperature", "heater_auto_power"}.isdisjoint(registered[NUMBER_DOMAIN])
     assert {"heater_auto_heating", "heater_backlight"} <= registered[SWITCH_DOMAIN]
     assert {"heater_mode", "heater_temperature_unit"} <= registered[SELECT_DOMAIN]
     assert {
         "heater_current_temperature_celsius",
         "heater_work_time_hours",
         "heater_alarms",
-        "firmware_version",
+        "heater_measured_power_watts",
     } <= registered[SENSOR_DOMAIN]
+    assert "firmware_version" not in registered[SENSOR_DOMAIN]
     assert _entity_id(hass, "button", "heater_reset_work_time")
+
+
+async def test_heater_removes_only_its_obsolete_entities(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clean obsolete auto banks and guessed firmware without touching other devices."""
+    entry, _client = await _setup_heater(hass, monkeypatch)
+    registry = er.async_get(hass)
+    temperature_id = _entity_id(hass, NUMBER_DOMAIN, "heater_temperature")
+    power_id = _entity_id(hass, NUMBER_DOMAIN, "heater_power")
+    automatic_power_id = _entity_id(hass, SWITCH_DOMAIN, "heater_auto_heating")
+    obsolete_ids: list[str] = []
+    other_ids: list[str] = []
+
+    def prime() -> None:
+        for domain, suffix in (
+            (NUMBER_DOMAIN, "heater_auto_temperature"),
+            (NUMBER_DOMAIN, "heater_auto_power"),
+            (SENSOR_DOMAIN, "firmware_version"),
+        ):
+            obsolete_ids.append(
+                registry.async_get_or_create(domain, DOMAIN, f"{TEST_ADDRESS}_{suffix}", config_entry=entry).entity_id
+            )
+            other_ids.append(
+                registry.async_get_or_create(
+                    domain, DOMAIN, f"AA:BB:CC:DD:EE:FF_{suffix}", config_entry=entry
+                ).entity_id
+            )
+
+    await _reload_entry(hass, entry, prime=prime)
+    assert all(registry.async_get(entity_id) is None for entity_id in obsolete_ids)
+    assert all(registry.async_get(entity_id) is not None for entity_id in other_ids)
+    assert _entity_id(hass, NUMBER_DOMAIN, "heater_temperature") == temperature_id
+    assert _entity_id(hass, NUMBER_DOMAIN, "heater_power") == power_id
+    assert _entity_id(hass, SWITCH_DOMAIN, "heater_auto_heating") == automatic_power_id
 
 
 async def test_heater_temperature_numbers_follow_configured_unit(
@@ -384,7 +396,7 @@ async def test_heater_temperature_numbers_follow_configured_unit(
     """Temperature numbers convert through HA while power numbers remain watts."""
     hass.config.units = US_CUSTOMARY_SYSTEM
     _entry, client = await _setup_heater(hass, monkeypatch)
-    client.push_temperature(25.0, 24.0)
+    client.push_temperature(30, 24.0)
     await _flush()
 
     calibration_id = _entity_id(hass, NUMBER_DOMAIN, "heater_calibration_temperature")
@@ -399,7 +411,6 @@ async def test_heater_temperature_numbers_follow_configured_unit(
 
     expected_temperatures = {
         "heater_temperature": 77.0,
-        "heater_auto_temperature": 68.0,
         "heater_protector_temperature": 98.6,
         "heater_calibration_temperature": 77.0,
     }
@@ -413,7 +424,6 @@ async def test_heater_temperature_numbers_follow_configured_unit(
 
     for suffix, expected_value in {
         "heater_power": 200.0,
-        "heater_auto_power": 500.0,
     }.items():
         state = hass.states.get(_entity_id(hass, NUMBER_DOMAIN, suffix))
         assert float(state.state) == pytest.approx(expected_value)
@@ -426,8 +436,8 @@ async def test_heater_notifications_update_sensors(hass: HomeAssistant, monkeypa
     _entry, client = await _setup_heater(hass, monkeypatch)
     await hass.async_block_till_done()
 
-    client.push_temperature(26.6, 25.8)
-    client.push_status(work_time_hours=1994, alarms=0x01 | 0x08, firmware_version=0x0F1B)
+    client.push_temperature(30, 25.8)
+    client.push_status(work_time_hours=1994, alarms=0x01 | 0x08)
     await _flush()
 
     current = hass.states.get(_entity_id(hass, SENSOR_DOMAIN, "heater_current_temperature_celsius"))
@@ -438,21 +448,23 @@ async def test_heater_notifications_update_sensors(hass: HomeAssistant, monkeypa
     assert alarms.state == "insufficient_water, needs_cleaning"
     assert alarms.attributes["alarm_bits"] == 0x09
     assert alarms.attributes["alarms"] == ["insufficient_water", "needs_cleaning"]
-    firmware = hass.states.get(_entity_id(hass, SENSOR_DOMAIN, "firmware_version"))
-    assert float(firmware.state) == 0x0F1B
+    measured_power = hass.states.get(_entity_id(hass, SENSOR_DOMAIN, "heater_measured_power_watts"))
+    assert float(measured_power.state) == 30
+    assert measured_power.attributes[ATTR_DEVICE_CLASS] == "power"
+    assert measured_power.attributes[ATTR_UNIT_OF_MEASUREMENT] == "W"
 
 
-async def test_heater_temperature_pending_waits_for_temperature_notification(
+async def test_heater_measurements_never_override_target(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Unrelated coordinator updates do not roll back a pending target temperature."""
+    """Neither status nor periodic measurements report or replace the target."""
     _entry, client = await _setup_heater(hass, monkeypatch)
     entity_id = _entity_id(hass, NUMBER_DOMAIN, "heater_temperature")
 
-    client.push_temperature(26.5, 26.0)
+    client.push_temperature(30, 26.0)
     await _flush()
-    assert float(hass.states.get(entity_id).state) == pytest.approx(26.5)
+    assert float(hass.states.get(entity_id).state) == pytest.approx(25.0)
 
     await hass.services.async_call(
         NUMBER_DOMAIN,
@@ -468,24 +480,25 @@ async def test_heater_temperature_pending_waits_for_temperature_notification(
     await _flush()
     assert float(hass.states.get(entity_id).state) == pytest.approx(24.5)
 
-    client.push_temperature(28.0, 27.5)
+    client.push_temperature(280, 27.5)
+    client.push_power(800)
     await _flush()
-    assert float(hass.states.get(entity_id).state) == pytest.approx(28.0)
+    assert float(hass.states.get(entity_id).state) == pytest.approx(24.5)
 
 
-async def test_heater_temperature_report_during_write_wins(
+async def test_heater_measurement_during_write_preserves_target(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A device report received during the write supersedes the optimistic target."""
+    """A periodic measurement during a write never supersedes its target."""
 
     class ReportingHeater(_TrackingHeater):
-        """Heater that reports an authoritative target before its write returns."""
+        """Heater that emits telemetry before its write returns."""
 
         async def set_temperature(self, temperature_c: float) -> None:
-            """Write the target, then report the device-adjusted value."""
+            """Write the target, then emit unrelated telemetry."""
             await super().set_temperature(temperature_c)
-            self.push_temperature(25.0, 24.5)
+            self.push_temperature(30, 25.0)
             await asyncio.sleep(0)
 
     _entry, _client = await _setup_heater(hass, monkeypatch, ReportingHeater())
@@ -499,7 +512,126 @@ async def test_heater_temperature_report_during_write_wins(
     )
     await _flush()
 
-    assert float(hass.states.get(entity_id).state) == pytest.approx(25.0)
+    assert float(hass.states.get(entity_id).state) == pytest.approx(24.5)
+
+
+async def test_heater_power_readback_overrides_restoration_and_pending_write(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only configured-power frames supersede the restored or optimistic power."""
+    entry, _client = await _setup_heater(hass, monkeypatch)
+    power_id = _entity_id(hass, NUMBER_DOMAIN, "heater_power")
+    await _reload_entry(hass, entry, prime=lambda: _prime_restore_state(hass, power_id, State(power_id, "800")))
+    client = hass.data[DOMAIN][entry.entry_id].device
+    assert float(hass.states.get(power_id).state) == 800
+    client.push_power(200)
+    await _flush()
+    assert float(hass.states.get(power_id).state) == 200
+
+    await hass.services.async_call(NUMBER_DOMAIN, "set_value", {ATTR_ENTITY_ID: power_id, "value": 400}, blocking=True)
+    client.push_status(work_time_hours=203, alarms=0)
+    client.push_temperature(30, 25.0)
+    await _flush()
+    assert float(hass.states.get(power_id).state) == 400
+    client.push_power(600)
+    await _flush()
+    assert float(hass.states.get(power_id).state) == 600
+    assert client.power_watts == 600
+
+
+async def test_heater_power_report_during_write_wins(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A readback received during a BLE write must not be overwritten on return."""
+
+    class ReportingHeater(_TrackingHeater):
+        """Report a firmware-adjusted configured power before returning."""
+
+        async def set_power(self, power_watts: int) -> None:
+            """Write power and deliver the authoritative result."""
+            await super().set_power(power_watts)
+            self.push_power(600)
+            await asyncio.sleep(0)
+
+    _entry, _client = await _setup_heater(hass, monkeypatch, ReportingHeater())
+    power_id = _entity_id(hass, NUMBER_DOMAIN, "heater_power")
+    await hass.services.async_call(NUMBER_DOMAIN, "set_value", {ATTR_ENTITY_ID: power_id, "value": 400}, blocking=True)
+    await _flush()
+    assert float(hass.states.get(power_id).state) == 600
+
+
+async def test_heater_initial_power_readback_beats_old_restore(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Status queried at setup outranks an earlier restored configured power."""
+
+    class ReportingHeater(_TrackingHeater):
+        """Return the configured hardware power when status is queried."""
+
+        async def query_status(self) -> None:
+            """Report real configured power without reporting a target."""
+            self.push_power(200)
+            await asyncio.sleep(0)
+
+    client = ReportingHeater()
+    entry, _client = await _setup_heater(hass, monkeypatch, client)
+    power_id = _entity_id(hass, NUMBER_DOMAIN, "heater_power")
+    await _reload_entry(hass, entry, prime=lambda: _prime_restore_state(hass, power_id, State(power_id, "800")))
+    await hass.async_block_till_done()
+    assert float(hass.states.get(power_id).state) == 200
+    assert client.power_watts == 200
+
+
+async def test_real_heater_capture_reaches_home_assistant(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real DYHET-6 frames stay separated through the actual client and coordinator."""
+    from chihiros_led_control import transport as transport_module
+    from custom_components.chihiros.vendor.chihiros_led_control.devices import base as client_module
+    from custom_components.chihiros.vendor.chihiros_led_control.devices import heater as heater_module
+
+    monkeypatch.setattr(transport_module, "BATCH_WRITE_DELAY", 0.0)
+    monkeypatch.setattr(client_module, "COMMAND_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(client_module, "STATUS_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(heater_module, "COMMAND_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(heater_module, "STATUS_NOTIFICATION_WAIT", 0.0)
+    transport = ScriptedTransport(name="DYHET-test", address=TEST_ADDRESS)
+    transport.expect(
+        90,
+        4,
+        [1],
+        respond=[
+            bytes.fromhex("5b060e00010a0000cbffffff22050022"),
+            bytes.fromhex("5b011000010b00000000000014000b335022"),
+        ],
+    )
+    client = ChihirosHeater(ScriptedBLEDevice(transport.name, transport.address), HEATER, transport=transport)
+    entry, _client = await _setup_heater(hass, monkeypatch, client)
+    await hass.async_block_till_done()
+    temperature_id = _entity_id(hass, NUMBER_DOMAIN, "heater_temperature")
+    power_id = _entity_id(hass, NUMBER_DOMAIN, "heater_power")
+    assert float(hass.states.get(power_id).state) == 200
+    await hass.services.async_call(
+        NUMBER_DOMAIN, "set_value", {ATTR_ENTITY_ID: temperature_id, "value": 27.5}, blocking=True
+    )
+    client._notification_handler(None, bytearray.fromhex("5b060e017b25001e0bff00fa00"))
+    await _flush()
+    assert float(hass.states.get(temperature_id).state) == 27.5
+    assert float(hass.states.get(power_id).state) == 200
+    assert float(hass.states.get(_entity_id(hass, SENSOR_DOMAIN, "heater_measured_power_watts")).state) == 30
+    assert float(hass.states.get(_entity_id(hass, SENSOR_DOMAIN, "heater_current_temperature_celsius")).state) == 25
+    assert float(hass.states.get(_entity_id(hass, SENSOR_DOMAIN, "heater_work_time_hours")).state) == 203
+    assert hass.data[DOMAIN][entry.entry_id].coordinator.data["heater_heating_time_seconds"] == 734032
+    assert client.setting_temperature_celsius == 27.5
+    assert client.power_watts == 200
+    await hass.services.async_call(NUMBER_DOMAIN, "set_value", {ATTR_ENTITY_ID: power_id, "value": 400}, blocking=True)
+    client._notification_handler(None, bytearray.fromhex("5b060e017b25001e0bff00fa00"))
+    await _flush()
+    assert float(hass.states.get(power_id).state) == 400
+    external_power_frame = bytearray.fromhex("5b011000010b00000000000014000b335022")
+    external_power_frame[12] = 60
+    client._notification_handler(None, external_power_frame)
+    await _flush()
+    assert float(hass.states.get(power_id).state) == 600
+    assert client.power_watts == 600
+    assert client.setting_temperature_celsius == 27.5
+    await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_heater_manual_pair_restores_into_a_fresh_client(
@@ -548,7 +680,7 @@ async def test_heater_switch_restores_and_drives_client(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The auto-heating switch is optimistic, restored and writes to the client."""
+    """Automatic power is optimistic, restored, and independent of mode."""
     entry, client = await _setup_heater(hass, monkeypatch)
     entity_id = _entity_id(hass, SWITCH_DOMAIN, "heater_auto_heating")
     assert hass.states.get(entity_id).state == STATE_OFF
@@ -560,8 +692,9 @@ async def test_heater_switch_restores_and_drives_client(
         blocking=True,
     )
     await _flush()
-    assert client.auto_heating_calls == [True]
+    assert client.automatic_power_calls == [True]
     assert hass.states.get(entity_id).state == STATE_ON
+    assert hass.states.get(_entity_id(hass, SELECT_DOMAIN, "heater_mode")).state == "manual"
 
     await _reload_entry(
         hass,
@@ -571,7 +704,7 @@ async def test_heater_switch_restores_and_drives_client(
     restored_client = hass.data[DOMAIN][entry.entry_id].device
     assert restored_client is not client
     assert hass.states.get(entity_id).state == STATE_ON
-    assert restored_client.auto_heating_calls == []
+    assert restored_client.automatic_power_calls == []
 
 
 async def test_heater_backlight_switch_restores_and_drives_client(
@@ -657,7 +790,8 @@ async def test_heater_mode_select_writes_and_restores(hass: HomeAssistant, monke
         blocking=True,
     )
     await _flush()
-    assert client.scene_calls == 1
+    assert client.auto_mode_calls == 1
+    assert client.manual_state_calls == []
     assert hass.states.get(entity_id).state == "auto"
 
     await _reload_entry(
@@ -668,7 +802,7 @@ async def test_heater_mode_select_writes_and_restores(hass: HomeAssistant, monke
     restored_client = hass.data[DOMAIN][entry.entry_id].device
     assert restored_client is not client
     assert hass.states.get(entity_id).state == "auto"
-    assert restored_client.scene_calls == 0
+    assert restored_client.auto_mode_calls == 0
 
     await hass.services.async_call(
         SELECT_DOMAIN,
@@ -678,6 +812,7 @@ async def test_heater_mode_select_writes_and_restores(hass: HomeAssistant, monke
     )
     await _flush()
     assert restored_client.manual_mode_calls == 1
+    assert restored_client.manual_state_calls == []
     assert hass.states.get(entity_id).state == "manual"
 
 
@@ -706,76 +841,8 @@ async def test_heater_manual_setpoint_returns_mode_to_manual(
     )
     await _flush()
 
-    # The manual flag rides in the state frame, so no extra mode command is sent.
     assert client.power_calls == [800]
-    assert client.manual_mode_calls == 0
     assert hass.states.get(mode_id).state == "manual"
-
-
-async def test_heater_auto_default_numbers_write_the_pair(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Each auto default number resends the sibling value the frame carries."""
-    _entry, client = await _setup_heater(hass, monkeypatch)
-    temperature_id = _entity_id(hass, NUMBER_DOMAIN, "heater_auto_temperature")
-    power_id = _entity_id(hass, NUMBER_DOMAIN, "heater_auto_power")
-
-    # The device never reports the pair, so the numbers show the app's defaults.
-    assert float(hass.states.get(temperature_id).state) == pytest.approx(20.0)
-    assert float(hass.states.get(power_id).state) == pytest.approx(500)
-
-    await hass.services.async_call(
-        NUMBER_DOMAIN,
-        "set_value",
-        {ATTR_ENTITY_ID: temperature_id, "value": 22.5},
-        blocking=True,
-    )
-    await hass.services.async_call(
-        NUMBER_DOMAIN,
-        "set_value",
-        {ATTR_ENTITY_ID: power_id, "value": 800},
-        blocking=True,
-    )
-    await _flush()
-
-    assert client.auto_default_calls == [(22.5, 500), (22.5, 800)]
-    assert float(hass.states.get(temperature_id).state) == pytest.approx(22.5)
-    assert float(hass.states.get(power_id).state) == pytest.approx(800)
-
-
-async def test_heater_auto_defaults_restore_into_a_fresh_client(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Restored auto defaults are displayed and paired without BLE writes."""
-    entry, client = await _setup_heater(hass, monkeypatch)
-    temperature_id = _entity_id(hass, NUMBER_DOMAIN, "heater_auto_temperature")
-    power_id = _entity_id(hass, NUMBER_DOMAIN, "heater_auto_power")
-
-    def prime() -> None:
-        _prime_restore_state(hass, temperature_id, State(temperature_id, "22.5"))
-        _prime_restore_state(hass, power_id, State(power_id, "900.0"))
-
-    await _reload_entry(hass, entry, prime=prime)
-    restored_client = hass.data[DOMAIN][entry.entry_id].device
-
-    assert restored_client is not client
-    assert restored_client.auto_default_temperature_celsius == pytest.approx(22.5)
-    assert restored_client.auto_default_power_watts == 900
-    assert restored_client.auto_default_calls == []
-    assert float(hass.states.get(temperature_id).state) == pytest.approx(22.5)
-    assert float(hass.states.get(power_id).state) == pytest.approx(900)
-
-    await hass.services.async_call(
-        NUMBER_DOMAIN,
-        "set_value",
-        {ATTR_ENTITY_ID: temperature_id, "value": 23.5},
-        blocking=True,
-    )
-    await _flush()
-
-    assert restored_client.auto_default_calls == [(23.5, 900)]
 
 
 async def test_heater_calibration_and_protection_numbers(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -830,7 +897,7 @@ async def test_heater_write_failure_raises_home_assistant_error(
     await _flush()
 
     assert client.temperature_calls == []
-    assert hass.states.get(entity_id).state in ("unknown", "unavailable")
+    assert float(hass.states.get(entity_id).state) == pytest.approx(25.0)
 
 
 @pytest.mark.parametrize("name", ["DYHET-abc", "DYH1T-abc"])
@@ -885,6 +952,12 @@ async def test_fake_heater_device_exposes_working_entities(
     assert fake.setting_temperature_celsius == pytest.approx(27.0)
     assert float(hass.states.get(temperature_id).state) == pytest.approx(27.0)
     assert float(hass.states.get(runtime_id).state) == 120
+    assert fake.last_heater_temperature_notification is None
+    fake._push_heater_temperature()
+    await _flush()
+    measured_power = hass.states.get(_entity_id(hass, SENSOR_DOMAIN, "heater_measured_power_watts"))
+    assert float(measured_power.state) == 30
+    assert float(hass.states.get(temperature_id).state) == 27.0
 
     await hass.services.async_call(
         "button",
@@ -895,20 +968,14 @@ async def test_fake_heater_device_exposes_working_entities(
     await _flush()
     assert float(hass.states.get(runtime_id).state) == 0
 
-    # The mode select and the auto defaults drive a real client surface too.
+    # Selecting auto leaves the shared setpoints untouched.
     await hass.services.async_call(
         SELECT_DOMAIN,
         "select_option",
         {ATTR_ENTITY_ID: _entity_id(hass, SELECT_DOMAIN, "heater_mode"), "option": "auto"},
         blocking=True,
     )
-    await hass.services.async_call(
-        NUMBER_DOMAIN,
-        "set_value",
-        {ATTR_ENTITY_ID: _entity_id(hass, NUMBER_DOMAIN, "heater_auto_temperature"), "value": 21.0},
-        blocking=True,
-    )
     await _flush()
 
     assert hass.states.get(_entity_id(hass, SELECT_DOMAIN, "heater_mode")).state == "auto"
-    assert fake.auto_default_temperature_celsius == pytest.approx(21.0)
+    assert fake.setting_temperature_celsius == pytest.approx(27.0)

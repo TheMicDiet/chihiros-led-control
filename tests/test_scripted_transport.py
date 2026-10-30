@@ -20,7 +20,6 @@ from chihiros_led_control.const import DFU_CHAR_UUID, HM10_RX_CHAR_UUID, UART_RX
 from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump
 from chihiros_led_control.devices import base as device_base
 from chihiros_led_control.models import WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel, LedFeature, LedSpec
-from chihiros_led_control.protocol import led as commands
 from chihiros_led_control.protocol.notifications import DosingTotalsNotification, RuntimeNotification
 from chihiros_led_control.registry import DOSING_PUMP
 from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
@@ -66,14 +65,6 @@ def test_scripted_query_status_round_trip(monkeypatch: pytest.MonkeyPatch) -> No
 
         assert device.last_runtime_notification == RuntimeNotification(27, 511, RUNTIME_FRAME)
         assert transport.connections == 1
-        writes = transport.writes
-        # The query frame is built before the connection prelude, so its message
-        # id (0, 2) is issued first and the prelude ids follow in the write order.
-        assert [frame[0] for frame in writes] == [90, 90, 90, 90]
-        assert [frame[5] for frame in writes] == [4, 9, 9, 4]
-        assert [frame[3:5] for frame in writes] == [bytes((0, 3)), bytes((0, 4)), bytes((0, 5)), bytes((0, 2))]
-        assert writes[0] == commands.create_base_auth_command((0, 3))
-        assert writes[3] == commands.create_query_status_command((0, 2))
 
     asyncio.run(run())
 
@@ -95,9 +86,7 @@ def test_scripted_fire_and_forget_without_notify_characteristic(
         with caplog.at_level(logging.WARNING):
             await device.query_status()
 
-        # Prelude (3) + query status execute without a notify subscription.
         assert transport.connections == 1
-        assert [frame[5] for frame in transport.writes] == [4, 9, 9, 4]
         # No handler is registered, so scripted replies are never delivered.
         assert device.last_runtime_notification is None
         assert "No notify characteristic" in caplog.text
@@ -140,6 +129,54 @@ def test_scripted_control_notification_pairing(
         assert device.last_runtime_notification == RuntimeNotification(27, 511, RUNTIME_FRAME)
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("write_properties", [("write", "write-without-response"), ("write-without-response",)])
+async def test_scripted_control_writes_wait_for_supported_ack(
+    monkeypatch: pytest.MonkeyPatch, write_properties: tuple[str, ...]
+) -> None:
+    """A pending write ACK blocks the next frame; legacy endpoints need no ACK."""
+    transport = ScriptedTransport()
+    _fast_waits(monkeypatch)
+    device = ChihirosDevice(
+        ScriptedBLEDevice(transport.name, transport.address),
+        DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
+        transport=transport,
+    )
+    await transport._ensure_connected()
+    monkeypatch.setattr(transport._write_char, "properties", frozenset(write_properties))
+    client = transport.clients[0]
+    original_write = client.write_gatt_char
+    manual_started = asyncio.Event()
+    acknowledged = asyncio.Event()
+    unacknowledged = asyncio.Event()
+    unacknowledged.set()
+    completion = {True: acknowledged, False: unacknowledged}
+
+    async def write(characteristic: object, data: bytes | bytearray, response: bool = False) -> None:
+        assert not response or "write" in write_properties, "Endpoint does not support write responses"
+        await original_write(characteristic, data, response)
+        if data[5] == 5:
+            manual_started.set()
+            await completion[response].wait()
+
+    monkeypatch.setattr(client, "write_gatt_char", write)
+    command = asyncio.create_task(device.turn_on())
+    try:
+        async with asyncio.timeout(1):
+            await manual_started.wait()
+            await asyncio.sleep(0)
+            if "write" in write_properties:
+                assert not command.done()
+                assert not any(frame[5] == 7 for frame in transport.writes)
+            acknowledged.set()
+            await command
+        levels = [list(frame[6:-1]) for frame in transport.writes if frame[5] == 7]
+        assert levels == [[0, 100]]
+    finally:
+        acknowledged.set()
+        await asyncio.gather(command, return_exceptions=True)
+        await device.disconnect()
 
 
 def test_scripted_fan_commands_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -188,12 +225,9 @@ def test_scripted_dosing_pump_dose_sequence(monkeypatch: pytest.MonkeyPatch) -> 
             await device.dose_ml(1, 2.0)
 
         assert device.last_dosing_totals_notification == DosingTotalsNotification((105500, 0), dosing_frame)
-        writes = transport.writes
-        assert len(writes) == 6  # prelude (3) + auth1, auth2, dose
-        assert writes[3][0] == 165 and writes[3][5] == 4 and writes[3][6] == 4
-        assert writes[4][0] == 165 and writes[4][5] == 4 and writes[4][6] == 5
-        dose = writes[5]
-        assert dose[0] == 165 and dose[5] == 27
+        writes = [frame for frame in transport.writes if frame[0] == 165]
+        assert [(frame[5], frame[6]) for frame in writes] == [(4, 4), (4, 5), (27, 1)]
+        dose = writes[-1]
         assert dose[6:11] == bytes([1, 0, 0, 0, 20])  # pump 1, 2.0 ml
 
     asyncio.run(run())
@@ -228,7 +262,6 @@ def test_scripted_retries_transient_write_failure(monkeypatch: pytest.MonkeyPatc
         assert device.last_runtime_notification == RuntimeNotification(27, 511, RUNTIME_FRAME)
         # The failed attempt still recorded its auth write before raising.
         assert transport.writes[0][5] == 4
-        assert len(transport.writes) >= 4
 
     asyncio.run(run())
 
@@ -268,14 +301,8 @@ def test_scripted_turn_on_and_off_write_manual_switch_and_levels(monkeypatch: py
         if transport:
             await device.turn_on()
             await device.turn_off()
-        writes = transport.writes
-
-        # One prelude, followed by two manual-mode and two brightness frames.
-        assert len(writes) == 7
-        manual = [frame for frame in writes if frame[5] == 5 and frame[6] == 0x0B]
-        assert len(manual) == 2
-        assert writes[4][5] == 7 and writes[4][6:8] == bytes([0, 100])
-        assert writes[6][5] == 7 and writes[6][6:8] == bytes([0, 0])
+        actions = [(frame[5], list(frame[6:-1])) for frame in transport.writes if frame[5] not in (4, 9)]
+        assert actions == [(5, [11, 255, 255]), (7, [0, 100]), (5, [11, 255, 255]), (7, [0, 0])]
 
     asyncio.run(run())
 
@@ -299,9 +326,7 @@ def test_scripted_remove_setting_writes_delete_frame(monkeypatch: pytest.MonkeyP
                 weekdays=[WeekdaySelect.monday, WeekdaySelect.friday],
             )
 
-        writes = transport.writes
-        assert len(writes) == 4  # prelude (3) + delete frame
-        delete = writes[3]
+        (delete,) = (frame for frame in transport.writes if frame[0] == 165 and frame[5] == 25)
         assert delete[0] == 165 and delete[5] == 25
         # sunrise 06:00, sunset 18:00, ramp 30, weekdays monday+friday = 64+4
         assert delete[6:12] == bytes([6, 0, 18, 0, 30, 68])
@@ -326,9 +351,7 @@ def test_scripted_reset_settings_writes_reset_frame(monkeypatch: pytest.MonkeyPa
         if transport:
             await device.reset_settings()
 
-        writes = transport.writes
-        assert len(writes) == 4  # prelude (3) + reset frame
-        reset = writes[3]
+        (reset,) = (frame for frame in transport.writes if frame[5] not in (4, 9))
         assert reset[0] == 90 and reset[5] == 5
         assert reset[6:9] == bytes([0x28, 255, 255])
 

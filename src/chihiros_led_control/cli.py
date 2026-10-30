@@ -540,41 +540,40 @@ def heater_manual_set(
     _run_heater_func(device_address, lambda dev: dev.set_manual_state(temperature, watts))
 
 
-@heater_app.command("auto-defaults")
-def heater_auto_defaults(
+@heater_app.command("set-state")
+def heater_set_state(
     device_address: str,
     temperature: TemperatureArgument,
     watts: PowerArgument,
 ) -> None:
-    """Set the temperature and power the heater's auto schedules heat towards."""
+    """Set the shared temperature and power without changing manual/auto mode."""
     _validate_heater_power(watts)
-    _run_heater_func(device_address, lambda dev: dev.set_auto_defaults(temperature, watts))
+    _run_heater_func(device_address, lambda dev: dev.set_state(temperature, watts))
 
 
 @heater_app.command("mode")
 def heater_mode(
     device_address: str,
-    mode: Annotated[str, typer.Argument(help="manual, auto or scene")],
+    mode: Annotated[str, typer.Argument(help="manual or auto")],
 ) -> None:
-    """Switch a heater to manual mode, auto mode, or apply its stored scene."""
+    """Select manual operation or the stored auto schedule without deleting it."""
     heater_commands: dict[str, HeaterDeviceCommand] = {
         "manual": lambda dev: dev.set_manual_mode(),
         "auto": lambda dev: dev.set_auto_mode(),
-        "scene": lambda dev: dev.apply_scene(),
     }
     command = heater_commands.get(mode.lower())
     if command is None:
-        raise typer.BadParameter(f"Invalid mode {mode!r}, expected manual, auto or scene")
+        raise typer.BadParameter(f"Invalid mode {mode!r}, expected manual or auto")
     _run_heater_func(device_address, command)
 
 
-@heater_app.command("auto-heating")
-def heater_auto_heating(
+@heater_app.command("automatic-power")
+def heater_automatic_power(
     device_address: str,
     enable: Annotated[bool, typer.Option("--enable/--disable")] = True,
 ) -> None:
-    """Enable or disable the heating element while the heater runs in auto mode."""
-    _run_heater_func(device_address, lambda dev: dev.set_auto_heating(enable))
+    """Enable or disable automatic increases of configured power in either mode."""
+    _run_heater_func(device_address, lambda dev: dev.set_automatic_power(enable))
 
 
 @heater_app.command("backlight")
@@ -633,21 +632,24 @@ def heater_reset_work_time(device_address: str) -> None:
 
 @heater_app.command("status")
 def heater_status(device_address: str) -> None:
-    """Query and print a heater's temperatures, runtime and alarms."""
+    """Query measured temperature, measured/configured power, runtime and alarms."""
 
     async def command(dev: ChihirosHeater) -> None:
         await dev.query_status()
         temperature = dev.last_heater_temperature_notification
         status = dev.last_heater_status_notification
+        power = dev.last_heater_power_notification
         table = Table("Field", "Value")
-        table.add_row(
-            "Setting temperature",
-            f"{temperature.setting_temperature_celsius:.1f} °C" if temperature is not None else "unknown",
-        )
         table.add_row(
             "Current temperature",
             f"{temperature.current_temperature_celsius:.1f} °C" if temperature is not None else "unknown",
         )
+        table.add_row(
+            "Measured power",
+            f"{temperature.measured_power_watts} W" if temperature is not None else "unknown",
+        )
+        table.add_row("Configured power", f"{power.power_watts} W" if power is not None else "unknown")
+        table.add_row("Heating time", f"{power.heating_time_seconds} s" if power is not None else "unknown")
         table.add_row("Runtime", f"{status.work_time_hours} h" if status is not None else "unknown")
         alarms = dev.heater_alarms
         table.add_row("Alarms", ", ".join(alarms) if alarms else ("none" if status is not None else "unknown"))

@@ -28,7 +28,7 @@ compatibility; see [protocol evidence and limits](docs/protocol.md).
 - Chihiros Commander 4
 - Chihiros Commander X
 - Chihiros dosing pump (`DYDOSE*`, `DYNDOS`) with first Home Assistant support for manual dosing, per-channel calibration, daily dose totals, and lifetime pump cycle/ml counters
-- Chihiros heater (`DYHET*`, `DYH1T*`) with target temperature, power, overheat-protection and calibration numbers, an auto-heating switch, a display-unit select, and current-temperature/runtime/alarm sensors
+- Chihiros heater (`DYHET*`, `DYH1T*`) with target temperature, configured power, overheat-protection and calibration numbers, automatic power adjustment, display-unit and mode selects, and measured-power/temperature/runtime/alarm sensors
 - Chihiros magnetic stirrer (`DYMIXR*`) with per-channel stir switches, speed and pre-run numbers, timer schedule programming, and master/slave mirroring of a linked dosing pump
 - [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
 - Chihiros New C
@@ -264,19 +264,18 @@ the integration's programming record and no longer needs to be passed.
 
 Heaters expose the controls of the vendor app as ordinary entities:
 
-- **Temperature** (number, °C) — the manual target temperature; writing it
-  switches the heater to manual mode. The device reports it back, so the number
-  follows the heater whenever it is changed outside Home Assistant.
-- **Power** (number, W, 10 W steps) — the manual heating power. The device never
-  reports this, so the value is optimistic and restored across restarts.
-- **Auto temperature** / **Auto power** (numbers, °C/W, configuration) — the
-  setpoints auto mode heats towards (`initAutoDefault`). Auto mode ignores the
-  manual temperature and power above, so the pair is configured and restored
-  separately.
-- **Mode** (select: `manual`/`auto`) — `manual` runs the manual temperature and
-  power, `auto` applies the schedule stored on the device (`switchToScene`).
-- **Auto heating** (switch) — arms the heating element while the heater runs in
-  auto mode. This is *not* the mode switch; **Mode** is.
+- **Temperature** (number, °C) — the shared target temperature; writing it
+  switches the heater to manual mode. This value is optimistic and restored
+  across restarts: the device does not report its target temperature.
+- **Power** (number, W, 10 W steps) — configured heating power. Writing it
+  switches to manual mode. Device readback overrides the last written or
+  restored value, including changes made by automatic power adjustment.
+- **Mode** (select: `manual`/`auto`) — `manual` uses the shared target and power;
+  `auto` applies the stored schedule, using the shared target as its fallback.
+  Switching modes preserves settings and never deletes schedules.
+- **Automatic power increase** (switch) — allows the firmware to increase
+  configured power automatically. It works in either mode; it is not a
+  heating-element on/off switch.
 - **Protection temperature** (number, °C, configuration) — the overheat
   protection limit (`setHeaterProtectedTemp`).
 - **Calibration temperature** (number, °C, configuration) — tell the heater
@@ -289,20 +288,27 @@ Heaters expose the controls of the vendor app as ordinary entities:
 - **Temperature unit** (select) — what the heater's own display shows. Home
   Assistant always shows temperatures in the unit system configured for your
   instance, so this only affects the device itself.
-- **Current temperature**, **Heating runtime** and **Alarms** (sensors) — the
-  values the heater pushes. The alarm sensor's state lists the active alarms
-  (`ok` when there are none) and its attributes carry the raw bitfield.
+- **Current temperature**, **Measured power**, **Heating runtime** and **Alarms**
+  (sensors) — the values the heater pushes. Measured power is actual consumption,
+  separate from the configured power number. The alarm sensor lists active
+  alarms (`ok` when there are none) and exposes the raw bitfield as an attribute.
 - **Reset runtime** (button) — zeroes the runtime counter after cleaning the
   heating tube (the app warns to clean past ~1944 h).
 
-The app has two separate "auto" controls, and so does the integration. The
-**Mode** select is the mode switch (`switchToScene`/`switchToManual`); the
-**Auto heating** switch (`setHeaterAuto`) only decides whether the element is
-allowed to heat while auto mode runs. **Mode** uses the `switchToScene` frame
-the app itself sends for heaters; the app's other auto frame (`switchToAuto`) is
-available as `chihirosctl heater mode <address> auto`. The device reports
-neither mode nor auto-heating state, so both are optimistic and restored across
-restarts.
+Mode and automatic power adjustment are tracked optimistically and restored
+across restarts; the device does not report those settings.
+
+The firmware-backed correction for [issue #57](https://github.com/TheMicDiet/chihiros-led-control/issues/57)
+removes the separate **Auto temperature** and **Auto power** numbers: both
+manual and auto writes affect one hardware setpoint pair. Update automations
+to use **Temperature** and **Power**, then select `auto` if needed. The existing
+automatic-power switch keeps its unique ID, but its label and meaning are
+corrected. The unsupported heater firmware-version sensor is removed.
+
+CLI callers should replace `auto-defaults` with `set-state` (shared values,
+mode unchanged), `auto-heating` with `automatic-power`, and `mode … scene`
+with `mode … auto`. Library equivalents are `set_state`, `set_automatic_power`
+and `set_auto_mode`; `restore_power` restores the shared configured power.
 
 Every manual write — the **Temperature** and **Power** numbers — sends
 `switchToManual` plus the manual state frame, exactly like the vendor app, so
@@ -472,12 +478,13 @@ uv run chihirosctl stirrer off <device-address> 1
 uv run chihirosctl stirrer speed <device-address> 1 20 --pre-seconds 30
 uv run chihirosctl stirrer schedule <device-address> 1 08:00:10 20:30:5 --weekdays monday
 
-# heater: set both manual values atomically because power cannot be read back
+# heater: update both shared values and select manual mode
 uv run chihirosctl heater manual-set <device-address> 26.5 800
-uv run chihirosctl heater auto-defaults <device-address> 24 1000
+# update shared values without changing the active mode
+uv run chihirosctl heater set-state <device-address> 24 1000
 uv run chihirosctl heater mode <device-address> manual
 uv run chihirosctl heater mode <device-address> auto
-uv run chihirosctl heater auto-heating <device-address> --disable
+uv run chihirosctl heater automatic-power <device-address> --disable
 uv run chihirosctl heater backlight <device-address> --disable
 uv run chihirosctl heater backlight-schedule <device-address> 08:15 21:30 \
     --weekdays monday --weekdays wednesday --weekdays sunday
@@ -486,7 +493,7 @@ uv run chihirosctl heater protector <device-address> 37
 uv run chihirosctl heater calibrate <device-address> 26.0
 uv run chihirosctl heater reset-work-time <device-address>
 
-# read the heater's temperatures, runtime and alarms back
+# read measured temperature/power, configured power, runtime and alarms
 uv run chihirosctl heater status <device-address>
 
 ```
