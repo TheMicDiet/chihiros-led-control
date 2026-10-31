@@ -435,6 +435,8 @@ async def test_heater_notifications_update_sensors(hass: HomeAssistant, monkeypa
     """Pushed heater frames populate the temperature, runtime and alarm sensors."""
     _entry, client = await _setup_heater(hass, monkeypatch)
     await hass.async_block_till_done()
+    configured_power_id = _entity_id(hass, SENSOR_DOMAIN, "heater_power_watts")
+    assert hass.states.get(configured_power_id).state == STATE_UNKNOWN
 
     client.push_temperature(30, 25.8)
     client.push_status(work_time_hours=1994, alarms=0x01 | 0x08)
@@ -452,6 +454,14 @@ async def test_heater_notifications_update_sensors(hass: HomeAssistant, monkeypa
     assert float(measured_power.state) == 30
     assert measured_power.attributes[ATTR_DEVICE_CLASS] == "power"
     assert measured_power.attributes[ATTR_UNIT_OF_MEASUREMENT] == "W"
+    assert hass.states.get(configured_power_id).state == STATE_UNKNOWN
+
+    client.push_power(800)
+    await _flush()
+    configured_power = hass.states.get(configured_power_id)
+    assert float(configured_power.state) == 800
+    assert configured_power.attributes[ATTR_DEVICE_CLASS] == "power"
+    assert configured_power.attributes[ATTR_UNIT_OF_MEASUREMENT] == "W"
 
 
 async def test_heater_measurements_never_override_target(
@@ -606,6 +616,8 @@ async def test_real_heater_capture_reaches_home_assistant(hass: HomeAssistant, m
     await hass.async_block_till_done()
     temperature_id = _entity_id(hass, NUMBER_DOMAIN, "heater_temperature")
     power_id = _entity_id(hass, NUMBER_DOMAIN, "heater_power")
+    configured_power_id = _entity_id(hass, SENSOR_DOMAIN, "heater_power_watts")
+    assert float(hass.states.get(configured_power_id).state) == 200
     assert float(hass.states.get(power_id).state) == 200
     await hass.services.async_call(
         NUMBER_DOMAIN, "set_value", {ATTR_ENTITY_ID: temperature_id, "value": 27.5}, blocking=True
@@ -624,11 +636,13 @@ async def test_real_heater_capture_reaches_home_assistant(hass: HomeAssistant, m
     client._notification_handler(None, bytearray.fromhex("5b060e017b25001e0bff00fa00"))
     await _flush()
     assert float(hass.states.get(power_id).state) == 400
+    assert float(hass.states.get(configured_power_id).state) == 200
     external_power_frame = bytearray.fromhex("5b011000010b00000000000014000b335022")
     external_power_frame[12] = 60
     client._notification_handler(None, external_power_frame)
     await _flush()
     assert float(hass.states.get(power_id).state) == 600
+    assert float(hass.states.get(configured_power_id).state) == 600
     assert client.power_watts == 600
     assert client.setting_temperature_celsius == 27.5
     await hass.config_entries.async_unload(entry.entry_id)

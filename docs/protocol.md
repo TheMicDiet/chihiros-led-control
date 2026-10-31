@@ -778,6 +778,16 @@ not a firmware version; no heater firmware version is inferred from them.
 The UART conversion at `0x3349c–0x334ae` populates measured power separately
 from the temperature-sensor path.
 
+The configured-power command handler stores `10 * payload_power` at state
+`+0x50` (`0x2fbf0–0x2fc02`). The notification builder reads that same field,
+divides it by 10, writes byte 12 of the `0x0b` buffer and sends 18 bytes
+(`0x26d14–0x26d3c`). Executing the original builder with notification transmission
+and delay/hardware calls intercepted confirmed round-trips at 0, 200, 600 and
+2000 W. A separate periodic-builder run with configured power 600 W and measured
+power 30 W emitted 30 W in `0x25`, confirming these fields are independent.
+The Home Assistant **Configured power** sensor exposes only this device readback;
+the writable **Power** number can also show restored or optimistic values.
+
 Captured examples reproduced by the firmware builder:
 
 ```text
