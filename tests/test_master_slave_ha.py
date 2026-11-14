@@ -31,9 +31,6 @@ try:
         SERVICE_SET_DOSING_SCHEDULE,
         SERVICE_SET_STIRRER_MASTER,
     )
-    from custom_components.chihiros.master_slave_services import (
-        build_work_points as _build_work_points,
-    )
     from custom_components.chihiros.runtime import ChihirosRuntime
     from custom_components.chihiros.service_utils import ATTR_ADDRESS
     from custom_components.chihiros.stirrer_services import ATTR_CHANNEL
@@ -49,6 +46,7 @@ from custom_components.chihiros.vendor.chihiros_led_control.registry import DOSI
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.homeassistant,
     pytest.mark.asyncio,
     pytest.mark.usefixtures("enable_custom_integrations", "mock_bluetooth"),
 ]
@@ -261,6 +259,9 @@ async def test_set_dosing_schedule_programs_pump_and_records(
         (8, 0, 2.5),
         (20, 30, 1.0),
     ]
+    record = _pump_programming(hass).channels[1]
+    assert record["mode"] == "timer"
+    assert record["dose_per_day_ml"] == 60.0
     # No stirrer linked yet: nothing mirrored.
     assert stirrer.program_calls == []
 
@@ -289,6 +290,9 @@ async def test_set_stirrer_master_mirrors_programming(hass: HomeAssistant, monke
     )
     assert stirrer.program_calls and stirrer.program_calls[0]["mode"] is DosingMode.TIMER
     assert stirrer.program_calls[0]["channel"] == 0
+    # Full replay includes dosingSet even when the pump recorded no daily volume.
+    assert stirrer.program_calls[0]["ml"] == 0.0
+    assert stirrer.program_calls[0]["first_setting"] is True
     assert stirrer.delay_calls == [False]
 
     # The link persists on the stirrer's config entry data.
@@ -509,23 +513,14 @@ async def test_mirror_stirrer_service_and_missing_programming(
             },
             blocking=True,
         )
+    # Ignore earlier live writes so only the explicit full replay can satisfy this.
+    stirrer.program_calls.clear()
     await hass.services.async_call(
         DOMAIN, SERVICE_MIRROR_STIRRER, {ATTR_ADDRESS: STIRRER_ADDRESS, "delay": True}, blocking=True
     )
     mirrored_channels = {call["channel"] for call in stirrer.program_calls}
     assert mirrored_channels == {0, 1}
     assert stirrer.delay_calls == [True]
-
-
-async def test_build_work_points_validation() -> None:
-    """Point building validates mode-specific shapes."""
-    points = _build_work_points("free", [{"start": "23:00", "end": "01:00", "count": 3}])
-    assert points[0].start_hour == 23 and points[0].duration_minutes == 120 and points[0].number == 3
-
-    with pytest.raises(HomeAssistantError, match="'ml'"):
-        _build_work_points("timer", [{"start": "08:00"}])
-    with pytest.raises(HomeAssistantError, match="Unknown dosing mode"):
-        _build_work_points("bogus", [{"start": "08:00", "ml": 1.0}])
 
 
 async def test_invalid_time_string_becomes_service_error(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -711,29 +706,6 @@ async def test_reset_dosing_channel_broadcasts_and_clears_record(
     assert pump.reset_calls == [3]
     assert 3 not in hass.data[DOMAIN][pump_entry_id].dosing_programming.channels
     assert stirrer.broadcast_frames == [b"5a 01 reset-frame"]
-
-
-async def test_full_mirror_sends_dosing_set_always(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
-    """StartAsSlave sends dosingSet even without a recorded daily volume (§6.4)."""
-    pump, stirrer = await _setup_pair(hass, monkeypatch)
-    await hass.async_block_till_done()
-
-    await hass.services.async_call(
-        DOMAIN,
-        SERVICE_SET_DOSING_SCHEDULE,
-        {ATTR_ADDRESS: PUMP_ADDRESS, ATTR_CHANNEL: 1, ATTR_MODE: "timer", ATTR_POINTS: [{"start": "08:00", "ml": 2.0}]},
-        blocking=True,
-    )
-    await hass.services.async_call(
-        DOMAIN,
-        SERVICE_SET_STIRRER_MASTER,
-        {ATTR_ADDRESS: STIRRER_ADDRESS, ATTR_MASTER_ADDRESS: PUMP_ADDRESS},
-        blocking=True,
-    )
-    call = stirrer.program_calls[0]
-    # dosingSet always present on the full replay, volume defaults to 0, first=true.
-    assert call["ml"] == 0.0
-    assert call["first_setting"] is True
 
 
 async def test_set_stirrer_master_accepts_device_id(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:

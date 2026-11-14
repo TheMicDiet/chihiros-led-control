@@ -20,17 +20,13 @@ try:
 
     import custom_components.chihiros as chihiros_integration
     from custom_components.chihiros.const import DOMAIN
-    from custom_components.chihiros.fake import create_fake_device, is_fake_address
     from custom_components.chihiros.runtime import ChihirosRuntime
     from custom_components.chihiros.service_utils import ATTR_ADDRESS
-    from custom_components.chihiros.stirrer import STIRRER_CHANNEL_COUNT, is_stirrer_capable
+    from custom_components.chihiros.stirrer import STIRRER_CHANNEL_COUNT
     from custom_components.chihiros.stirrer_services import (
         ATTR_CHANNEL,
         ATTR_STIR_POINTS,
         SERVICE_SET_STIR_SCHEDULE,
-    )
-    from custom_components.chihiros.stirrer_services import (
-        validate_stir_points as _validate_stir_points,
     )
 
 except ImportError as err:
@@ -39,11 +35,12 @@ except ImportError as err:
         allow_module_level=True,
     )
 
-from custom_components.chihiros.vendor.chihiros_led_control.models import DeviceKind, DeviceModel
-from custom_components.chihiros.vendor.chihiros_led_control.registry import DOSING_PUMP, MAG_STIRRER
+from custom_components.chihiros.vendor.chihiros_led_control.models import DeviceKind
+from custom_components.chihiros.vendor.chihiros_led_control.registry import MAG_STIRRER
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.homeassistant,
     pytest.mark.asyncio,
     pytest.mark.usefixtures("enable_custom_integrations", "mock_bluetooth"),
 ]
@@ -568,24 +565,14 @@ async def test_options_flow_changes_stirrer_channel_count(hass: HomeAssistant, m
     assert _entity_id(hass, "switch", "stir_channel_3") is not None
 
 
-async def test_linked_stirrer_enables_pre_run_entities(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Linking a master pump enables the pre-run numbers (slave mode only)."""
-    _entry, _client = await _setup_stirrer(hass, monkeypatch, master_address="FA:CE:C0:00:00:04")
-    await hass.async_block_till_done()
-
-    registry = er.async_get(hass)
-    pre_run_ids = [_entity_id(hass, "number", f"stir_channel_{n}_pre_run") for n in range(1, STIRRER_CHANNEL_COUNT + 1)]
-    assert all(entity_id is not None for entity_id in pre_run_ids)
-    assert all(registry.async_get(entity_id).disabled_by is None for entity_id in pre_run_ids)
-
-
 async def test_unlinking_master_disables_pre_run_entities(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
     """Explicitly unlinking the master restores the pre-run numbers' disabled default."""
     entry, _client = await _setup_stirrer(hass, monkeypatch, master_address="FA:CE:C0:00:00:04")
     await hass.async_block_till_done()
-    pre_run_id = _entity_id(hass, "number", "stir_channel_1_pre_run")
-    assert pre_run_id is not None
-    assert er.async_get(hass).async_get(pre_run_id).disabled_by is None
+    registry = er.async_get(hass)
+    pre_run_ids = [_entity_id(hass, "number", f"stir_channel_{n}_pre_run") for n in range(1, STIRRER_CHANNEL_COUNT + 1)]
+    assert all(entity_id is not None for entity_id in pre_run_ids)
+    assert all(registry.async_get(entity_id).disabled_by is None for entity_id in pre_run_ids)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     await hass.config_entries.options.async_configure(
@@ -594,56 +581,7 @@ async def test_unlinking_master_disables_pre_run_entities(hass: HomeAssistant, m
     )
     await hass.async_block_till_done()
 
-    assert er.async_get(hass).async_get(pre_run_id).disabled_by is not None
-
-
-async def test_validate_stir_points_unit() -> None:
-    """Point validation converts times and enforces app interval overlaps."""
-    points = _validate_stir_points(
-        [
-            {"start": "20:30", "minutes": 10},
-            {"start": "8:05", "minutes": 45},
-        ]
-    )
-    assert [(p.start_hour, p.start_minute, p.volume_ml) for p in points] == [
-        (8, 5, pytest.approx(27.0)),
-        (20, 30, pytest.approx(6.0)),
-    ]
-
-    with pytest.raises(HomeAssistantError, match="overlap"):
-        _validate_stir_points([{"start": "08:00", "minutes": 5}, {"start": "08:01", "minutes": 5}])
-
-    with pytest.raises(HomeAssistantError, match="overlap"):
-        _validate_stir_points([{"start": "08:00", "minutes": 5}, {"start": "08:05", "minutes": 1}])
-
-
-async def test_stirrer_capability_and_fake_device() -> None:
-    """The stirrer capability check matches only Mag Stirrer models."""
-    assert is_stirrer_capable(SimpleNamespaceDevice(MAG_STIRRER))
-    assert not is_stirrer_capable(SimpleNamespaceDevice(DOSING_PUMP))
-
-    fake_address = "FA:CE:C0:00:00:0F"
-    assert is_fake_address(fake_address)
-    fake = create_fake_device(fake_address)
-    assert fake.model is MAG_STIRRER
-
-
-class SimpleNamespaceDevice:
-    """Tiny typed device stand-in for capability checks."""
-
-    def __init__(self, model: DeviceModel) -> None:
-        """Initialize the stand-in with typed model metadata."""
-        self.model = model
-
-    @property
-    def device_kind(self) -> DeviceKind:
-        """Return the typed family discriminator."""
-        return self.model.device_kind
-
-    @property
-    def name(self) -> str:
-        """Return the typed model name."""
-        return self.model.name
+    assert all(registry.async_get(entity_id).disabled_by is not None for entity_id in pre_run_ids)
 
 
 @pytest.mark.parametrize("name", ["DYDOSE-abc", "DYMIXR-abc"])

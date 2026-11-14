@@ -1,4 +1,4 @@
-"""Unit tests for dosing daily-total storage and reset behavior."""
+"""Component tests for dosing storage, dispatcher and reset behavior."""
 
 from __future__ import annotations
 
@@ -17,27 +17,16 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.chihiros import dosing as dosing_module
 from custom_components.chihiros.dosing import (
-    PUMP_COUNT,
     SIGNAL_DOSING_CALIBRATION_UPDATED,
     SIGNAL_DOSING_TOTALS_UPDATED,
     DosingCalibrationTracker,
     DosingDailyTotals,
-    normalize_pump_count,
 )
 
 pytestmark = [
-    pytest.mark.integration,
+    pytest.mark.component,
+    pytest.mark.homeassistant,
 ]
-
-
-def test_normalize_pump_count_defaults_invalid_values() -> None:
-    """Unsupported or non-numeric values fall back to the default pump count."""
-    assert normalize_pump_count("2") == 2
-    assert normalize_pump_count("4") == 4
-    assert normalize_pump_count("8") == 8
-    assert normalize_pump_count("3") == PUMP_COUNT
-    assert normalize_pump_count(None) == PUMP_COUNT
-    assert normalize_pump_count("not a number") == PUMP_COUNT
 
 
 @pytest.mark.asyncio
@@ -155,32 +144,6 @@ async def test_address_signal_and_async_close_cancel_schedule(hass: Any) -> None
 
 
 @pytest.mark.asyncio
-async def test_midnight_reset_resets_totals_and_reschedules(hass: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """_async_midnight_reset zeros totals and schedules the next reset."""
-    totals = DosingDailyTotals(hass, "FA:CE:C0:FF:00:05", pump_count=2)
-    await totals.async_load()
-    await totals.async_add_dose(0, 5.0)
-    assert totals.total_ml(0) == 5.0
-    assert totals.lifetime_ml(0) == 5.0
-    assert totals.lifetime_cycles(0) == 1
-
-    first_reset_handle = totals._unsub_midnight_reset
-    tomorrow = dt_util.now() + timedelta(days=1)
-    monkeypatch.setattr(totals, "_today", lambda: tomorrow.date().isoformat())
-
-    await totals._async_midnight_reset(dt_util.utcnow() + timedelta(days=1))
-
-    assert totals.total_ml(0) == 0.0
-    # Lifetime counters survive the daily reset.
-    assert totals.lifetime_ml(0) == 5.0
-    assert totals.lifetime_cycles(0) == 1
-    # The reset re-schedules a fresh midnight callback.
-    assert totals._unsub_midnight_reset is not None
-    assert totals._unsub_midnight_reset is not first_reset_handle
-    totals.async_close()
-
-
-@pytest.mark.asyncio
 async def test_calibration_tracker_records_and_notifies(hass: Any) -> None:
     """async_record stores the result, persists it, and fires the address signal."""
     saved: list[dict[str, Any]] = []
@@ -277,6 +240,9 @@ async def test_midnight_storage_failure_keeps_next_reset_scheduled(
     totals = DosingDailyTotals(hass, "FA:CE:C0:FF:00:10")
     await totals.async_load()
     await totals.async_add_dose(0, 5.0)
+    assert totals.total_ml(0) == 5.0
+    assert totals.lifetime_ml(0) == 5.0
+    assert totals.lifetime_cycles(0) == 1
     pending = midnight_clock.timers[-1]
     midnight_clock.now = pending.when + timedelta(seconds=1)
     original_save = totals._store.async_save
@@ -295,8 +261,12 @@ async def test_midnight_storage_failure_keeps_next_reset_scheduled(
         await totals.async_add_dose(0, 3.0)
         midnight_clock.now = future.when + timedelta(seconds=1)
         await future.callback(midnight_clock.now)
+        next_reset = midnight_clock.timers[-1]
+        assert next_reset is not future
+        assert next_reset.active and next_reset.when > midnight_clock.now
         assert totals.total_ml(0) == 0.0
         assert totals.lifetime_ml(0) == 8.0
+        assert totals.lifetime_cycles(0) == 2
     finally:
         totals.async_close()
 

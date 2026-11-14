@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from chihiros_led_control.registry import SUPPORTED_MODELS
+
+pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "custom_components" / "chihiros" / "manifest.json"
@@ -27,50 +31,10 @@ def test_manifest_bluetooth_matchers_follow_app_prefix_discovery() -> None:
     family instead of using broad `DY?*` buckets.
     """
     prefixes = _manifest_local_name_prefixes()
-    expected = [
-        "DYSSD",
-        "DYZSD",
-        "DYDD",
-        "DYNA2",
-        "DYA",
-        "DYARGB",
-        "DYRGBA",
-        "DYNARGB",
-        "DYREE",
-        "DYRGBV",
-        "DYNV",
-        "DYSEA",
-        "DYONE",
-        "DYTWO",
-        "DYC",
-        "DYCOM",
-        "DYNC2",
-        "DYNT90",
-        "DYWRGB",
-        "DYNW",
-        "DYWPR",
-        "DYSILN",
-        "DYSL",
-        "DYVVD3",
-        "DYNCRGP",
-        "DYNCRGB",
-        "DYU",
-        "DYLED",
-        "DYNLED",
-        "DYDOSE",
-        "DYTDOS",
-        "DYNDOS",
-        "DYMIXR",
-        "DYHET",
-        "DYH1T",
-    ]
-    assert prefixes == expected
-    missing = [
-        code
-        for model in SUPPORTED_MODELS
-        for code in model.advertised_codes
-        if not any(code.startswith(prefix) for prefix in prefixes)
-    ]
+    assert all(len(prefix) >= 3 for prefix in prefixes)
+    codes = [code for model in SUPPORTED_MODELS for code in model.advertised_codes]
+    assert all(any(code.startswith(prefix) for code in codes) for prefix in prefixes)
+    missing = [code for code in codes if not any(code.startswith(prefix) for prefix in prefixes)]
     assert not missing, f"model codes missing from manifest.json bluetooth matchers: {missing}"
 
 

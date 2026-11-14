@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import pytest
+
 from chihiros_led_control.schedule_validation import (
     SCHEDULE_WEEKDAYS,
     find_duplicate_schedule_weekdays,
     normalize_schedule_weekdays,
 )
 from chihiros_led_control.weekday_encoding import WeekdaySelect
+
+pytestmark = pytest.mark.unit
 
 
 def test_normalize_schedule_weekdays_expands_empty_selection() -> None:

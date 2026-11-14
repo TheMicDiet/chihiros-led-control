@@ -56,6 +56,7 @@ from custom_components.chihiros.vendor.chihiros_led_control.registry import DOSI
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.homeassistant,
     pytest.mark.asyncio,
     pytest.mark.usefixtures("enable_custom_integrations", "mock_bluetooth"),
 ]
@@ -227,21 +228,31 @@ async def test_async_close_unregisters_callbacks_and_drops_notifications(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Closing the coordinator removes callbacks and ignores later notifications."""
-    _entry, _client, coordinator = await _setup(hass, monkeypatch)
+    _entry, client, coordinator = await _setup(hass, monkeypatch)
 
     captured: list[Any] = []
     coordinator.async_add_listener(lambda: captured.append("update"))
 
-    # Idempotent start so a real bluetooth callback is registered, then close.
-    monkeypatch.setattr(coordinator, "async_start", lambda: None)
+    removed: list[str] = []
+    monkeypatch.setattr(ChihirosDataUpdateCoordinator, "async_start_bluetooth", _REAL_ASYNC_START_BLUETOOTH)
+    monkeypatch.setattr(coordinator, "async_start", lambda: lambda: removed.append("bluetooth"))
     coordinator.async_start_bluetooth()
+    assert len(client._callbacks) == 1
+    callback = next(iter(client._callbacks))
+    notification = RuntimeNotification(23, 511, bytes.fromhex("5b 17 0a 00 01 0a 01 ff"))
 
+    # A notification already queued when close runs must not update entities.
+    callback(notification)
     coordinator.async_close()
-    # A second close must not raises (handles the None bluetooth callback).
     coordinator.async_close()
+    assert removed == ["bluetooth"]
+    assert not client._callbacks
 
-    # Notifications queued after close are dropped (no listener update).
-    coordinator._async_handle_notification(RuntimeNotification(23, 511, bytes.fromhex("5b 17 0a 00 01 0a 01 ff")))
+    # Stale callback references and queued handlers are also harmless after close.
+    callback(notification)
+    coordinator._async_handle_notification(notification)
+    await _flush()
+    assert coordinator.data == {}
     assert captured == []
 
 

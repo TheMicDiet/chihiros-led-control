@@ -52,10 +52,17 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
       - name: Install test dependencies
         run: uv --cache-dir .uv-cache sync --frozen --group test
-      - name: Run library tests with coverage
+      - name: Run isolated library unit tests
         run: >-
           uv --cache-dir .uv-cache run --frozen --group test pytest
-          -m "not integration and not unit"
+          -m "unit and not homeassistant"
+          --cov=chihiros_led_control
+          --cov-report=
+      - name: Run library component tests with combined coverage
+        run: >-
+          uv --cache-dir .uv-cache run --frozen --group test pytest
+          -m "component and not homeassistant"
+          --cov-append
           --cov=chihiros_led_control
           --cov-report=term-missing
           --cov-report=xml:coverage-library.xml
@@ -83,10 +90,24 @@ jobs:
         run: uv python install 3.14
       - name: Install Home Assistant test dependencies
         run: uv --cache-dir .uv-cache sync --frozen --group ha-test
-      - name: Run Home Assistant tests with coverage
+      - name: Run isolated Home Assistant unit tests
         run: >-
           uv --cache-dir .uv-cache run --frozen --group ha-test pytest
-          -m "integration or unit"
+          -m "unit and homeassistant"
+          --cov=custom_components/chihiros
+          --cov-report=
+      - name: Run Home Assistant component tests
+        run: >-
+          uv --cache-dir .uv-cache run --frozen --group ha-test pytest
+          -m "component and homeassistant"
+          --cov=custom_components/chihiros
+          --cov-append
+          --cov-report=
+      - name: Run Home Assistant integration tests with combined coverage
+        run: >-
+          uv --cache-dir .uv-cache run --frozen --group ha-test pytest
+          -m "integration and homeassistant"
+          --cov-append
           --cov=custom_components/chihiros
           --cov-report=term-missing
           --cov-report=xml:coverage-home-assistant.xml

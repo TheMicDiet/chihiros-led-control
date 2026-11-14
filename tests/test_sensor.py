@@ -1,4 +1,4 @@
-"""Tests for Chihiros sensor formatting and notification-sensor error handling."""
+"""Integration test for notification-sensor error handling."""
 
 from __future__ import annotations
 
@@ -21,10 +21,6 @@ try:
     from custom_components.chihiros.const import DOMAIN
     from custom_components.chihiros.coordinator import ChihirosDataUpdateCoordinator
     from custom_components.chihiros.runtime import ChihirosRuntime
-    from custom_components.chihiros.sensor import (
-        _format_schedule_point,
-        _format_schedule_state,
-    )
 except ImportError as err:
     pytest.skip(
         f"Home Assistant test group is not installed or is incompatible: {err}",
@@ -36,38 +32,11 @@ from custom_components.chihiros.vendor.chihiros_led_control.protocol.notificatio
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.homeassistant,
     pytest.mark.usefixtures("enable_custom_integrations", "mock_bluetooth"),
 ]
 
 _ASYNC_TESTS = pytest.mark.asyncio
-
-
-def test_format_schedule_state_covers_branches() -> None:
-    """All schedule formatting branches produce readable state strings."""
-    # empty -> No schedule
-    assert _format_schedule_state(()) == "No schedule"
-
-    # uniform levels collapse to "<time> <level>%"
-    assert _format_schedule_point({"time": "08:05", "levels": {"red": 10, "blue": 10}}) == "08:05 10%"
-
-    # distinct per-channel levels render as "<color initial><level>/..."
-    assert _format_schedule_point({"time": "09:00", "levels": {"red": 10, "green": 20, "blue": 30}}) == (
-        "09:00 R10/G20/B30"
-    )
-
-    # missing/invalid levels falls back to the time string
-    assert _format_schedule_point({"time": "10:00", "levels": {}}) == "10:00"
-    assert _format_schedule_point({"levels": {}}) == "unknown"
-
-
-def test_format_schedule_state_truncates_long_payload() -> None:
-    """A schedule string longer than the sensor max collapses to a count."""
-    many_points = tuple({"time": "12:00", "levels": {"red": 50, "green": 50, "blue": 50}} for _ in range(200))
-    state = _format_schedule_state(many_points)
-    assert state == f"{len(many_points)} points"
-
-
-# --- integration: notification sensor async_update error path ---
 
 
 class _FailingQueryClient:

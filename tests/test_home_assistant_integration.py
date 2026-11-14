@@ -74,6 +74,7 @@ from custom_components.chihiros.vendor.chihiros_led_control.registry import DOSI
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.homeassistant,
     pytest.mark.asyncio,
     pytest.mark.usefixtures("enable_custom_integrations", "mock_bluetooth"),
 ]
@@ -456,6 +457,17 @@ async def test_device_reported_dosing_sensors_follow_notifications_not_local_dos
 
     assert registry.async_get_entity_id(SENSOR_DOMAIN, DOMAIN, f"{TEST_ADDRESS}_dosing_pump_3_dosing_daily_ul") is None
 
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_DOSE_ML,
+        {ATTR_ENTRY_ID: _entry.entry_id, ATTR_PUMP: 2, ATTR_ML: 2.5},
+        blocking=True,
+    )
+    await _flush_ha_state_updates()
+    assert hass.states.get(local_today).state == "2.5"
+    assert hass.states.get(reported_today).state == "2.8"
+    assert hass.states.get(reported_lifetime).state == "18.4"
+
 
 @pytest.mark.parametrize("pump_number", [1, 4])
 async def test_local_dosing_history_survives_bluetooth_unavailability(
@@ -644,39 +656,9 @@ async def test_dosing_button_press_triggers_dose_with_configured_volume(
     entity_registry = er.async_get(hass)
     pump_1_number = _entity_id(entity_registry, NUMBER_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_1_dose_volume")
     pump_1_button = _entity_id(entity_registry, BUTTON_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_1_dose")
-
-    # Configure pump 1's dose volume to 3.0 mL.
-    await hass.services.async_call(
-        NUMBER_DOMAIN,
-        SERVICE_SET_VALUE,
-        {ATTR_ENTITY_ID: pump_1_number, ATTR_NUMBER_VALUE: 3.0},
-        blocking=True,
-    )
-    await _flush_ha_state_updates()
-
-    await hass.services.async_call(BUTTON_DOMAIN, SERVICE_PRESS, {ATTR_ENTITY_ID: pump_1_button}, blocking=True)
-    await _flush_ha_state_updates()
-
-    assert client.dose_ml_calls == [(0, 3.0)]
-    # The dosing total sensor reflects the dosed volume.
-    pump_1_sensor = _entity_id(entity_registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_1_dosed_today")
-    assert hass.states.get(pump_1_sensor).state == "3.0"
-
-
-async def test_dosing_number_set_value_updates_runtime_volume(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Setting a pump dose volume number updates the persisted runtime volume."""
-    dosing_client = TrackingDosingClient()
-    entry, client = await _setup_entry(hass, monkeypatch, dosing_client)
-    assert isinstance(client, TrackingDosingClient)
-    entity_registry = er.async_get(hass)
-    pump_1_number = _entity_id(entity_registry, NUMBER_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_1_dose_volume")
-
-    # Initial value is the integration default of 1.0 mL per pump.
     assert hass.states.get(pump_1_number).state == "1.0"
 
+    # Configure the number, then consume the committed runtime volume via the button.
     await hass.services.async_call(
         NUMBER_DOMAIN,
         SERVICE_SET_VALUE,
@@ -684,27 +666,35 @@ async def test_dosing_number_set_value_updates_runtime_volume(
         blocking=True,
     )
     await _flush_ha_state_updates()
-
     assert hass.states.get(pump_1_number).state == "5.5"
     assert hass.data[DOMAIN][entry.entry_id].dosing_volumes[0] == 5.5
 
+    await hass.services.async_call(BUTTON_DOMAIN, SERVICE_PRESS, {ATTR_ENTITY_ID: pump_1_button}, blocking=True)
+    await _flush_ha_state_updates()
 
-async def test_dosing_number_restore_skips_out_of_range_and_invalid(
+    assert client.dose_ml_calls == [(0, 5.5)]
+    # The dosing total sensor reflects the dosed volume.
+    pump_1_sensor = _entity_id(entity_registry, SENSOR_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_1_dosed_today")
+    assert hass.states.get(pump_1_sensor).state == "5.5"
+
+
+async def test_dosing_number_restore_validates_each_channel_on_reload(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Restoring an out-of-range or non-numeric value leaves the default in place."""
+    """Reload restores and rounds valid history without accepting invalid channels."""
     dosing_client = TrackingDosingClient()
     entry, client = await _setup_entry(hass, monkeypatch, dosing_client)
     assert isinstance(client, TrackingDosingClient)
     entity_registry = er.async_get(hass)
     pump_1_number = _entity_id(entity_registry, NUMBER_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_1_dose_volume")
     pump_2_number = _entity_id(entity_registry, NUMBER_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_2_dose_volume")
+    pump_3_number = _entity_id(entity_registry, NUMBER_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_3_dose_volume")
 
     await hass.config_entries.async_unload(entry.entry_id)
     await _flush_ha_state_updates()
 
-    # Prime restore: out-of-range for pump 1, garbage string for pump 2.
+    # One reload restores channels independently: range error, invalid text, valid value.
     from homeassistant.core import State
     from homeassistant.helpers.restore_state import StoredState
     from homeassistant.helpers.restore_state import async_get as async_get_restore_data
@@ -713,6 +703,7 @@ async def test_dosing_number_restore_skips_out_of_range_and_invalid(
     restore_data = async_get_restore_data(hass)
     restore_data.last_states[pump_1_number] = StoredState(State(pump_1_number, "9999.0"), None, dt_util.utcnow())
     restore_data.last_states[pump_2_number] = StoredState(State(pump_2_number, "not a number"), None, dt_util.utcnow())
+    restore_data.last_states[pump_3_number] = StoredState(State(pump_3_number, "3.25"), None, dt_util.utcnow())
 
     await hass.config_entries.async_setup(entry.entry_id)
     await _flush_ha_state_updates()
@@ -721,36 +712,9 @@ async def test_dosing_number_restore_skips_out_of_range_and_invalid(
     # Both rejected restores keep the integration default of 1.0 mL.
     assert hass.states.get(pump_1_number).state == "1.0"
     assert hass.states.get(pump_2_number).state == "1.0"
-
-
-async def test_dosing_number_restore_valid_value(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Restoring a valid in-range volume is applied on reload."""
-    dosing_client = TrackingDosingClient()
-    entry, client = await _setup_entry(hass, monkeypatch, dosing_client)
-    assert isinstance(client, TrackingDosingClient)
-    entity_registry = er.async_get(hass)
-    pump_3_number = _entity_id(entity_registry, NUMBER_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_3_dose_volume")
-
-    await hass.config_entries.async_unload(entry.entry_id)
-    await _flush_ha_state_updates()
-
-    from homeassistant.core import State
-    from homeassistant.helpers.restore_state import StoredState
-    from homeassistant.helpers.restore_state import async_get as async_get_restore_data
-    from homeassistant.util import dt as dt_util
-
-    restore_data = async_get_restore_data(hass)
-    restore_data.last_states[pump_3_number] = StoredState(State(pump_3_number, "3.25"), None, dt_util.utcnow())
-
-    await hass.config_entries.async_setup(entry.entry_id)
-    await _flush_ha_state_updates()
-    assert entry.state is ConfigEntryState.LOADED
-
-    # Restored value is rounded to one decimal place.
+    # A valid restore is rounded to the number entity's one-decimal precision.
     assert hass.states.get(pump_3_number).state == "3.2"
+    assert hass.data[DOMAIN][entry.entry_id].dosing_volumes[:3] == [1.0, 1.0, 3.2]
 
 
 async def _start_calibration_flow(hass: HomeAssistant, entity_registry: er.EntityRegistry) -> str:
@@ -876,38 +840,6 @@ async def test_calibration_wizard_recalibrate_on_inaccurate_test_dose(
         {"channel": 0, "seconds": None, "volume_ml": 2.5},
         {"channel": 0, "seconds": 5, "volume_ml": None},
     ]
-
-
-async def test_calibration_button_presses_are_idempotent(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-    entity_registry: er.EntityRegistry,
-) -> None:
-    """Repeated button presses re-raise the same repairs issue instead of erroring."""
-    from homeassistant.helpers import issue_registry as ir
-
-    from custom_components.chihiros.calibration_flow import calibration_issue_id
-
-    dosing_client = TrackingDosingClient()
-    await _setup_entry(hass, monkeypatch, dosing_client)
-    flow_id = await _start_calibration_flow(hass, entity_registry)
-    issue_id = calibration_issue_id(_entry_id_by_address(hass))
-
-    # Re-pressing the button re-raises the same issue without error; the
-    # already-running wizard keeps working.
-    calibrate_button = _entity_id(entity_registry, BUTTON_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_calibrate")
-    await hass.services.async_call(BUTTON_DOMAIN, SERVICE_PRESS, {ATTR_ENTITY_ID: calibrate_button}, blocking=True)
-    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
-
-    # Completing the wizard resolves the issue.
-    await _calibration_configure(hass, flow_id, {"pump": "1"})
-    await _calibration_configure(hass, flow_id, {})
-    await _calibration_configure(hass, flow_id, {"volume_ml": 4.0})
-    await _calibration_configure(hass, flow_id, {})
-    result = await _calibration_configure(hass, flow_id, {"accurate": "yes"})
-    assert result["type"] == FlowResultType.ABORT
-    assert result["reason"] == "calibration_complete"
-    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
 
 
 async def test_calibration_wizard_survives_broadcast_failure(
@@ -1093,7 +1025,11 @@ async def test_calibration_wizard_resolves_issue_on_abort_and_incomplete_walk(
     flow_id = await _start_calibration_flow(hass, entity_registry)
     issue_id = calibration_issue_id(_entry_id_by_address(hass))
 
-    # The wizard runs against the recorded device data (entry_id from the issue).
+    # Re-pressing the button reuses the issue without interrupting the active wizard.
+    calibrate_button = _entity_id(entity_registry, BUTTON_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_calibrate")
+    await hass.services.async_call(BUTTON_DOMAIN, SERVICE_PRESS, {ATTR_ENTITY_ID: calibrate_button}, blocking=True)
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+
     # The wizard runs against the recorded device data (entry_id from the issue).
     result = await _calibration_configure(hass, flow_id, {"pump": "2"})
     assert result["step_id"] == "calibrate_run"
@@ -1111,7 +1047,6 @@ async def test_calibration_wizard_resolves_issue_on_abort_and_incomplete_walk(
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
 
     # Re-raising the issue after completion starts a fresh wizard.
-    calibrate_button = _entity_id(entity_registry, BUTTON_DOMAIN, f"{TEST_ADDRESS}_dosing_pump_calibrate")
     await hass.services.async_call(BUTTON_DOMAIN, SERVICE_PRESS, {ATTR_ENTITY_ID: calibrate_button}, blocking=True)
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
 

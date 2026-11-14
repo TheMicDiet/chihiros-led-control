@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import voluptuous as vol
 
 pytest.importorskip("homeassistant", reason="Home Assistant test group is not installed")
 
@@ -14,8 +15,11 @@ from homeassistant.exceptions import HomeAssistantError
 from custom_components.chihiros.const import DOMAIN
 from custom_components.chihiros.coordinator import _notification_to_debug_dict, _schedule_point_to_dict
 from custom_components.chihiros.discovery import ChihirosDiscovery, discovery_title
-from custom_components.chihiros.dosing import is_dosing_capable
-from custom_components.chihiros.fake import FAKE_DEVICES, create_fake_device
+from custom_components.chihiros.dosing import PUMP_COUNT, is_dosing_capable, normalize_pump_count
+from custom_components.chihiros.fake import FAKE_DEVICES, create_fake_device, is_fake_address
+from custom_components.chihiros.master_slave_services import (
+    build_work_points as _build_work_points,
+)
 from custom_components.chihiros.schedule_services import (
     ATTR_BRIGHTNESS,
     ATTR_END,
@@ -43,6 +47,7 @@ from custom_components.chihiros.schedule_services import (
 from custom_components.chihiros.schedule_services import (
     validate_schedule_periods as _validate_schedule_periods,
 )
+from custom_components.chihiros.sensor import _format_schedule_point, _format_schedule_state
 from custom_components.chihiros.service_utils import (
     ATTR_ADDRESS,
     ATTR_ENTRY_ID,
@@ -50,15 +55,19 @@ from custom_components.chihiros.service_utils import (
 from custom_components.chihiros.service_utils import (
     resolve_service_device as _resolve_service_device,
 )
+from custom_components.chihiros.stirrer import is_stirrer_capable
+from custom_components.chihiros.stirrer_services import (
+    validate_stir_points as _validate_stir_points,
+)
 from custom_components.chihiros.vendor.chihiros_led_control.models import DeviceKind, DeviceModel, LedFeature, LedSpec
 from custom_components.chihiros.vendor.chihiros_led_control.protocol.led import (
     FanStatusNotification,
     RuntimeNotification,
     SchedulePoint,
 )
-from custom_components.chihiros.vendor.chihiros_led_control.registry import DOSING_PUMP
+from custom_components.chihiros.vendor.chihiros_led_control.registry import DOSING_PUMP, MAG_STIRRER
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.homeassistant]
 
 
 def test_schedule_midnight_is_valid_but_other_reverse_ranges_are_not() -> None:
@@ -76,8 +85,9 @@ def _data(*, colors: dict[str, int] | None = None, dosing: bool = False) -> Simp
         address="AA:BB:CC:DD:EE:FF",
         name="Test light",
         colors={"red": 1, "green": 2, "blue": 3} if colors is None else colors,
+        device_kind=DeviceKind.DOSING_PUMP if dosing else DeviceKind.LED,
     )
-    device.model = DeviceModel("Test", (), LedSpec(device.colors))
+    device.model = DOSING_PUMP if dosing else DeviceModel("Test", (), LedSpec(device.colors))
     return SimpleNamespace(device=device, dosing_totals=object() if dosing else None)
 
 
@@ -112,7 +122,7 @@ def test_set_auto_curve_schema_coerces_channel_keys() -> None:
 
     assert coerced["curve"] == {0: [[480, 100]], 1: [[720, 0]]}
 
-    with pytest.raises(Exception):
+    with pytest.raises(vol.Invalid):
         SET_AUTO_CURVE_SCHEMA({"curve": {0: [[480]]}})
 
 
@@ -148,25 +158,10 @@ def test_resolve_service_device_errors(entries: dict[str, Any], selector: dict[s
         _resolve_service_device(hass, selector)
 
 
-def test_schedule_period_validation_normalizes_weekdays() -> None:
-    """A valid schedule is parsed without crossing the HA service boundary."""
-    result = _validate_schedule_period(
-        _data(),
-        {
-            ATTR_START: "08:00",
-            ATTR_END: "18:30",
-            ATTR_BRIGHTNESS: {"red": 80},
-            ATTR_WEEKDAYS: ["monday", "wednesday"],
-        },
-    )
-    assert {weekday.value for weekday in result["weekdays"]} == {"monday", "wednesday"}
-
-
 @pytest.mark.parametrize(
     ("period", "message"),
     [
         ({ATTR_START: "noon", ATTR_END: "18:00", ATTR_BRIGHTNESS: 50}, "Invalid schedule time"),
-        ({ATTR_START: "18:00", ATTR_END: "08:00", ATTR_BRIGHTNESS: 50}, "must be before"),
         ({ATTR_START: "08:00", ATTR_END: "18:00", ATTR_LEVELS: {}}, "at least one channel"),
         ({ATTR_START: "08:00", ATTR_END: "18:00", ATTR_LEVELS: {"white": 50}}, "not supported"),
     ],
@@ -223,7 +218,7 @@ async def test_add_schedule_period_translates_service_data() -> None:
             ATTR_END: "18:30",
             ATTR_LEVELS: {"red": 80},
             ATTR_RAMP_UP_MINUTES: 20,
-            ATTR_WEEKDAYS: ["monday"],
+            ATTR_WEEKDAYS: ["monday", "wednesday"],
         },
     )
 
@@ -232,7 +227,7 @@ async def test_add_schedule_period_translates_service_data() -> None:
     assert end.strftime("%H:%M") == "18:30"
     assert kwargs["max_brightness"] == {"red": 80}
     assert kwargs["ramp_up_in_minutes"] == 20
-    assert [weekday.value for weekday in kwargs["weekdays"]] == ["monday"]
+    assert [weekday.value for weekday in kwargs["weekdays"]] == ["monday", "wednesday"]
 
 
 @pytest.mark.asyncio
@@ -318,3 +313,80 @@ def test_discovery_helpers_for_fake_device() -> None:
     assert discovery.display_name() == f"{FAKE_DEVICES[0].name} ({FAKE_DEVICES[0].address})"
     assert discovery_title(SimpleNamespace(name="Resolved name"), discovery) == "Resolved name"
     assert discovery_title(SimpleNamespace(name=""), discovery) == discovery.name
+
+
+def test_format_schedule_state_covers_branches() -> None:
+    """All schedule formatting branches produce readable state strings."""
+    # empty -> No schedule
+    assert _format_schedule_state(()) == "No schedule"
+
+    # uniform levels collapse to "<time> <level>%"
+    assert _format_schedule_point({"time": "08:05", "levels": {"red": 10, "blue": 10}}) == "08:05 10%"
+
+    # distinct per-channel levels render as "<color initial><level>/..."
+    assert _format_schedule_point({"time": "09:00", "levels": {"red": 10, "green": 20, "blue": 30}}) == (
+        "09:00 R10/G20/B30"
+    )
+
+    # missing/invalid levels falls back to the time string
+    assert _format_schedule_point({"time": "10:00", "levels": {}}) == "10:00"
+    assert _format_schedule_point({"levels": {}}) == "unknown"
+
+
+def test_format_schedule_state_truncates_long_payload() -> None:
+    """A schedule string longer than the sensor max collapses to a count."""
+    many_points = tuple({"time": "12:00", "levels": {"red": 50, "green": 50, "blue": 50}} for _ in range(200))
+    state = _format_schedule_state(many_points)
+    assert state == f"{len(many_points)} points"
+
+
+def test_normalize_pump_count_defaults_invalid_values() -> None:
+    """Unsupported or non-numeric values fall back to the default pump count."""
+    assert normalize_pump_count("2") == 2
+    assert normalize_pump_count("4") == 4
+    assert normalize_pump_count("8") == 8
+    assert normalize_pump_count("3") == PUMP_COUNT
+    assert normalize_pump_count(None) == PUMP_COUNT
+    assert normalize_pump_count("not a number") == PUMP_COUNT
+
+
+def test_build_work_points_validation() -> None:
+    """Point building validates mode-specific shapes."""
+    points = _build_work_points("free", [{"start": "23:00", "end": "01:00", "count": 3}])
+    assert points[0].start_hour == 23 and points[0].duration_minutes == 120 and points[0].number == 3
+
+    with pytest.raises(HomeAssistantError, match="'ml'"):
+        _build_work_points("timer", [{"start": "08:00"}])
+    with pytest.raises(HomeAssistantError, match="Unknown dosing mode"):
+        _build_work_points("bogus", [{"start": "08:00", "ml": 1.0}])
+
+
+def test_validate_stir_points_unit() -> None:
+    """Point validation converts times and enforces app interval overlaps."""
+    points = _validate_stir_points(
+        [
+            {"start": "20:30", "minutes": 10},
+            {"start": "8:05", "minutes": 45},
+        ]
+    )
+    assert [(p.start_hour, p.start_minute, p.volume_ml) for p in points] == [
+        (8, 5, pytest.approx(27.0)),
+        (20, 30, pytest.approx(6.0)),
+    ]
+
+    with pytest.raises(HomeAssistantError, match="overlap"):
+        _validate_stir_points([{"start": "08:00", "minutes": 5}, {"start": "08:01", "minutes": 5}])
+
+    with pytest.raises(HomeAssistantError, match="overlap"):
+        _validate_stir_points([{"start": "08:00", "minutes": 5}, {"start": "08:05", "minutes": 1}])
+
+
+def test_stirrer_capability_and_fake_device() -> None:
+    """The stirrer capability check matches only Mag Stirrer models."""
+    assert is_stirrer_capable(SimpleNamespace(device_kind=DeviceKind.MAG_STIRRER))
+    assert not is_stirrer_capable(SimpleNamespace(device_kind=DeviceKind.DOSING_PUMP))
+
+    fake_address = "FA:CE:C0:00:00:0F"
+    assert is_fake_address(fake_address)
+    fake = create_fake_device(fake_address)
+    assert fake.model is MAG_STIRRER

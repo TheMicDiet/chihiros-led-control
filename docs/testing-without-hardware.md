@@ -1,7 +1,66 @@
 # Testing Without Chihiros Hardware
 
-Two layers of test tooling let you exercise the integration and the protocol
-library without owning any Chihiros device.
+The automated suite follows a test pyramid: broad isolated unit coverage, fewer
+component scenarios, and focused Home Assistant integration journeys. Fake
+devices and scripted BLE make every automated layer hardware-independent.
+
+## Test pyramid
+
+Each test must have exactly one layer marker. Collection fails for missing or
+conflicting layers, including tests deselected with `-m`; unknown markers also
+fail collection.
+
+| Marker | Boundary | Coverage belongs here |
+| --- | --- | --- |
+| `unit` | One behavior; external collaborators replaced | Codec bytes, parsing, validation, model selection, RGB/RGBW arithmetic, isolated entity state and errors |
+| `component` | Several real local components; hardware/network replaced | Driver plus production scripted transport, CLI adapter, HA storage/dispatcher, service helper through vendored driver |
+| `integration` | Real HA config-entry/service/entity lifecycle | Service routing, entity registration, restoration/reload, setup/unload cleanup and cross-entity behavior |
+
+`homeassistant` is an independent dependency marker, not a test level. An
+isolated entity test can be both `unit` and `homeassistant`; a scripted
+transport test is `component`, not an end-to-end hardware test.
+
+Place each regression at the lowest boundary that can reproduce the observable
+failure. Keep validation and arithmetic matrices in unit tests. Use component
+tests for transport ordering, retries, cancellation and notification delivery.
+Keep integration cases when HA service dispatch, lifecycle or interactions
+between entities are essential to the failure. Do not duplicate a full
+lower-level matrix through config-entry setup, remove meaningful scenarios to
+meet a ratio, or add trivial tests to inflate the base.
+
+Before adding a scenario, compare its preconditions, action, observable result
+and failure mode with existing cases. Similar inputs or shared setup alone do
+not make two tests duplicates. When a stronger scenario subsumes another, keep
+the stronger one and transfer any unique assertions before removing the subset.
+Keep separate adapter/lifecycle tests only when they protect a distinct routing,
+state, persistence or cleanup contract.
+
+Prefer assertions about emitted bytes, applied state, persistence and
+user-visible errors over exact source/configuration snapshots. Validation tests
+should name the expected exception type; unrelated failures must not satisfy
+them. Preserve boundary values and race/cancellation orderings instead of
+repeating ordinary values from the same equivalence class.
+
+Run the fast library base without installing Home Assistant:
+
+```bash
+uv --cache-dir .uv-cache run --group test pytest -m "unit and not homeassistant"
+uv --cache-dir .uv-cache run --group test pytest -m "component and not homeassistant"
+```
+
+Run Home Assistant layers in increasing scope:
+
+```bash
+uv --cache-dir .uv-cache run --group ha-test pytest -m "unit and homeassistant"
+uv --cache-dir .uv-cache run --group ha-test pytest -m "component and homeassistant"
+uv --cache-dir .uv-cache run --group ha-test pytest -m "integration and homeassistant"
+```
+
+`uv --cache-dir .uv-cache run --group dev pytest` runs all automated layers.
+CI runs each layer explicitly, units before components before integration, and
+combines coverage within each dependency group without lowering its threshold.
+Physical BLE/app verification remains a small manual top layer; the automated
+suite cannot prove radio or firmware behavior.
 
 ## Home Assistant fake devices
 
@@ -67,7 +126,7 @@ asyncio.run(run())
 Rules match on command id, mode byte, and an optional parameter prefix
 (message id bytes and checksums are ignored). `respond` accepts frames or a
 callable; `fail=True` simulates a BLE write error (and exercises the client's
-retry/reconnect path). See `tests/test_scripted_transport.py` for end-to-end
+retry/reconnect path). See `tests/test_scripted_transport.py` for component
 examples covering query status, fan commands, dosing sequences, and retries.
 
 Successful transactions reuse the configured connection. Call

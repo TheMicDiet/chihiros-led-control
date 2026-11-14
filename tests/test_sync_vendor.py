@@ -5,6 +5,10 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.component
+
 SYNC_VENDOR_PATH = Path(__file__).resolve().parents[1] / "scripts" / "sync_vendor.py"
 SYNC_VENDOR_SPEC = importlib.util.spec_from_file_location("sync_vendor", SYNC_VENDOR_PATH)
 assert SYNC_VENDOR_SPEC is not None

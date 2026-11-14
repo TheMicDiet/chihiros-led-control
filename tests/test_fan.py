@@ -53,6 +53,7 @@ from custom_components.chihiros.vendor.chihiros_led_control.protocol.notificatio
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.homeassistant,
     pytest.mark.asyncio,
     pytest.mark.usefixtures("enable_custom_integrations", "mock_bluetooth"),
 ]
@@ -260,12 +261,7 @@ async def test_fan_set_percentage_turn_on_and_turn_off_drive_client(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """set_percentage/turn_on/turn_off forward to set_fan_speed and update state.
-
-    turn_on/turn_off are invoked through the entity object directly because the
-    fan entity only advertises SET_SPEED (HA's fan services require explicit
-    TURN_ON/TURN_OFF feature flags the entity does not set).
-    """
+    """Percentage services and direct on/off calls preserve the last manual speed."""
     _entry, client, _coordinator = await _setup(hass, monkeypatch, FAN_MODEL)
     registry = er.async_get(hass)
     entity_id = _entity_id(registry)
@@ -645,18 +641,6 @@ async def test_fan_temp_numbers_restore_start_without_stop_state(
     assert hass.states.get(stop_id).state == "33.0"
 
 
-async def test_fan_temp_numbers_do_not_restore_without_last_state(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A fresh setup writes no fan temperatures until a value is changed."""
-    _entry, client, _coordinator = await _setup(hass, monkeypatch, FAN_MODEL)
-
-    await _flush()
-
-    assert client.fan_temp_calls == []
-
-
 async def test_fan_temp_numbers_drive_client_and_enforce_hysteresis(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
@@ -676,19 +660,21 @@ async def test_fan_temp_numbers_drive_client_and_enforce_hysteresis(
     # Defaults from the vendor app.
     assert hass.states.get(start_id).state == "38.0"
     assert hass.states.get(stop_id).state == "33.0"
+    await _flush()
+    assert client.fan_temp_calls == []
 
     # Raising the stop temperature pushes the start temperature along.
     await hass.services.async_call(
         NUMBER_DOMAIN,
         SERVICE_SET_VALUE,
-        {ATTR_ENTITY_ID: stop_id, "value": 36},
+        {ATTR_ENTITY_ID: stop_id, "value": 40},
         blocking=True,
     )
     await _flush()
 
-    assert client.fan_temp_calls[-1] == (38, 36)
-    assert hass.states.get(start_id).state == "38.0"
-    assert hass.states.get(stop_id).state == "36.0"
+    assert client.fan_temp_calls == [(42, 40)]
+    assert hass.states.get(start_id).state == "42.0"
+    assert hass.states.get(stop_id).state == "40.0"
 
     # Lowering the start temperature pulls the stop temperature down with it.
     await hass.services.async_call(
@@ -699,7 +685,7 @@ async def test_fan_temp_numbers_drive_client_and_enforce_hysteresis(
     )
     await _flush()
 
-    assert client.fan_temp_calls[-1] == (30, 28)
+    assert client.fan_temp_calls == [(42, 40), (30, 28)]
     assert hass.states.get(start_id).state == "30.0"
     assert hass.states.get(stop_id).state == "28.0"
 

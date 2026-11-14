@@ -20,6 +20,8 @@ from custom_components.chihiros.vendor.chihiros_led_control.devices import base 
 from custom_components.chihiros.vendor.chihiros_led_control.devices.led import ChihirosDevice
 from custom_components.chihiros.vendor.chihiros_led_control.models import DeviceModel, LedSpec
 
+pytestmark = [pytest.mark.component, pytest.mark.homeassistant]
+
 
 @dataclass
 class _Schedule:

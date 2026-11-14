@@ -58,6 +58,7 @@ from custom_components.chihiros.vendor.chihiros_led_control.registry import HEAT
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.homeassistant,
     pytest.mark.asyncio,
     pytest.mark.usefixtures("enable_custom_integrations", "mock_bluetooth"),
 ]
