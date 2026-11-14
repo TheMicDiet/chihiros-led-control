@@ -6,10 +6,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-import voluptuous as vol
 
 pytest.importorskip("homeassistant", reason="Home Assistant test group is not installed")
 
+import voluptuous as vol
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.chihiros.const import DOMAIN

@@ -20,6 +20,12 @@ fail collection.
 isolated entity test can be both `unit` and `homeassistant`; a scripted
 transport test is `component`, not an end-to-end hardware test.
 
+HA-dependent modules must call `pytest.importorskip("homeassistant")` before
+importing HA-only dependencies, including `voluptuous`. Pytest imports modules
+before applying `-m`, so markers alone cannot protect the library-only job.
+Verify dependency isolation in a fresh environment containing only the `test`
+group; an existing `dev` environment can mask missing-dependency failures.
+
 Place each regression at the lowest boundary that can reproduce the observable
 failure. Keep validation and arithmetic matrices in unit tests. Use component
 tests for transport ordering, retries, cancellation and notification delivery.
