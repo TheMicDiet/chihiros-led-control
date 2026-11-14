@@ -39,6 +39,7 @@ except ImportError as err:
         allow_module_level=True,
     )
 
+from custom_components.chihiros import dosing as dosing_module
 from custom_components.chihiros.vendor.chihiros_led_control.models import RGB_CHANNELS, DeviceKind, DeviceModel, LedSpec
 from custom_components.chihiros.vendor.chihiros_led_control.protocol.dosing import (
     DosingDailyNotification,
@@ -51,6 +52,7 @@ from custom_components.chihiros.vendor.chihiros_led_control.protocol.led import 
     ScheduleSnapshotNotification,
 )
 from custom_components.chihiros.vendor.chihiros_led_control.protocol.notifications import ParsedNotification
+from custom_components.chihiros.vendor.chihiros_led_control.registry import DOSING_PUMP, MAG_STIRRER
 
 pytestmark = [
     pytest.mark.integration,
@@ -308,3 +310,50 @@ async def test_handle_notifications_populates_data_without_firmware(
     assert coordinator.data[ATTR_FAN_TEMPERATURE_CELSIUS] == 25
     assert coordinator.data[ATTR_LAST_NOTIFICATION]["firmware_version"] is None
     assert updates == 3
+
+
+@pytest.mark.parametrize("stage", ["storage", "records", "forward"])
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError], ids=["exception", "cancel"])
+async def test_failed_setup_releases_all_resources(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, stage: str, failure: type[BaseException]
+) -> None:
+    """Every setup failure releases subscriptions, timers, runtime state and services."""
+    client = _TrackingClient()
+    client.model = {"storage": MAG_STIRRER, "records": DOSING_PUMP}.get(stage, client.model)
+    active_bluetooth: set[ChihirosDataUpdateCoordinator] = set()
+    active_timers: set[object] = set()
+
+    async def resolve_runtime(_hass: HomeAssistant, _entry: ConfigEntry) -> ChihirosRuntime:
+        return ChihirosRuntime(client=client, address=TEST_ADDRESS, always_available=True)
+
+    def start_bluetooth(coordinator: ChihirosDataUpdateCoordinator) -> Callable[[], None]:
+        active_bluetooth.add(coordinator)
+        return lambda: active_bluetooth.discard(coordinator)
+
+    def start_timer(*_args: Any) -> Callable[[], None]:
+        timer = object()
+        active_timers.add(timer)
+        return lambda: active_timers.discard(timer)
+
+    async def fail(*_args: Any, **_kwargs: Any) -> None:
+        raise failure("setup failed")
+
+    monkeypatch.setattr(chihiros_integration, "resolve_chihiros_runtime", resolve_runtime)
+    monkeypatch.setattr(ChihirosDataUpdateCoordinator, "async_start", start_bluetooth)
+    monkeypatch.setattr(dosing_module, "async_track_point_in_time", start_timer)
+    target, method = (
+        (hass.config_entries, "async_forward_entry_setups")
+        if stage == "forward"
+        else (dosing_module.DosingProgrammingTracker, "async_load")
+    )
+    monkeypatch.setattr(target, method, fail)
+    entry = MockConfigEntry(domain=DOMAIN, title=client.name, unique_id=TEST_ADDRESS, data={CONF_ADDRESS: TEST_ADDRESS})
+    entry.add_to_hass(hass)
+    with pytest.raises(failure):
+        await chihiros_integration.async_setup_entry(hass, entry)
+    assert not client._callbacks
+    assert not active_bluetooth
+    assert not active_timers
+    assert entry.entry_id not in hass.data.get(DOMAIN, {})
+    assert not hass.services.has_service(DOMAIN, "set_schedule")
+    assert not hass.services.has_service(DOMAIN, "set_dosing_schedule")

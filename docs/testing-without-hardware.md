@@ -77,6 +77,28 @@ under test; retries and failed setup paths disconnect before reconnecting.
 The harness is excluded from the vendored HA package
 (`scripts/sync_vendor.py`), so it stays a library/test-only tool.
 
+## Pump replay and partial-write checks
+
+Run `uv --cache-dir .uv-cache run --no-sync python scripts/verify_manual_dose.py`
+after syncing dependencies. It explores ambiguous BLE writes for manual doses,
+timed calibration, and both run frames sent through the raw slave broadcast
+path. The bounds cover 729 manual-dose sequences and nine sequences for each
+single-frame operation, totaling 756 scenarios. It checks one channel and one
+value per operation, not physical pump behavior or slave firmware deduplication.
+
+The state-machine regression tests additionally exercise cancellation cleanup,
+concurrent schedule edits and paired settings, delayed midnight callbacks,
+storage failures after hardware success, and deferred startup restoration.
+
+`program_channel` is a separate, non-atomic batch. In a scripted run with an
+active setting, daily volume, and one schedule point, failures before every
+daily-volume write accepted only the active-setting frames. Failures after
+every schedule write accepted all three frames three times before reporting an
+error. A retry after an initial daily-volume failure sent the complete batch.
+These traces establish what the driver writes, not how firmware applies
+repeated schedule frames or whether a successful retry converges device state.
+Do not assume a failed programming call left the previous schedule intact.
+
 ## When you need real BLE behavior
 
 The scripted transport does not simulate radio behavior (connection intervals,

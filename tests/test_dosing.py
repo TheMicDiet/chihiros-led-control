@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+import asyncio
+from collections.abc import Callable
+from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -12,6 +15,7 @@ pytest.importorskip("homeassistant", reason="Home Assistant test group is not in
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.util import dt as dt_util
 
+from custom_components.chihiros import dosing as dosing_module
 from custom_components.chihiros.dosing import (
     PUMP_COUNT,
     SIGNAL_DOSING_CALIBRATION_UPDATED,
@@ -151,7 +155,7 @@ async def test_address_signal_and_async_close_cancel_schedule(hass: Any) -> None
 
 
 @pytest.mark.asyncio
-async def test_midnight_reset_resets_totals_and_reschedules(hass: Any) -> None:
+async def test_midnight_reset_resets_totals_and_reschedules(hass: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """_async_midnight_reset zeros totals and schedules the next reset."""
     totals = DosingDailyTotals(hass, "FA:CE:C0:FF:00:05", pump_count=2)
     await totals.async_load()
@@ -161,6 +165,8 @@ async def test_midnight_reset_resets_totals_and_reschedules(hass: Any) -> None:
     assert totals.lifetime_cycles(0) == 1
 
     first_reset_handle = totals._unsub_midnight_reset
+    tomorrow = dt_util.now() + timedelta(days=1)
+    monkeypatch.setattr(totals, "_today", lambda: tomorrow.date().isoformat())
 
     await totals._async_midnight_reset(dt_util.utcnow() + timedelta(days=1))
 
@@ -223,3 +229,98 @@ async def test_calibration_tracker_loads_stored_records(hass: Any) -> None:
     assert tracker.calibrated_at(1) is not None
     assert tracker.calibrated_at(2) is None
     assert tracker.address_signal == f"{SIGNAL_DOSING_CALIBRATION_UPDATED}_fa:ce:c0:ff:00:08"
+
+
+@pytest.fixture
+def midnight_clock(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Provide a local clock and observable one-shot midnight callbacks."""
+    clock = SimpleNamespace(now=dt_util.now(), timers=[])
+
+    def track(_hass: Any, callback: Callable[..., Any], when: datetime) -> Callable[[], None]:
+        """Capture the callback instead of scheduling wall-clock delivery."""
+        timer = SimpleNamespace(callback=callback, when=when, active=True)
+        clock.timers.append(timer)
+        return lambda: setattr(timer, "active", False)
+
+    monkeypatch.setattr(
+        dosing_module,
+        "dt_util",
+        SimpleNamespace(now=lambda: clock.now, start_of_local_day=dt_util.start_of_local_day),
+    )
+    monkeypatch.setattr(dosing_module, "async_track_point_in_time", track)
+    return clock
+
+
+@pytest.mark.asyncio
+async def test_delayed_midnight_callback_keeps_new_day_dose(hass: Any, midnight_clock: SimpleNamespace) -> None:
+    """A late callback cannot erase a dose counted after lazy date rollover."""
+    totals = DosingDailyTotals(hass, "FA:CE:C0:FF:00:09")
+    await totals.async_load()
+    await totals.async_add_dose(0, 5.0)
+    pending = midnight_clock.timers[-1]
+    midnight_clock.now = pending.when + timedelta(seconds=1)
+    await totals.async_add_dose(0, 2.5)
+    try:
+        await pending.callback(midnight_clock.now)
+        assert totals.total_ml(0) == 2.5
+        assert totals.lifetime_ml(0) == 7.5
+        assert totals.lifetime_cycles(0) == 2
+    finally:
+        totals.async_close()
+
+
+@pytest.mark.asyncio
+async def test_midnight_storage_failure_keeps_next_reset_scheduled(
+    hass: Any, midnight_clock: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed midnight save still schedules and executes the next rollover."""
+    totals = DosingDailyTotals(hass, "FA:CE:C0:FF:00:10")
+    await totals.async_load()
+    await totals.async_add_dose(0, 5.0)
+    pending = midnight_clock.timers[-1]
+    midnight_clock.now = pending.when + timedelta(seconds=1)
+    original_save = totals._store.async_save
+
+    async def fail_save(_data: dict[str, Any]) -> None:
+        """Fail persistence after the in-memory rollover."""
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(totals._store, "async_save", fail_save)
+    try:
+        with pytest.raises(OSError, match="storage unavailable"):
+            await pending.callback(midnight_clock.now)
+        future = midnight_clock.timers[-1]
+        assert future.active and future.when > midnight_clock.now
+        monkeypatch.setattr(totals._store, "async_save", original_save)
+        await totals.async_add_dose(0, 3.0)
+        midnight_clock.now = future.when + timedelta(seconds=1)
+        await future.callback(midnight_clock.now)
+        assert totals.total_ml(0) == 0.0
+        assert totals.lifetime_ml(0) == 8.0
+    finally:
+        totals.async_close()
+
+
+@pytest.mark.asyncio
+async def test_close_during_midnight_save_does_not_reschedule(
+    hass: Any, midnight_clock: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closing during a cancelled save cannot resurrect the midnight timer."""
+    totals = DosingDailyTotals(hass, "FA:CE:C0:FF:00:11")
+    await totals.async_load()
+    entered = asyncio.Event()
+
+    async def blocked_save(_data: dict[str, Any]) -> None:
+        """Suspend persistence until cancellation."""
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(totals._store, "async_save", blocked_save)
+    pending = midnight_clock.timers[-1]
+    task = asyncio.create_task(pending.callback(midnight_clock.now))
+    await entered.wait()
+    totals.async_close()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not any(timer.active for timer in midnight_clock.timers)

@@ -572,3 +572,39 @@ def test_scripted_brightness_90_preserves_payload_and_checksum(monkeypatch: pyte
         assert transport.writes[-1] == sample
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("stage", ["notify", "disconnect"])
+@pytest.mark.parametrize("cancel_count", [1, 2])
+async def test_cancelled_disconnect_releases_client(
+    monkeypatch: pytest.MonkeyPatch, stage: str, cancel_count: int
+) -> None:
+    """Even repeated cancellation cannot orphan a client during either teardown await."""
+    _fast_waits(monkeypatch)
+    transport = ScriptedTransport()
+    device = ChihirosDevice(ScriptedBLEDevice(transport.name, transport.address), transport=transport)
+    await device.set_manual_mode()
+    client = transport.clients[-1]
+    entered, release = asyncio.Event(), asyncio.Event()
+    method = "stop_notify" if stage == "notify" else "disconnect"
+    original = getattr(client, method)
+
+    async def slow_teardown(*args: object) -> None:
+        entered.set()
+        await release.wait()
+        await original(*args)
+
+    monkeypatch.setattr(client, method, slow_teardown)
+    pending = asyncio.create_task(device.disconnect())
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    for _ in range(cancel_count):
+        pending.cancel()
+        await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert not client.is_connected
+    assert not transport.is_connected
+    await device.set_manual_mode()
+    assert transport.connections == 2
+    await device.disconnect()

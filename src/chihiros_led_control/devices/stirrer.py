@@ -35,8 +35,11 @@ class ChihirosMagStirrer(BaseChihirosDevice):
         byte, including message id and checksum — to every connected device
         when a stirrer slave is linked (DOSING_CONTROL.md §5). This is the
         equivalent primitive for replaying such a frame onto another device.
+
+        Opaque frames may trigger a physical run. Attempt once because a
+        failed write can already have been accepted by the device.
         """
-        await self._send_command(bytearray(frame), 3)
+        await self._send_command(bytearray(frame), 1)
 
     async def set_dose_delay(self, enabled: bool) -> None:
         """Toggle the device-level dose delay flag (app's ``setDosingDelay``)."""

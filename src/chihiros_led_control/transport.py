@@ -420,11 +420,30 @@ class BleTransport:
         """Disconnect one BLE client without taking the connection lock."""
         if not client.is_connected:
             return
-        if read_char is not None:
+        try:
+            if read_char is not None:
+                try:
+                    await client.stop_notify(read_char)
+                except BleakError:
+                    self._logger.debug("%s: Failed to stop notifications", self.name, exc_info=True)
+        finally:
+            await self._finish_client_disconnect(client)
+
+    async def _finish_client_disconnect(self, client: BleakClientWithServiceCache) -> None:
+        """Finish releasing the connection before propagating cancellation."""
+        cleanup = asyncio.create_task(self._disconnect_ble_client(client))
+        cancelled = False
+        while not cleanup.done():
             try:
-                await client.stop_notify(read_char)
-            except BleakError:
-                self._logger.debug("%s: Failed to stop notifications", self.name, exc_info=True)
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _disconnect_ble_client(self, client: BleakClientWithServiceCache) -> None:
+        """Release the physical client, logging ordinary BLE teardown failures."""
         try:
             await client.disconnect()
         except BleakError:

@@ -122,7 +122,7 @@ class BaseChihirosDevice:
 
     async def _send_command(
         self,
-        command: list[bytes] | bytes | bytearray,
+        command: list[bytes | bytearray] | bytes | bytearray,
         retry: int | None = None,
         notification_wait: float | None = None,
     ) -> None:

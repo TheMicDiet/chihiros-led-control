@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from bleak_retry_connector import BleakError
 from typer.testing import CliRunner
 
 from chihiros_led_control import cli
 from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
 from chihiros_led_control.factory import create_device, detect_model
+from chihiros_led_control.protocol import dosing as dosing_commands
 from chihiros_led_control.protocol.dosing import DosingMode, DosingWorkPoint
 from chihiros_led_control.protocol.stirrer import stirrer_dosage_for_minutes
 from chihiros_led_control.registry import DOSING_PUMP, MAG_STIRRER
@@ -463,3 +465,42 @@ def test_doser_cli_rejects_bad_input(monkeypatch: pytest.MonkeyPatch) -> None:
     assert bad_point.exit_code != 0 and "HH:MM:ML" in bad_point.output
     assert bad_calibrate.exit_code != 0
     assert wrong_device.exit_code != 0 and "not a dosing pump" in wrong_device.output
+
+
+@pytest.mark.parametrize("device_type", [ChihirosDosingPump, ChihirosMagStirrer], ids=["pump", "stirrer"])
+@pytest.mark.parametrize("operation", ["manual-dose", "timed-calibration"])
+def test_raw_broadcast_does_not_repeat_accepted_run_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    device_type: type[ChihirosDosingPump] | type[ChihirosMagStirrer],
+    operation: str,
+) -> None:
+    """Opaque broadcasts attempt once after an ambiguous accepted wire write.
+
+    Accepted bytes are modeled, not firmware behavior or physical stirrer runs.
+    """
+    _fast_waits(monkeypatch)
+    transport = ScriptedTransport(name="DYMIXR-test")
+    frame = (
+        dosing_commands.create_manual_dose_command((0, 1), 0, 1.0)
+        if operation == "manual-dose"
+        else dosing_commands.create_dosing_calibrate_command((0, 1), 0, seconds=10)
+    )
+    accepted: list[bytes] = []
+
+    def accept_then_fail(data: bytes) -> tuple[bytes, ...]:
+        """Accept the frame before losing acknowledgement at the BLE boundary."""
+        accepted.append(data)
+        raise BleakError("failure after acceptance")
+
+    transport.expect(frame[0], frame[5], respond=accept_then_fail)
+
+    async def run() -> None:
+        """Exercise real device dispatch, retries, batching and GATT frame writes."""
+        device = device_type(ScriptedBLEDevice(transport.name, transport.address), transport=transport)
+        with pytest.raises(BleakError, match="failure after acceptance"):
+            await device.send_frame(frame)
+        await device.disconnect()
+
+    asyncio.run(run())
+    assert accepted == [bytes(frame)]
+    assert transport.writes.count(bytes(frame)) == 1

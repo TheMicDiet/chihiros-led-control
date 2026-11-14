@@ -114,6 +114,7 @@ async def _setup_stirrer(
     *,
     channel_count: int | None = None,
     master_address: str | None = None,
+    enable_pre_run: bool = False,
 ) -> tuple[ConfigEntry, _TrackingStirrer]:
     """Set up the integration against a mock stirrer client."""
     client = _TrackingStirrer()
@@ -139,6 +140,10 @@ async def _setup_stirrer(
         data=data,
     )
     entry.add_to_hass(hass)
+    if enable_pre_run:
+        er.async_get(hass).async_get_or_create(
+            "number", DOMAIN, f"{TEST_ADDRESS}_stir_channel_1_pre_run", config_entry=entry, disabled_by=None
+        )
     await hass.config_entries.async_setup(entry.entry_id)
     await asyncio.sleep(0)
     await asyncio.sleep(0)
@@ -251,6 +256,108 @@ async def test_stir_numbers_write_pre_second_frame(hass: HomeAssistant, monkeypa
     # The pre-run write re-sends the current speed without restarting the channel.
     assert client.pre_second_calls == [(0, 0, 16), (0, 0, 20), (0, 90, 20)]
     assert client.restart_calls == [(0, 0, 20)]
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["rejection", "cancellation"])
+@pytest.mark.parametrize(
+    ("suffix", "requested", "paired_value", "expected"),
+    [
+        ("speed", 7, 12, (0, 12, 20)),
+        ("pre_run", 12, 7, (0, 0, 7)),
+    ],
+)
+async def test_stirrer_failed_pair_write_preserves_committed_values(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    cancel: bool,
+    suffix: str,
+    requested: int,
+    paired_value: int,
+    expected: tuple[int, int, int],
+) -> None:
+    """Failed or cancelled writes cannot leak proposed values into a paired resubmission."""
+    entry, client = await _setup_stirrer(hass, monkeypatch, channel_count=1, enable_pre_run=True)
+    speed_id = _entity_id(hass, "number", "stir_channel_1_speed")
+    prerun_id = _entity_id(hass, "number", "stir_channel_1_pre_run")
+    speed = hass.data["number"].get_entity(speed_id)
+    prerun = hass.data["number"].get_entity(prerun_id)
+    assert speed is not None and prerun is not None
+    entities = {"speed": speed, "pre_run": prerun}
+    paired = {"speed": prerun, "pre_run": speed}[suffix]
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_write = client.set_pre_second
+
+    async def reject_submission(channel: int, seconds: int, speed: int = 20, *, restart: bool = False) -> None:
+        """Hold before submission, then reject without accepting a frame."""
+        entered.set()
+        await release.wait()
+        raise RuntimeError("rejected before submission")
+
+    monkeypatch.setattr(client, "set_pre_second", reject_submission)
+    write = asyncio.create_task(entities[suffix].async_set_native_value(requested))
+    await asyncio.wait_for(entered.wait(), 3)
+    values_during_write = (speed.native_value, prerun.native_value)
+    if cancel:
+        write.cancel()
+    else:
+        release.set()
+    expected_error = asyncio.CancelledError if cancel else HomeAssistantError
+    with pytest.raises(expected_error):
+        await write
+
+    assert values_during_write == (20, 0)
+    assert (speed.native_value, prerun.native_value) == (20, 0)
+    assert client.pre_second_calls == []
+    assert float(hass.states.get(speed_id).state) == 20
+    assert float(hass.states.get(prerun_id).state) == 0
+    monkeypatch.setattr(client, "set_pre_second", original_write)
+    await paired.async_set_native_value(paired_value)
+    assert client.pre_second_calls == [expected]
+    assert entities[suffix].native_value == {"speed": 20, "pre_run": 0}[suffix]
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_stirrer_concurrent_start_and_speed_restarts_running_channel(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Speed changes ordered after an in-flight start must restart the running channel."""
+    entry, client = await _setup_stirrer(hass, monkeypatch, channel_count=1)
+    switch_id = _entity_id(hass, "switch", "stir_channel_1")
+    speed_id = _entity_id(hass, "number", "stir_channel_1_speed")
+    switch = hass.data["switch"].get_entity(switch_id)
+    speed = hass.data["number"].get_entity(speed_id)
+    assert switch is not None and speed is not None
+    entered, release, requested = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original_stir = client.stir
+
+    async def hold_start(channel: int, on: bool, *, seconds: int | None = None) -> None:
+        """Pause the start before the hardware accepts its frame."""
+        entered.set()
+        await release.wait()
+        await original_stir(channel, on, seconds=seconds)
+
+    async def change_speed() -> None:
+        """Submit a speed change while the channel start is still pending."""
+        requested.set()
+        await speed.async_set_native_value(7)
+
+    monkeypatch.setattr(client, "stir", hold_start)
+    start = asyncio.create_task(switch.async_turn_on())
+    await asyncio.wait_for(entered.wait(), 3)
+    change = asyncio.create_task(change_speed())
+    await asyncio.wait_for(requested.wait(), 3)
+    calls_before_start = tuple(client.pre_second_calls)
+    release.set()
+    await asyncio.gather(start, change)
+
+    assert calls_before_start == ()
+    assert switch.is_on
+    assert client.stir_calls == [(0, True, None)]
+    assert client.pre_second_calls == [(0, 0, 7)]
+    assert client.restart_calls == [(0, 0, 7)]
+    assert hass.states.is_state(switch_id, "on")
+    assert float(hass.states.get(speed_id).state) == 7
+    await hass.config_entries.async_unload(entry.entry_id)
 
 
 @pytest.mark.parametrize(("saved_speed", "expected_speed"), [(15, 15), (40, 20)])

@@ -251,3 +251,53 @@ def test_explicit_custom_controller_enable_and_reset_preserve_point_path() -> No
         ]
 
     asyncio.run(run())
+
+
+async def _mutate_settings(device: ChihirosDevice, mutation: str) -> None:
+    """Apply an incremental edit that relinquishes full replay authority."""
+    scene = _scene()
+    if mutation == "add":
+        await device.add_setting(scene.sunrise, scene.sunset, 50)
+    elif mutation == "remove":
+        await device.remove_setting(scene.sunrise, scene.sunset)
+    elif mutation == "reset":
+        await device.reset_settings()
+    else:
+        await device.set_auto_point(0, 480, 50)
+
+
+@pytest.mark.usefixtures("fast_transport")
+@pytest.mark.parametrize("mutation", ["add", "remove", "reset", "point"])
+async def test_queued_incremental_edit_revokes_replacement_authority(
+    monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """Reconnect must not resurrect an owned schedule superseded by a queued edit."""
+    device, transport = _device()
+    entered, release, requested = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original = transport._write_frame
+
+    async def hold_replacement(client: object, characteristic: object, frame: bytes) -> None:
+        if (frame[0], frame[5]) == (165, 25) and not entered.is_set():
+            entered.set()
+            await release.wait()
+        await original(client, characteristic, frame)
+
+    async def mutate() -> None:
+        requested.set()
+        await _mutate_settings(device, mutation)
+
+    monkeypatch.setattr(transport, "_write_frame", hold_replacement)
+    replacing = asyncio.create_task(device.replace_settings([_scene()]))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        editing = asyncio.create_task(mutate())
+        await asyncio.wait_for(requested.wait(), timeout=5)
+        release.set()
+        await asyncio.gather(replacing, editing)
+        await device.disconnect()
+        before = len(transport.writes)
+        await device.query_status()
+        assert not _operations(transport.writes[before:])
+    finally:
+        release.set()
+        await device.disconnect()

@@ -118,22 +118,13 @@ async def _async_set_schedule_service(call: ServiceCall) -> None:
     await async_refresh_status(data)
 
 
-async def _async_rollback_partial_curve(data: ChihirosData) -> None:
-    """Best-effort clear of a partially written auto curve."""
-    try:
-        await data.device.reset_settings()
-    except Exception:
-        _LOGGER.exception("Failed to clear a partial auto curve for %s", data.device.name)
-
-
 async def _async_write_auto_curve(data: ChihirosData, points: list[tuple[int, int, int]]) -> None:
-    """Write auto curve points, rolling back a partial replacement on failure."""
+    """Write auto curve points; the driver clears failed partial replacements."""
     try:
         await data.device.set_auto_curve(points)
     except ValueError as ex:
         raise HomeAssistantError(str(ex)) from ex
     except Exception as ex:
-        await _async_rollback_partial_curve(data)
         raise HomeAssistantError(
             f"Failed to write auto curve for {data.device.name}; "
             "the previous curve cannot be restored and the integration "
@@ -279,10 +270,6 @@ async def async_replace_schedule(chihiros_data: ChihirosData, periods: list[dict
         # Validation failed before any device mutation; never clear an unknown schedule.
         raise HomeAssistantError(str(ex)) from ex
     except Exception as ex:
-        try:
-            await chihiros_data.device.reset_settings()
-        except Exception:
-            _LOGGER.exception("Failed to clear a partial schedule for %s", chihiros_data.device.name)
         raise HomeAssistantError(
             f"Failed to replace the schedule for {chihiros_data.device.name}; "
             "the previous schedule cannot be restored and the integration attempted to clear the partial replacement"
