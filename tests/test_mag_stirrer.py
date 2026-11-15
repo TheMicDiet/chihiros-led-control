@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from bleak_retry_connector import BleakError
 from typer.testing import CliRunner
 
 from chihiros_led_control import cli
 from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
 from chihiros_led_control.factory import create_device, detect_model
+from chihiros_led_control.protocol import dosing as dosing_commands
 from chihiros_led_control.protocol.dosing import DosingMode, DosingWorkPoint
 from chihiros_led_control.protocol.stirrer import stirrer_dosage_for_minutes
 from chihiros_led_control.registry import DOSING_PUMP, MAG_STIRRER
@@ -28,6 +30,7 @@ class FakeBLEDevice:
         self.address = address
 
 
+@pytest.mark.unit
 def test_detect_model_recognizes_stirrer_prefix() -> None:
     """DYMIXR advertisement names resolve to the Mag Stirrer model."""
     model = detect_model("DYMIXRCFAA123456")
@@ -35,6 +38,7 @@ def test_detect_model_recognizes_stirrer_prefix() -> None:
     assert model is MAG_STIRRER
 
 
+@pytest.mark.unit
 def test_create_device_builds_stirrer_client() -> None:
     """DYMIXR devices get an independent magnetic-stirrer client."""
 
@@ -62,6 +66,7 @@ def _make_stirrer(transport: ScriptedTransport) -> ChihirosMagStirrer:
     return ChihirosMagStirrer(ScriptedBLEDevice(transport.name, transport.address), MAG_STIRRER, transport=transport)
 
 
+@pytest.mark.component
 def test_scripted_stirrer_pre_second_and_manual_stir(monkeypatch: pytest.MonkeyPatch) -> None:
     """Speed/pre-stir uses (0xA5, 42); manual start/stop uses (0xA5, 20)."""
     transport = ScriptedTransport(name="DYMIXR-test")
@@ -86,6 +91,7 @@ def test_scripted_stirrer_pre_second_and_manual_stir(monkeypatch: pytest.MonkeyP
     asyncio.run(run())
 
 
+@pytest.mark.component
 def test_scripted_stirrer_schedule_sequence(monkeypatch: pytest.MonkeyPatch) -> None:
     """set_stir_schedule mirrors the app: active frame, dosingSet, timer points."""
     transport = ScriptedTransport(name="DYMIXR-test")
@@ -111,6 +117,7 @@ def test_scripted_stirrer_schedule_sequence(monkeypatch: pytest.MonkeyPatch) -> 
     asyncio.run(run())
 
 
+@pytest.mark.component
 def test_scripted_stirrer_inactive_channel_skips_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
     """An inactive stirrer channel gets no schedule frames (§6.2: only if is_active != 0)."""
     transport = ScriptedTransport(name="DYMIXR-test")
@@ -129,6 +136,7 @@ def test_scripted_stirrer_inactive_channel_skips_schedule(monkeypatch: pytest.Mo
     asyncio.run(run())
 
 
+@pytest.mark.component
 def test_program_channel_replays_inactive_stirrer_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
     """Master/slave replay sends settings and schedule even for an inactive channel."""
     transport = ScriptedTransport(name="DYMIXR-test")
@@ -156,6 +164,7 @@ def test_program_channel_replays_inactive_stirrer_schedule(monkeypatch: pytest.M
     assert frames[2][6:-1] == bytes([2, 3, 8, 0, 0, 60])
 
 
+@pytest.mark.component
 def test_scripted_pump_schedule_and_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pump schedule/settings/calibration/reset commands write the right frames."""
     transport = ScriptedTransport(name="DYDOSE-test")
@@ -194,6 +203,7 @@ def test_scripted_pump_schedule_and_settings(monkeypatch: pytest.MonkeyPatch) ->
     asyncio.run(run())
 
 
+@pytest.mark.unit
 def test_calibrate_channel_requires_arguments() -> None:
     """calibrate_channel refuses to send a no-op calibration frame."""
     transport = ScriptedTransport(name="DYDOSE-test")
@@ -206,6 +216,7 @@ def test_calibrate_channel_requires_arguments() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.component
 def test_stir_cli_commands_drive_stirrer(monkeypatch: pytest.MonkeyPatch) -> None:
     """The stir commands convert user channel numbers and call the client API."""
     calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
@@ -245,6 +256,7 @@ def test_stir_cli_commands_drive_stirrer(monkeypatch: pytest.MonkeyPatch) -> Non
     assert points[0].volume_ml == pytest.approx(6.0)  # type: ignore[attr-defined]
 
 
+@pytest.mark.component
 def test_stir_cli_commands_reject_dosing_pump(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stir commands fail clearly when pointed at a dosing pump."""
 
@@ -260,6 +272,7 @@ def test_stir_cli_commands_reject_dosing_pump(monkeypatch: pytest.MonkeyPatch) -
     assert "not a magnetic stirrer" in result.output
 
 
+@pytest.mark.component
 def test_doser_cli_commands_drive_pump(monkeypatch: pytest.MonkeyPatch) -> None:
     """Doser CLI commands parse arguments and call the client API."""
     calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
@@ -302,6 +315,7 @@ def test_doser_cli_commands_drive_pump(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls[5] == ("set_dose_delay", (False,), {})
 
 
+@pytest.mark.component
 def test_dosing_program_cli_batches_in_one_call(monkeypatch: pytest.MonkeyPatch) -> None:
     """The program command forwards active/daily/schedule options to program_channel."""
     calls: list[tuple[int, dict[str, object]]] = []
@@ -350,6 +364,7 @@ def test_dosing_program_cli_batches_in_one_call(monkeypatch: pytest.MonkeyPatch)
     assert [(point.start_hour, point.volume_ml) for point in points] == [(8, 5.5)]  # type: ignore[attr-defined]
 
 
+@pytest.mark.component
 def test_dosing_cli_rejects_stirrer(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pump commands refuse a stirrer, which speaks the dosing protocol but is not a pump."""
 
@@ -365,6 +380,7 @@ def test_dosing_cli_rejects_stirrer(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "not a dosing pump" in result.output
 
 
+@pytest.mark.component
 def test_stirrer_schedule_cli_encodes_weekdays(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stirrer schedule converts the selected weekdays to the repetition bitmask."""
     calls: list[dict[str, object]] = []
@@ -391,6 +407,7 @@ def test_stirrer_schedule_cli_encodes_weekdays(monkeypatch: pytest.MonkeyPatch) 
     assert calls[0]["active"] is True
 
 
+@pytest.mark.component
 def test_doser_query_cli_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     """doser-totals/doser-today query the device and print the reported volumes."""
     from chihiros_led_control.protocol.notifications import DosingDailyNotification, DosingTotalsNotification
@@ -423,24 +440,9 @@ def test_doser_query_cli_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "105.5" in totals.output and "2.5" in today.output
 
 
-def test_doser_cli_rejects_out_of_range_points(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point volumes/minutes outside the wire ranges fail cleanly, without a traceback."""
-
-    async def get_device(address: str) -> ChihirosDevice:
-        assert address == TEST_ADDRESS
-        return ChihirosDosingPump(FakeBLEDevice(name="DYDOSE-test"), DOSING_PUMP)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(cli, "get_device_from_address", get_device)
-
-    bad_ml = RUNNER.invoke(cli.app, ["dosing", "schedule", TEST_ADDRESS, "1", "08:00:99999"])
-    bad_stir = RUNNER.invoke(cli.app, ["stirrer", "schedule", TEST_ADDRESS, "1", "08:00:0"])
-
-    assert bad_ml.exit_code != 0 and "Dose volume" in bad_ml.output
-    assert bad_stir.exit_code != 0 and "Stir run time" in bad_stir.output
-
-
+@pytest.mark.component
 def test_doser_cli_rejects_bad_input(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Doser CLI commands validate mode names, point syntax, and device type."""
+    """Invalid mode, syntax, wire ranges, calibration and device type fail cleanly."""
 
     async def get_pump(address: str) -> ChihirosDevice:
         assert address == TEST_ADDRESS
@@ -451,6 +453,8 @@ def test_doser_cli_rejects_bad_input(monkeypatch: pytest.MonkeyPatch) -> None:
     bad_mode = RUNNER.invoke(cli.app, ["dosing", "schedule", TEST_ADDRESS, "1", "08:00:5", "--mode", "daily"])
     bad_point = RUNNER.invoke(cli.app, ["dosing", "schedule", TEST_ADDRESS, "1", "8am"])
     bad_calibrate = RUNNER.invoke(cli.app, ["dosing", "calibrate", TEST_ADDRESS, "1"])
+    bad_ml = RUNNER.invoke(cli.app, ["dosing", "schedule", TEST_ADDRESS, "1", "08:00:99999"])
+    bad_stir = RUNNER.invoke(cli.app, ["stirrer", "schedule", TEST_ADDRESS, "1", "08:00:0"])
 
     async def get_light(address: str) -> ChihirosDevice:
         assert address == TEST_ADDRESS
@@ -462,4 +466,46 @@ def test_doser_cli_rejects_bad_input(monkeypatch: pytest.MonkeyPatch) -> None:
     assert bad_mode.exit_code != 0 and "single/auto/free/timer" in bad_mode.output
     assert bad_point.exit_code != 0 and "HH:MM:ML" in bad_point.output
     assert bad_calibrate.exit_code != 0
+    assert bad_ml.exit_code != 0 and "Dose volume" in bad_ml.output
+    assert bad_stir.exit_code != 0 and "Stir run time" in bad_stir.output
     assert wrong_device.exit_code != 0 and "not a dosing pump" in wrong_device.output
+
+
+@pytest.mark.component
+@pytest.mark.parametrize("device_type", [ChihirosDosingPump, ChihirosMagStirrer], ids=["pump", "stirrer"])
+@pytest.mark.parametrize("operation", ["manual-dose", "timed-calibration"])
+def test_raw_broadcast_does_not_repeat_accepted_run_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    device_type: type[ChihirosDosingPump] | type[ChihirosMagStirrer],
+    operation: str,
+) -> None:
+    """Opaque broadcasts attempt once after an ambiguous accepted wire write.
+
+    Accepted bytes are modeled, not firmware behavior or physical stirrer runs.
+    """
+    _fast_waits(monkeypatch)
+    transport = ScriptedTransport(name="DYMIXR-test")
+    frame = (
+        dosing_commands.create_manual_dose_command((0, 1), 0, 1.0)
+        if operation == "manual-dose"
+        else dosing_commands.create_dosing_calibrate_command((0, 1), 0, seconds=10)
+    )
+    accepted: list[bytes] = []
+
+    def accept_then_fail(data: bytes) -> tuple[bytes, ...]:
+        """Accept the frame before losing acknowledgement at the BLE boundary."""
+        accepted.append(data)
+        raise BleakError("failure after acceptance")
+
+    transport.expect(frame[0], frame[5], respond=accept_then_fail)
+
+    async def run() -> None:
+        """Exercise real device dispatch, retries, batching and GATT frame writes."""
+        device = device_type(ScriptedBLEDevice(transport.name, transport.address), transport=transport)
+        with pytest.raises(BleakError, match="failure after acceptance"):
+            await device.send_frame(frame)
+        await device.disconnect()
+
+    asyncio.run(run())
+    assert accepted == [bytes(frame)]
+    assert transport.writes.count(bytes(frame)) == 1

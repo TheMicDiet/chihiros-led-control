@@ -46,8 +46,14 @@ class ChihirosTransport(Protocol):
         *,
         attempts: int,
         notification_wait: float,
+        on_started: Callable[[], None] | None = None,
     ) -> None:
-        """Send an already encoded frame batch."""
+        """Send a batch, calling on_started once the operation lock is acquired.
+
+        The synchronous callback precedes connection/prelude I/O, not just the
+        first batch write. Cancellation before it leaves the operation unstarted;
+        afterward, callers must assume the transaction may have mutated the device.
+        """
 
     async def disconnect(self) -> None:
         """Disconnect the current transport session."""
@@ -151,8 +157,15 @@ class BleTransport:
         self.ble_device = ble_device
         self.advertisement_data = advertisement_data
 
-    async def send(self, frames: Sequence[bytes], *, attempts: int, notification_wait: float) -> None:
-        """Connect lazily, run the prelude once per connection, and write a batch."""
+    async def send(
+        self,
+        frames: Sequence[bytes],
+        *,
+        attempts: int,
+        notification_wait: float,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
+        """Admit a batch, connect lazily, run the prelude, and write the frames."""
         if attempts < 1:
             raise ValueError("attempts must be at least 1")
         commands_to_send = [bytes(frame) for frame in frames]
@@ -161,6 +174,8 @@ class BleTransport:
         if self._operation_lock.locked():
             self._logger.debug("%s: Operation already in progress, waiting; RSSI: %s", self.name, self.rssi)
         async with self._operation_lock:
+            if on_started is not None:
+                on_started()
             await self._send_attempts(commands_to_send, attempts, notification_wait)
 
     async def _send_attempts(self, frames: Sequence[bytes], attempts: int, notification_wait: float) -> None:
@@ -420,11 +435,30 @@ class BleTransport:
         """Disconnect one BLE client without taking the connection lock."""
         if not client.is_connected:
             return
-        if read_char is not None:
+        try:
+            if read_char is not None:
+                try:
+                    await client.stop_notify(read_char)
+                except BleakError:
+                    self._logger.debug("%s: Failed to stop notifications", self.name, exc_info=True)
+        finally:
+            await self._finish_client_disconnect(client)
+
+    async def _finish_client_disconnect(self, client: BleakClientWithServiceCache) -> None:
+        """Finish releasing the connection before propagating cancellation."""
+        cleanup = asyncio.create_task(self._disconnect_ble_client(client))
+        cancelled = False
+        while not cleanup.done():
             try:
-                await client.stop_notify(read_char)
-            except BleakError:
-                self._logger.debug("%s: Failed to stop notifications", self.name, exc_info=True)
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _disconnect_ble_client(self, client: BleakClientWithServiceCache) -> None:
+        """Release the physical client, logging ordinary BLE teardown failures."""
         try:
             await client.disconnect()
         except BleakError:

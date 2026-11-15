@@ -6,6 +6,10 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "custom_components" / "chihiros" / "manifest.json"
 HOME_ASSISTANT_PROVIDED_REQUIREMENT_NAMES = {

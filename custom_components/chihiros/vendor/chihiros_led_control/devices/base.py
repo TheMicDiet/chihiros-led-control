@@ -122,9 +122,11 @@ class BaseChihirosDevice:
 
     async def _send_command(
         self,
-        command: list[bytes] | bytes | bytearray,
+        command: list[bytes | bytearray] | bytes | bytearray,
         retry: int | None = None,
         notification_wait: float | None = None,
+        *,
+        on_started: Callable[[], None] | None = None,
     ) -> None:
         """Submit one complete encoded frame batch to the public transport."""
         commands_to_send = [bytes(item) for item in command] if isinstance(command, list) else [bytes(command)]
@@ -134,7 +136,9 @@ class BaseChihirosDevice:
         if notification_wait is None:
             notification_wait = COMMAND_NOTIFICATION_WAIT
         self._logger.debug("%s: Sending commands %s", self.name, [item.hex() for item in commands_to_send])
-        await self.transport.send(commands_to_send, attempts=attempts, notification_wait=notification_wait)
+        await self.transport.send(
+            commands_to_send, attempts=attempts, notification_wait=notification_wait, on_started=on_started
+        )
 
     def _parse_notification(self, data: bytes | bytearray) -> ParsedNotification | None:
         """Parse a raw notification using the selected family codec."""

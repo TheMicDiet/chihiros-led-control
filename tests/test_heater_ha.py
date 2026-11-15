@@ -58,6 +58,7 @@ from custom_components.chihiros.vendor.chihiros_led_control.registry import HEAT
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.homeassistant,
     pytest.mark.asyncio,
     pytest.mark.usefixtures("enable_custom_integrations", "mock_bluetooth"),
 ]
@@ -912,6 +913,86 @@ async def test_heater_write_failure_raises_home_assistant_error(
 
     assert client.temperature_calls == []
     assert float(hass.states.get(entity_id).state) == pytest.approx(25.0)
+
+
+async def test_heater_cancelled_write_preserves_committed_target(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation before submission neither commits a target nor retains the write lock."""
+    entry, client = await _setup_heater(hass, monkeypatch)
+    entity_id = _entity_id(hass, NUMBER_DOMAIN, "heater_temperature")
+    entity = hass.data[NUMBER_DOMAIN].get_entity(entity_id)
+    assert entity is not None
+    await entity.async_set_native_value(24.5)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_write = client._write
+
+    async def hold_submission() -> None:
+        """Wait before submitting any hardware frame."""
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(client, "_write", hold_submission)
+    write = asyncio.create_task(entity.async_set_native_value(30.0))
+    await asyncio.wait_for(entered.wait(), 3)
+    write.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await write
+
+    assert entity.native_value == pytest.approx(24.5)
+    assert float(hass.states.get(entity_id).state) == pytest.approx(24.5)
+    assert client.setting_temperature_celsius == pytest.approx(24.5)
+    assert client.temperature_calls == [24.5]
+    monkeypatch.setattr(client, "_write", original_write)
+    await entity.async_set_native_value(26.0)
+    assert entity.native_value == pytest.approx(26.0)
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_heater_concurrent_failed_writes_preserve_committed_target(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two queued failures must not resurrect the first request as committed state."""
+    entry, client = await _setup_heater(hass, monkeypatch)
+    entity_id = _entity_id(hass, NUMBER_DOMAIN, "heater_temperature")
+    entity = hass.data[NUMBER_DOMAIN].get_entity(entity_id)
+    assert entity is not None
+    await entity.async_set_native_value(24.5)
+    entered = {value: asyncio.Event() for value in (27.0, 30.0)}
+    release = {value: asyncio.Event() for value in entered}
+    hardware_lock = asyncio.Lock()
+    second_requested = asyncio.Event()
+
+    async def reject_submission(value: float) -> None:
+        """Serialize rejected hardware writes independently of the entity."""
+        async with hardware_lock:
+            entered[value].set()
+            await release[value].wait()
+            raise RuntimeError("rejected before submission")
+
+    async def second_request() -> None:
+        """Mark submission before awaiting the entity's write lock."""
+        second_requested.set()
+        await entity.async_set_native_value(30.0)
+
+    monkeypatch.setattr(client, "set_temperature", reject_submission)
+    first = asyncio.create_task(entity.async_set_native_value(27.0))
+    await asyncio.wait_for(entered[27.0].wait(), 3)
+    second = asyncio.create_task(second_request())
+    await asyncio.wait_for(second_requested.wait(), 3)
+    release[27.0].set()
+    with pytest.raises(HomeAssistantError, match="Failed to set"):
+        await first
+    await asyncio.wait_for(entered[30.0].wait(), 3)
+    release[30.0].set()
+    with pytest.raises(HomeAssistantError, match="Failed to set"):
+        await second
+
+    assert entity.native_value == pytest.approx(24.5)
+    assert float(hass.states.get(entity_id).state) == pytest.approx(24.5)
+    assert client.setting_temperature_celsius == pytest.approx(24.5)
+    assert client.temperature_calls == [24.5]
+    await hass.config_entries.async_unload(entry.entry_id)
 
 
 @pytest.mark.parametrize("name", ["DYHET-abc", "DYH1T-abc"])

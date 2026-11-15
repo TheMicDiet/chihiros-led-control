@@ -82,6 +82,7 @@ def _heater_power_frame(power_watts: int, heating_time_seconds: int) -> bytes:
     return bytes(frame)
 
 
+@pytest.mark.unit
 def test_detect_model_recognizes_heater_prefixes() -> None:
     """Both DYHET and DYH1T advertisement names resolve to the Heater model."""
     for name in ("DYHET1234567890AB", "DYH1T123456"):
@@ -92,6 +93,7 @@ def test_detect_model_recognizes_heater_prefixes() -> None:
         assert dict(model.color_channels) == {}
 
 
+@pytest.mark.unit
 def test_create_device_builds_heater_client() -> None:
     """DYHET devices get an independent ChihirosHeater client."""
 
@@ -103,6 +105,7 @@ def test_create_device_builds_heater_client() -> None:
     assert device.model_name == "Heater"
 
 
+@pytest.mark.unit
 def test_heater_temperature_and_power_encoding() -> None:
     """Temperatures split into whole degrees plus hundredths; power rides as watts ÷ 10."""
     assert split_heater_temperature(25.5) == (25, 50)
@@ -118,6 +121,7 @@ def test_heater_temperature_and_power_encoding() -> None:
         encode_heater_power_watts(3000)
 
 
+@pytest.mark.unit
 def test_heater_frames_match_captured_app_traffic() -> None:
     """Reproduce captured heater frames and the APK-verified backlight polarity.
 
@@ -140,6 +144,7 @@ def test_heater_frames_match_captured_app_traffic() -> None:
     assert create_heater_backlight_command((0, 7), enabled=False).hex(" ") == "a5 01 0a 00 07 38 64 64 64 64 7f 4b"
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("schedule", "payload"),
     [
@@ -158,6 +163,7 @@ def test_heater_backlight_schedule_encoding(schedule: HeaterBacklightSchedule, p
         assert frame.hex(" ") == "a5 01 0a 00 07 38 08 0f 15 1e 51 69"
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -209,29 +215,7 @@ def _sent_frames(transport: ScriptedTransport) -> list[tuple[int, list[int]]]:
     return [(frame[5], list(frame[6:-1])) for frame in transport.writes if frame[5] not in (4, 9)]
 
 
-def test_scripted_heater_manual_state_sequence(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Setting the temperature or power sends switchToManual plus the state frame."""
-    transport = ScriptedTransport(name="DYHET-test")
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = _make_heater(transport)
-        if transport:
-            await device.set_temperature(26.5)
-            await device.set_power(800)
-
-        state_frames = [frame for frame in transport.writes if frame[5] == 43]
-        assert [list(frame[6:-1]) for frame in state_frames] == [
-            [0, 26, 50, 20],  # manual flag, 26.5 °C, default 200 W
-            [0, 26, 50, 80],  # 26.5 °C is remembered across the power write
-        ]
-        # Every state write is preceded by switchToManual (mode 5, sub 11).
-        manual_frames = [frame for frame in transport.writes if frame[5] == 5]
-        assert [list(frame[6:-1]) for frame in manual_frames] == [[11, 255, 255], [11, 255, 255]]
-
-    asyncio.run(run())
-
-
+@pytest.mark.unit
 def test_concurrent_manual_setters_preserve_both_values() -> None:
     """A paired manual update captures its sibling only after prior commits."""
 
@@ -273,47 +257,38 @@ def test_concurrent_manual_setters_preserve_both_values() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.component
 def test_scripted_heater_settings_commands(monkeypatch: pytest.MonkeyPatch) -> None:
-    """State, mode switches, automatic power, unit, protector and reset write their frames."""
+    """Automatic power, unit, protector, calibration and reset write their frames."""
     transport = ScriptedTransport(name="DYHET-test")
     _fast_waits(monkeypatch)
 
     async def run() -> None:
         device = _make_heater(transport)
         if transport:
-            await device.set_state(24.0, 1000)
-            await device.set_manual_mode()
-            await device.set_auto_mode()
             await device.set_automatic_power(True)
             await device.set_automatic_power(False)
             await device.set_temperature_unit(celsius=False)
-            await device.set_backlight(False)
-            await device.set_backlight(True)
             await device.set_protector_temperature(37.0)
             await device.calibrate(25.5)
             await device.reset_work_time()
 
         assert _sent_frames(transport) == [
-            (43, [1, 24, 0, 100]),
-            (5, [11, 255, 255]),
-            (5, [18, 255, 255]),
             (5, [46, 255, 255]),
             (5, [47, 255, 255]),
             (5, [45, 255, 255]),
-            (56, [100, 100, 100, 100, 127]),
-            (56, [200, 200, 200, 200, 127]),
             (47, [37, 0]),
             (48, [25, 50]),
             (5, [58, 255, 255]),
         ]
         assert device.automatic_power is False
         assert device.is_celsius is False
-        assert device.backlight is True
         assert device.protector_temperature_celsius == 37.0
 
     asyncio.run(run())
 
 
+@pytest.mark.component
 def test_scripted_heater_backlight_schedule_and_always_modes(monkeypatch: pytest.MonkeyPatch) -> None:
     """The production transport writes each form and tracks scheduled state distinctly."""
     transport = ScriptedTransport(name="DYHET-test")
@@ -346,6 +321,7 @@ def test_scripted_heater_backlight_schedule_and_always_modes(monkeypatch: pytest
     asyncio.run(run())
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("scheduled", [True, False])
 @pytest.mark.parametrize("enabled", [True, False, None])
 def test_scripted_heater_failed_backlight_write_preserves_state(
@@ -379,6 +355,7 @@ def test_scripted_heater_failed_backlight_write_preserves_state(
     asyncio.run(run())
 
 
+@pytest.mark.component
 def test_shared_state_drives_manual_mutations(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mode-preserving and manual writes always use one shared target/power pair."""
     transport = ScriptedTransport(name="DYHET-test")
@@ -387,6 +364,10 @@ def test_shared_state_drives_manual_mutations(monkeypatch: pytest.MonkeyPatch) -
     async def run() -> None:
         device = _make_heater(transport)
         try:
+            await device.set_temperature(26.5)
+            await device.set_power(800)
+            assert device.setting_temperature_celsius == 26.5
+            assert device.power_watts == 800
             await device.set_auto_mode()
             await device.set_state(22.5, 800)
             assert device.setting_temperature_celsius == 22.5
@@ -398,6 +379,10 @@ def test_shared_state_drives_manual_mutations(monkeypatch: pytest.MonkeyPatch) -
             await device.set_auto_mode()
             await device.set_manual_mode()
             assert _sent_frames(transport) == [
+                (5, [11, 255, 255]),
+                (43, [0, 26, 50, 20]),  # A fresh client pairs the target with its default 200 W.
+                (5, [11, 255, 255]),
+                (43, [0, 26, 50, 80]),  # The next power write keeps the committed target.
                 (5, [18, 255, 255]),
                 (43, [1, 22, 50, 80]),
                 (5, [11, 255, 255]),
@@ -418,6 +403,7 @@ def test_shared_state_drives_manual_mutations(monkeypatch: pytest.MonkeyPatch) -
     asyncio.run(run())
 
 
+@pytest.mark.unit
 def test_concurrent_preserving_and_manual_writes_share_the_lock() -> None:
     """A manual mutation resends the mode-preserving write's committed target."""
 
@@ -454,6 +440,7 @@ def test_concurrent_preserving_and_manual_writes_share_the_lock() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.component
 def test_restored_heater_pairs_drive_real_client_writes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Restored write-only values replace fresh defaults without touching BLE."""
     transport = ScriptedTransport(name="DYHET-test")
@@ -482,6 +469,7 @@ def test_restored_heater_pairs_drive_real_client_writes(monkeypatch: pytest.Monk
     asyncio.run(run())
 
 
+@pytest.mark.component
 def test_scripted_heater_notifications_track_device_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """Query responses report configured power/runtime; periodic measurements stay separate."""
     transport = ScriptedTransport(name="DYHET-test")
@@ -519,6 +507,7 @@ def test_scripted_heater_notifications_track_device_state(monkeypatch: pytest.Mo
     asyncio.run(run())
 
 
+@pytest.mark.component
 def test_real_measured_power_never_becomes_target(monkeypatch: pytest.MonkeyPatch) -> None:
     """A real 30 W/25 °C measurement must not turn the next target into 3 °C."""
     transport = ScriptedTransport(name="DYHET-test")
@@ -543,13 +532,9 @@ def test_real_measured_power_never_becomes_target(monkeypatch: pytest.MonkeyPatc
     asyncio.run(run())
 
 
+@pytest.mark.unit
 def test_heater_notification_parsing_is_family_specific() -> None:
     """Heater frames only decode as heater notifications when the family is known."""
-    temperature = parse_heater_notification(_heater_temp_frame(30, 250))
-    assert isinstance(temperature, HeaterTemperatureNotification)
-    assert temperature.measured_power_watts == 30
-    assert temperature.current_temperature_celsius == 25.0
-
     status = parse_heater_notification(_heater_status_frame(work_hours=120, alarms=0x40))
     assert isinstance(status, HeaterStatusNotification)
     assert (status.work_time_hours, status.alarms) == (120, 0x40)
@@ -559,11 +544,10 @@ def test_heater_notification_parsing_is_family_specific() -> None:
         parse_led_notification(_heater_status_frame(work_hours=120, alarms=0)),
         HeaterStatusNotification,
     )
-    # Unknown or truncated heater frames are ignored instead of guessed at.
-    assert parse_heater_notification(_heater_temp_frame(255, 250)[:10]) is None
     assert heater_alarm_names(0x01 | 0x40) == ("insufficient_water", "sensor_failure")
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("capture", "expected"),
     [
@@ -597,6 +581,7 @@ def test_heater_real_captures_require_exact_frame_lengths(
     assert parse_heater_notification(b"\x5a" + frame[1:]) is None
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("power_watts", "heating_time_seconds"),
     [(0, 0), (2000, 0xFFFFFFFF), (10, 0x01020304)],
@@ -607,6 +592,7 @@ def test_heater_configured_power_and_lifetime_byte_boundaries(power_watts: int, 
     assert parsed == HeaterPowerNotification(power_watts, heating_time_seconds)
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("method", "args", "mode", "payload"),
     [
@@ -646,6 +632,7 @@ def test_failed_heater_writes_never_commit_tracked_state(
     asyncio.run(run())
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(("method", "flag"), [("set_state", 1), ("set_manual_state", 0)])
 @pytest.mark.parametrize("reported_power", [200, 800])
 def test_power_readback_during_write_stays_authoritative(
@@ -681,6 +668,7 @@ def test_power_readback_during_write_stays_authoritative(
     asyncio.run(run())
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("method", "args", "initial_power", "expected_payloads"),
     [
@@ -726,6 +714,7 @@ def test_cold_heater_mutations_preserve_actual_configured_power(
     asyncio.run(run())
 
 
+@pytest.mark.unit
 def test_heater_validates_before_touching_the_device() -> None:
     """Invalid settings are rejected before the client opens a BLE connection."""
     transport = ScriptedTransport(name="DYHET-test")
@@ -753,6 +742,7 @@ def test_heater_validates_before_touching_the_device() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.component
 def test_heater_cli_rejects_unrepresentable_power_before_device_resolution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -776,6 +766,7 @@ def test_heater_cli_rejects_unrepresentable_power_before_device_resolution(
     assert resolutions == 0
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("arguments", "expected_frames"),
     [
@@ -806,6 +797,7 @@ def test_heater_cli_state_and_modes_write_production_transport(
     assert not transport.is_connected
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("options", "payload"),
     [
@@ -838,6 +830,7 @@ def test_heater_cli_backlight_schedule_writes_production_transport(
     assert not transports[0].is_connected
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(("option", "level"), [("--enable", 200), ("--disable", 100)])
 def test_heater_cli_backlight_always_modes_write_production_transport(
     monkeypatch: pytest.MonkeyPatch, option: str, level: int
@@ -864,6 +857,7 @@ def test_heater_cli_backlight_always_modes_write_production_transport(
     assert not transports[0].is_connected
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -889,6 +883,7 @@ def test_heater_cli_backlight_schedule_rejects_invalid_input_before_resolution(
     assert result.exit_code == 2, result.output
 
 
+@pytest.mark.component
 def test_heater_cli_status_displays_reported_measurements(monkeypatch: pytest.MonkeyPatch) -> None:
     """Real readbacks expose measured and configured power without inventing target/firmware."""
     _fast_waits(monkeypatch)
@@ -920,6 +915,7 @@ def test_heater_cli_status_displays_reported_measurements(monkeypatch: pytest.Mo
     assert not transport.is_connected
 
 
+@pytest.mark.component
 def test_heater_cli_commands_reject_other_devices(monkeypatch: pytest.MonkeyPatch) -> None:
     """Heater commands fail clearly when pointed at another device family."""
 

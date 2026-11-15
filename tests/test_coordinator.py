@@ -39,6 +39,7 @@ except ImportError as err:
         allow_module_level=True,
     )
 
+from custom_components.chihiros import dosing as dosing_module
 from custom_components.chihiros.vendor.chihiros_led_control.models import RGB_CHANNELS, DeviceKind, DeviceModel, LedSpec
 from custom_components.chihiros.vendor.chihiros_led_control.protocol.dosing import (
     DosingDailyNotification,
@@ -51,9 +52,11 @@ from custom_components.chihiros.vendor.chihiros_led_control.protocol.led import 
     ScheduleSnapshotNotification,
 )
 from custom_components.chihiros.vendor.chihiros_led_control.protocol.notifications import ParsedNotification
+from custom_components.chihiros.vendor.chihiros_led_control.registry import DOSING_PUMP, MAG_STIRRER
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.homeassistant,
     pytest.mark.asyncio,
     pytest.mark.usefixtures("enable_custom_integrations", "mock_bluetooth"),
 ]
@@ -225,21 +228,31 @@ async def test_async_close_unregisters_callbacks_and_drops_notifications(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Closing the coordinator removes callbacks and ignores later notifications."""
-    _entry, _client, coordinator = await _setup(hass, monkeypatch)
+    _entry, client, coordinator = await _setup(hass, monkeypatch)
 
     captured: list[Any] = []
     coordinator.async_add_listener(lambda: captured.append("update"))
 
-    # Idempotent start so a real bluetooth callback is registered, then close.
-    monkeypatch.setattr(coordinator, "async_start", lambda: None)
+    removed: list[str] = []
+    monkeypatch.setattr(ChihirosDataUpdateCoordinator, "async_start_bluetooth", _REAL_ASYNC_START_BLUETOOTH)
+    monkeypatch.setattr(coordinator, "async_start", lambda: lambda: removed.append("bluetooth"))
     coordinator.async_start_bluetooth()
+    assert len(client._callbacks) == 1
+    callback = next(iter(client._callbacks))
+    notification = RuntimeNotification(23, 511, bytes.fromhex("5b 17 0a 00 01 0a 01 ff"))
 
+    # A notification already queued when close runs must not update entities.
+    callback(notification)
     coordinator.async_close()
-    # A second close must not raises (handles the None bluetooth callback).
     coordinator.async_close()
+    assert removed == ["bluetooth"]
+    assert not client._callbacks
 
-    # Notifications queued after close are dropped (no listener update).
-    coordinator._async_handle_notification(RuntimeNotification(23, 511, bytes.fromhex("5b 17 0a 00 01 0a 01 ff")))
+    # Stale callback references and queued handlers are also harmless after close.
+    callback(notification)
+    coordinator._async_handle_notification(notification)
+    await _flush()
+    assert coordinator.data == {}
     assert captured == []
 
 
@@ -308,3 +321,50 @@ async def test_handle_notifications_populates_data_without_firmware(
     assert coordinator.data[ATTR_FAN_TEMPERATURE_CELSIUS] == 25
     assert coordinator.data[ATTR_LAST_NOTIFICATION]["firmware_version"] is None
     assert updates == 3
+
+
+@pytest.mark.parametrize("stage", ["storage", "records", "forward"])
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError], ids=["exception", "cancel"])
+async def test_failed_setup_releases_all_resources(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, stage: str, failure: type[BaseException]
+) -> None:
+    """Every setup failure releases subscriptions, timers, runtime state and services."""
+    client = _TrackingClient()
+    client.model = {"storage": MAG_STIRRER, "records": DOSING_PUMP}.get(stage, client.model)
+    active_bluetooth: set[ChihirosDataUpdateCoordinator] = set()
+    active_timers: set[object] = set()
+
+    async def resolve_runtime(_hass: HomeAssistant, _entry: ConfigEntry) -> ChihirosRuntime:
+        return ChihirosRuntime(client=client, address=TEST_ADDRESS, always_available=True)
+
+    def start_bluetooth(coordinator: ChihirosDataUpdateCoordinator) -> Callable[[], None]:
+        active_bluetooth.add(coordinator)
+        return lambda: active_bluetooth.discard(coordinator)
+
+    def start_timer(*_args: Any) -> Callable[[], None]:
+        timer = object()
+        active_timers.add(timer)
+        return lambda: active_timers.discard(timer)
+
+    async def fail(*_args: Any, **_kwargs: Any) -> None:
+        raise failure("setup failed")
+
+    monkeypatch.setattr(chihiros_integration, "resolve_chihiros_runtime", resolve_runtime)
+    monkeypatch.setattr(ChihirosDataUpdateCoordinator, "async_start", start_bluetooth)
+    monkeypatch.setattr(dosing_module, "async_track_point_in_time", start_timer)
+    target, method = (
+        (hass.config_entries, "async_forward_entry_setups")
+        if stage == "forward"
+        else (dosing_module.DosingProgrammingTracker, "async_load")
+    )
+    monkeypatch.setattr(target, method, fail)
+    entry = MockConfigEntry(domain=DOMAIN, title=client.name, unique_id=TEST_ADDRESS, data={CONF_ADDRESS: TEST_ADDRESS})
+    entry.add_to_hass(hass)
+    with pytest.raises(failure):
+        await chihiros_integration.async_setup_entry(hass, entry)
+    assert not client._callbacks
+    assert not active_bluetooth
+    assert not active_timers
+    assert entry.entry_id not in hass.data.get(DOMAIN, {})
+    assert not hass.services.has_service(DOMAIN, "set_schedule")
+    assert not hass.services.has_service(DOMAIN, "set_dosing_schedule")

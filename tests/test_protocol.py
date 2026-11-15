@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime
 
+import pytest
+
 from chihiros_led_control.models import RGB_CHANNELS, WHITE_CHANNELS, WRGB_CHANNELS, LedProtocol, LedSpec
 from chihiros_led_control.protocol import dosing as dosing_commands
 from chihiros_led_control.protocol import led as commands
@@ -18,6 +20,8 @@ from chihiros_led_control.protocol.notifications import (
     SchedulePoint,
     ScheduleSnapshotNotification,
 )
+
+pytestmark = pytest.mark.unit
 
 SCHEDULE_SNAPSHOT_PREFIX = [
     0x5B,
@@ -210,13 +214,6 @@ def test_auto_point_command_sea_led_protocol_hour_boundary() -> None:
     command = commands.create_auto_point_command((0, 1), 1, 2880, 90, protocol=LedProtocol.SEA_LED)
 
     assert command[6:-1] == bytearray([1, 48, 0, 0x5A])
-
-
-def test_auto_point_command_sends_reserved_byte_verbatim() -> None:
-    """Level 90 (0x5A) is sent verbatim: the 2.8.59 app's formatData does not escape payload bytes."""
-    command = commands.create_auto_point_command((0, 1), 1, 10 * 60, 90, protocol=LedProtocol.SEA_LED)
-
-    assert command[6:-1] == bytearray([1, 10, 0, 0x5A])
 
 
 def test_auto_point_command_validates_range() -> None:

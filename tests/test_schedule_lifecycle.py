@@ -50,6 +50,7 @@ def _operations(frames: list[bytes]) -> list[tuple[int, int, bytes]]:
     return [(frame[0], frame[5], frame[6:-1]) for frame in frames if frame[5] not in (4, 9)]
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(("end", "encoded"), [(time(0, 0), b"\x17\x3b"), (time(18, 0), b"\x12\x00")])
 def test_scene_end_midnight_only(end: time, encoded: bytes) -> None:
     """Only total end minutes zero becomes 23:59; inactive slots remain FF."""
@@ -62,6 +63,7 @@ def test_scene_end_midnight_only(end: time, encoded: bytes) -> None:
     assert inactive[12:-1] == bytes([255] * 8)
 
 
+@pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize(
     "prefix",
@@ -94,6 +96,7 @@ def test_scene_initialization_and_unchanged_lite_reconnect(prefix: str) -> None:
     asyncio.run(run())
 
 
+@pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize("firmware", [19, 20, 27])
 def test_scene_firmware_gate_does_not_convert_custom_curves(firmware: int) -> None:
@@ -130,6 +133,7 @@ def test_scene_firmware_gate_does_not_convert_custom_curves(firmware: int) -> No
     asyncio.run(run())
 
 
+@pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
 def test_explicit_scene_capability_gate() -> None:
     """An explicit no-scene capability wins even on recent firmware."""
@@ -154,6 +158,7 @@ async def _leave_auto_mode(device: ChihirosDevice, authority: str) -> None:
         await device.set_brightness(50)
 
 
+@pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize("authority", ["unknown", "incremental", "manual", "brightness", "non_lite"])
 def test_reconnect_never_resets_without_authoritative_lite_auto_schedule(authority: str) -> None:
@@ -177,6 +182,7 @@ def test_reconnect_never_resets_without_authoritative_lite_auto_schedule(authori
     asyncio.run(run())
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "prefix",
     "DYZSD DYNA2N DYNA2 DYNC2N DYCXD DYECO MDTM DYDD DYCOM DYNCM DYFISHDL DYLITE DYZLPD DYZPRO".split(),
@@ -188,6 +194,7 @@ def test_no_weekday_selector_classification(prefix: str) -> None:
     assert supports_weekdays("unclassified-test")
 
 
+@pytest.mark.unit
 @pytest.mark.usefixtures("fast_transport")
 def test_no_weekday_selector_rejects_partial_week_before_writing() -> None:
     """The library does not silently advertise or encode unsupported weekday edits."""
@@ -202,6 +209,7 @@ def test_no_weekday_selector_rejects_partial_week_before_writing() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
 def test_failed_replacement_revokes_stale_replay_authority() -> None:
     """Retries and later reconnects cannot replay an obsolete library schedule."""
@@ -219,6 +227,7 @@ def test_failed_replacement_revokes_stale_replay_authority() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize(("name", "weekdays"), [("DYSSD-test", True), ("DYZSD-test", False)])
 def test_mixed_aliases_use_advertised_capability(name: str, weekdays: bool) -> None:
@@ -237,6 +246,7 @@ def test_mixed_aliases_use_advertised_capability(name: str, weekdays: bool) -> N
     asyncio.run(run())
 
 
+@pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
 def test_explicit_custom_controller_enable_and_reset_preserve_point_path() -> None:
     """A fresh client can select and clear the custom controller explicitly."""
@@ -251,3 +261,54 @@ def test_explicit_custom_controller_enable_and_reset_preserve_point_path() -> No
         ]
 
     asyncio.run(run())
+
+
+async def _mutate_settings(device: ChihirosDevice, mutation: str) -> None:
+    """Apply an incremental edit that relinquishes full replay authority."""
+    scene = _scene()
+    if mutation == "add":
+        await device.add_setting(scene.sunrise, scene.sunset, 50)
+    elif mutation == "remove":
+        await device.remove_setting(scene.sunrise, scene.sunset)
+    elif mutation == "reset":
+        await device.reset_settings()
+    else:
+        await device.set_auto_point(0, 480, 50)
+
+
+@pytest.mark.component
+@pytest.mark.usefixtures("fast_transport")
+@pytest.mark.parametrize("mutation", ["add", "remove", "reset", "point"])
+async def test_queued_incremental_edit_revokes_replacement_authority(
+    monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """Reconnect must not resurrect an owned schedule superseded by a queued edit."""
+    device, transport = _device()
+    entered, release, requested = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original = transport._write_frame
+
+    async def hold_replacement(client: object, characteristic: object, frame: bytes) -> None:
+        if (frame[0], frame[5]) == (165, 25) and not entered.is_set():
+            entered.set()
+            await release.wait()
+        await original(client, characteristic, frame)
+
+    async def mutate() -> None:
+        requested.set()
+        await _mutate_settings(device, mutation)
+
+    monkeypatch.setattr(transport, "_write_frame", hold_replacement)
+    replacing = asyncio.create_task(device.replace_settings([_scene()]))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        editing = asyncio.create_task(mutate())
+        await asyncio.wait_for(requested.wait(), timeout=5)
+        release.set()
+        await asyncio.gather(replacing, editing)
+        await device.disconnect()
+        before = len(transport.writes)
+        await device.query_status()
+        assert not _operations(transport.writes[before:])
+    finally:
+        release.set()
+        await device.disconnect()

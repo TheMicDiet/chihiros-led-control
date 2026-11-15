@@ -1,7 +1,72 @@
 # Testing Without Chihiros Hardware
 
-Two layers of test tooling let you exercise the integration and the protocol
-library without owning any Chihiros device.
+The automated suite follows a test pyramid: broad isolated unit coverage, fewer
+component scenarios, and focused Home Assistant integration journeys. Fake
+devices and scripted BLE make every automated layer hardware-independent.
+
+## Test pyramid
+
+Each test must have exactly one layer marker. Collection fails for missing or
+conflicting layers, including tests deselected with `-m`; unknown markers also
+fail collection.
+
+| Marker | Boundary | Coverage belongs here |
+| --- | --- | --- |
+| `unit` | One behavior; external collaborators replaced | Codec bytes, parsing, validation, model selection, RGB/RGBW arithmetic, isolated entity state and errors |
+| `component` | Several real local components; hardware/network replaced | Driver plus production scripted transport, CLI adapter, HA storage/dispatcher, service helper through vendored driver |
+| `integration` | Real HA config-entry/service/entity lifecycle | Service routing, entity registration, restoration/reload, setup/unload cleanup and cross-entity behavior |
+
+`homeassistant` is an independent dependency marker, not a test level. An
+isolated entity test can be both `unit` and `homeassistant`; a scripted
+transport test is `component`, not an end-to-end hardware test.
+
+HA-dependent modules must call `pytest.importorskip("homeassistant")` before
+importing HA-only dependencies, including `voluptuous`. Pytest imports modules
+before applying `-m`, so markers alone cannot protect the library-only job.
+Verify dependency isolation in a fresh environment containing only the `test`
+group; an existing `dev` environment can mask missing-dependency failures.
+
+Place each regression at the lowest boundary that can reproduce the observable
+failure. Keep validation and arithmetic matrices in unit tests. Use component
+tests for transport ordering, retries, cancellation and notification delivery.
+Keep integration cases when HA service dispatch, lifecycle or interactions
+between entities are essential to the failure. Do not duplicate a full
+lower-level matrix through config-entry setup, remove meaningful scenarios to
+meet a ratio, or add trivial tests to inflate the base.
+
+Before adding a scenario, compare its preconditions, action, observable result
+and failure mode with existing cases. Similar inputs or shared setup alone do
+not make two tests duplicates. When a stronger scenario subsumes another, keep
+the stronger one and transfer any unique assertions before removing the subset.
+Keep separate adapter/lifecycle tests only when they protect a distinct routing,
+state, persistence or cleanup contract.
+
+Prefer assertions about emitted bytes, applied state, persistence and
+user-visible errors over exact source/configuration snapshots. Validation tests
+should name the expected exception type; unrelated failures must not satisfy
+them. Preserve boundary values and race/cancellation orderings instead of
+repeating ordinary values from the same equivalence class.
+
+Run the fast library base without installing Home Assistant:
+
+```bash
+uv --cache-dir .uv-cache run --group test pytest -m "unit and not homeassistant"
+uv --cache-dir .uv-cache run --group test pytest -m "component and not homeassistant"
+```
+
+Run Home Assistant layers in increasing scope:
+
+```bash
+uv --cache-dir .uv-cache run --group ha-test pytest -m "unit and homeassistant"
+uv --cache-dir .uv-cache run --group ha-test pytest -m "component and homeassistant"
+uv --cache-dir .uv-cache run --group ha-test pytest -m "integration and homeassistant"
+```
+
+`uv --cache-dir .uv-cache run --group dev pytest` runs all automated layers.
+CI runs each layer explicitly, units before components before integration, and
+combines coverage within each dependency group without lowering its threshold.
+Physical BLE/app verification remains a small manual top layer; the automated
+suite cannot prove radio or firmware behavior.
 
 ## Home Assistant fake devices
 
@@ -67,7 +132,7 @@ asyncio.run(run())
 Rules match on command id, mode byte, and an optional parameter prefix
 (message id bytes and checksums are ignored). `respond` accepts frames or a
 callable; `fail=True` simulates a BLE write error (and exercises the client's
-retry/reconnect path). See `tests/test_scripted_transport.py` for end-to-end
+retry/reconnect path). See `tests/test_scripted_transport.py` for component
 examples covering query status, fan commands, dosing sequences, and retries.
 
 Successful transactions reuse the configured connection. Call
@@ -76,6 +141,28 @@ under test; retries and failed setup paths disconnect before reconnecting.
 
 The harness is excluded from the vendored HA package
 (`scripts/sync_vendor.py`), so it stays a library/test-only tool.
+
+## Pump replay and partial-write checks
+
+Run `uv --cache-dir .uv-cache run --no-sync python scripts/verify_manual_dose.py`
+after syncing dependencies. It explores ambiguous BLE writes for manual doses,
+timed calibration, and both run frames sent through the raw slave broadcast
+path. The bounds cover 729 manual-dose sequences and nine sequences for each
+single-frame operation, totaling 756 scenarios. It checks one channel and one
+value per operation, not physical pump behavior or slave firmware deduplication.
+
+The state-machine regression tests additionally exercise cancellation cleanup,
+concurrent schedule edits and paired settings, delayed midnight callbacks,
+storage failures after hardware success, and deferred startup restoration.
+
+`program_channel` is a separate, non-atomic batch. In a scripted run with an
+active setting, daily volume, and one schedule point, failures before every
+daily-volume write accepted only the active-setting frames. Failures after
+every schedule write accepted all three frames three times before reporting an
+error. A retry after an initial daily-volume failure sent the complete batch.
+These traces establish what the driver writes, not how firmware applies
+repeated schedule frames or whether a successful retry converges device state.
+Do not assume a failed programming call left the previous schedule intact.
 
 ## When you need real BLE behavior
 

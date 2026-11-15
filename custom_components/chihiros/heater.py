@@ -7,6 +7,7 @@ optimistic and restored without re-sending commands.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 
 from homeassistant.components.bluetooth.passive_update_coordinator import (
@@ -106,7 +107,7 @@ class ChihirosHeaterNumber(ChihirosHeaterEntity, NumberEntity, RestoreEntity):
         """Initialize the heater number."""
         super().__init__(coordinator, device, unique_id_suffix, name_suffix)
         self._restored_value: float | None = None
-        self._pending_value: float | None = None
+        self._write_lock = asyncio.Lock()
 
     async def async_added_to_hass(self) -> None:
         """Restore the last value written through Home Assistant, without re-sending it."""
@@ -125,9 +126,7 @@ class ChihirosHeaterNumber(ChihirosHeaterEntity, NumberEntity, RestoreEntity):
 
     @property
     def native_value(self) -> float | None:
-        """Return the value written through Home Assistant or the device state."""
-        if self._pending_value is not None:
-            return self._pending_value
+        """Return the last successful write or the device state."""
         return self._fallback_value()
 
     def _fallback_value(self) -> float | None:
@@ -137,30 +136,15 @@ class ChihirosHeaterNumber(ChihirosHeaterEntity, NumberEntity, RestoreEntity):
     def _restore_client_value(self, value: float) -> None:
         """Restore a paired client value without writing to the device."""
 
-    def _handle_coordinator_update(self) -> None:
-        """Clear a pending value when this coordinator update supersedes it."""
-        if self._clear_pending_on_coordinator_update():
-            self._pending_value = None
-        super()._handle_coordinator_update()
-
-    def _clear_pending_on_coordinator_update(self) -> bool:
-        """Return whether a coordinator update supersedes the pending value."""
-        return True
-
     async def async_set_native_value(self, value: float) -> None:
-        """Write the value to the device."""
-        previous_pending_value = self._pending_value
-        self._pending_value = value
-        try:
-            await self._async_write_value(value)
-        except Exception as ex:
-            if self._pending_value == value:
-                self._pending_value = previous_pending_value
-            raise HomeAssistantError(f"Failed to set {self._attr_name}") from ex
-        # A real power notification may already have cleared the pending value
-        # while the BLE write was in progress; do not re-assert it here.
-        self._restored_value = value
-        self.async_write_ha_state()
+        """Serialize writes and commit locally only after successful completion."""
+        async with self._write_lock:
+            try:
+                await self._async_write_value(value)
+            except Exception as ex:
+                raise HomeAssistantError(f"Failed to set {self._attr_name}") from ex
+            self._restored_value = value
+            self.async_write_ha_state()
 
     async def _async_write_value(self, value: float) -> None:
         """Send one value to the device."""
@@ -186,10 +170,6 @@ class ChihirosHeaterTemperatureNumber(ChihirosHeaterNumber):
     def _restore_client_value(self, value: float) -> None:
         """Restore the shared target temperature for future paired writes."""
         self._client.restore_setting_temperature(value)
-
-    def _clear_pending_on_coordinator_update(self) -> bool:
-        """Keep the write-only target across measurement notifications."""
-        return False
 
     async def _async_write_value(self, value: float) -> None:
         """Set the target temperature (the client switches to manual mode)."""
@@ -221,7 +201,6 @@ class ChihirosHeaterPowerNumber(ChihirosHeaterNumber):
     async def _async_write_value(self, value: float) -> None:
         """Set the manual power (the client switches to manual mode)."""
         await self._client.set_power(int(value))
-        self._pending_value = None
         self.coordinator.async_set_heater_mode(HEATER_MODE_MANUAL)
 
 

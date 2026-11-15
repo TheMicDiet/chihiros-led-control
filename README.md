@@ -532,19 +532,19 @@ uv --cache-dir .uv-cache run --group dev pytest
 uv --cache-dir .uv-cache run --group dev pre-commit run --all-files
 ```
 
-Home Assistant integration tests use the separate `ha-test` dependency group
-because they install Home Assistant and its test-time runtime dependencies. Run
+Home Assistant tests at every pyramid level use the `ha-test` dependency group
+because they import Home Assistant and its test-time runtime dependencies. Run
 them explicitly when changing files under `custom_components/chihiros/`:
 
 ```bash
-uv --cache-dir .uv-cache run --group ha-test pytest tests/test_home_assistant_integration.py tests/test_manifest_requirements.py
+uv --cache-dir .uv-cache run --group ha-test pytest -m homeassistant
 ```
 
-The integration test creates a temporary Home Assistant config directory,
-symlinks this repository's `custom_components/` directory into it, and patches
-storage writes so the test does not need a running Home Assistant instance or
-real Bluetooth hardware. The manifest requirements test keeps the integration's
-runtime requirement pins aligned with `pyproject.toml`.
+Unit tests exercise isolated behavior; component tests connect real local
+layers with hardware boundaries replaced; integration tests load config entries
+and exercise HA services and entity lifecycle. Start with the lowest layer that
+can reproduce a failure. See the [test pyramid strategy](docs/testing-without-hardware.md#test-pyramid)
+for layer-specific commands and rules for placing new tests.
 
 After changing library code, refresh the vendored copy:
 

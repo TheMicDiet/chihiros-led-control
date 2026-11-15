@@ -83,6 +83,7 @@ def _patch_device(monkeypatch: pytest.MonkeyPatch) -> TrackingCliDevice:
     return device
 
 
+@pytest.mark.component
 def test_list_devices_cli_prints_detected_models(monkeypatch: pytest.MonkeyPatch) -> None:
     """The list-devices command prints discovered devices and detected model names."""
 
@@ -101,6 +102,7 @@ def test_list_devices_cli_prints_detected_models(monkeypatch: pytest.MonkeyPatch
     assert "???" in result.output
 
 
+@pytest.mark.component
 def test_turn_on_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> None:
     """The turn-on command calls the device turn_on API."""
     device = _patch_device(monkeypatch)
@@ -112,6 +114,7 @@ def test_turn_on_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> None:
     assert device.disconnects == 1
 
 
+@pytest.mark.unit
 def test_cli_disconnects_device_when_command_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     """CLI cleanup runs when a device command raises."""
     device = _patch_device(monkeypatch)
@@ -125,6 +128,7 @@ def test_cli_disconnects_device_when_command_fails(monkeypatch: pytest.MonkeyPat
     assert device.disconnects == 1
 
 
+@pytest.mark.component
 def test_light_cli_rejects_non_led_device(monkeypatch: pytest.MonkeyPatch) -> None:
     """Top-level light commands fail clearly for non-LED devices."""
     device = ChihirosDosingPump(FakeBLEDevice(address=TEST_ADDRESS), DOSING_PUMP)  # type: ignore[arg-type]
@@ -141,6 +145,7 @@ def test_light_cli_rejects_non_led_device(monkeypatch: pytest.MonkeyPatch) -> No
     assert "not a light" in result.output
 
 
+@pytest.mark.component
 def test_turn_off_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> None:
     """The turn-off command calls the device turn_off API."""
     device = _patch_device(monkeypatch)
@@ -151,6 +156,7 @@ def test_turn_off_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> None:
     assert device.calls == [("turn_off", (), {})]
 
 
+@pytest.mark.component
 def test_set_brightness_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> None:
     """The set-brightness command passes all brightness values to the device."""
     device = _patch_device(monkeypatch)
@@ -161,6 +167,7 @@ def test_set_brightness_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> No
     assert device.calls == [("set_brightness", ([60, 80, 100],), {})]
 
 
+@pytest.mark.component
 def test_add_setting_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> None:
     """The add-setting command parses schedule options and calls the device API."""
     device = _patch_device(monkeypatch)
@@ -198,6 +205,7 @@ def test_add_setting_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
 
 
+@pytest.mark.component
 def test_remove_setting_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> None:
     """The remove-setting command parses schedule options and calls the device API."""
     device = _patch_device(monkeypatch)
@@ -231,6 +239,7 @@ def test_remove_setting_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> No
     ]
 
 
+@pytest.mark.component
 def test_reset_settings_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> None:
     """The reset-settings command calls the device reset_settings API."""
     device = _patch_device(monkeypatch)
@@ -241,6 +250,7 @@ def test_reset_settings_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> No
     assert device.calls == [("reset_settings", (), {})]
 
 
+@pytest.mark.component
 def test_enable_auto_mode_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> None:
     """The enable-auto-mode command calls the device enable_auto_mode API."""
     device = _patch_device(monkeypatch)
@@ -251,6 +261,7 @@ def test_enable_auto_mode_cli_drives_device(monkeypatch: pytest.MonkeyPatch) -> 
     assert device.calls == [("enable_auto_mode", (), {})]
 
 
+@pytest.mark.component
 def test_dose_cli_triggers_dosing_pump(monkeypatch: pytest.MonkeyPatch) -> None:
     """The dose command resolves a pump and converts user channel numbers to zero-based indexes."""
     calls: list[tuple[int, float]] = []
@@ -273,6 +284,7 @@ def test_dose_cli_triggers_dosing_pump(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [(1, 2.5)]
 
 
+@pytest.mark.component
 def test_dose_cli_rejects_non_dosing_device(monkeypatch: pytest.MonkeyPatch) -> None:
     """The dose command fails clearly for light devices."""
 

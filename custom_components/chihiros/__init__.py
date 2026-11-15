@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import AsyncExitStack
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -41,48 +43,64 @@ PLATFORMS: list[Platform] = [
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Chihiros from a config entry."""
+    """Set up Chihiros, releasing every acquired resource if setup fails."""
     runtime = await resolve_chihiros_runtime(hass, entry)
-    coordinator = ChihirosDataUpdateCoordinator(
-        hass,
-        runtime.client,
-        runtime.address,
-        always_available=runtime.always_available,
-    )
-    coordinator.async_start_bluetooth()
-
-    if is_device_kind(runtime.client, DeviceKind.MAG_STIRRER):
-        stirrer_states = [StirrerChannelState() for _ in range(entry_stirrer_channel_count(entry))]
-        programming = DosingProgrammingTracker(hass, runtime.address)
-        await programming.async_load()
-        data: ChihirosData = StirrerChihirosData(entry.title, runtime.client, coordinator, stirrer_states, programming)
-    elif is_device_kind(runtime.client, DeviceKind.DOSING_PUMP):
-        totals = DosingDailyTotals(hass, runtime.address, entry_pump_count(entry))
-        await totals.async_load()
-        programming = DosingProgrammingTracker(hass, runtime.address)
-        await programming.async_load()
-        calibration = DosingCalibrationTracker(hass, runtime.address)
-        await calibration.async_load()
-        data = DosingChihirosData(
-            entry.title,
+    async with AsyncExitStack() as cleanup:
+        cleanup.push_async_callback(runtime.client.disconnect)
+        coordinator = ChihirosDataUpdateCoordinator(
+            hass,
             runtime.client,
-            coordinator,
-            totals,
-            [1.0] * totals.pump_count,
-            programming,
-            calibration,
+            runtime.address,
+            always_available=runtime.always_available,
         )
-    else:
-        data = ChihirosData(entry.title, runtime.client, coordinator)
-
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = data
-    _async_update_services(hass)
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    if isinstance(data, DosingChihirosData):
-        coordinator.async_start_dosing_refresh()
-    if isinstance(data, StirrerChihirosData) and entry.data.get(CONF_MASTER_ADDRESS):
-        set_stirrer_pre_run_entities_enabled(hass, runtime.address, len(data.stirrer_states), enabled=True)
+        cleanup.callback(coordinator.async_close)
+        coordinator.async_start_bluetooth()
+        data = await _async_create_entry_data(hass, entry, coordinator, cleanup)
+        hass.data.setdefault(DOMAIN, {})[entry.entry_id] = data
+        cleanup.callback(_async_remove_entry_data, hass, entry.entry_id)
+        _async_update_services(hass)
+        cleanup.push_async_callback(hass.config_entries.async_unload_platforms, entry, PLATFORMS)
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        if isinstance(data, DosingChihirosData):
+            coordinator.async_start_dosing_refresh()
+        if isinstance(data, StirrerChihirosData) and entry.data.get(CONF_MASTER_ADDRESS):
+            set_stirrer_pre_run_entities_enabled(hass, runtime.address, len(data.stirrer_states), enabled=True)
+        cleanup.pop_all()
     return True
+
+
+async def _async_create_entry_data(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    coordinator: ChihirosDataUpdateCoordinator,
+    cleanup: AsyncExitStack,
+) -> ChihirosData:
+    """Load family records while registering cleanup before their first await."""
+    client = coordinator.api
+    address = coordinator.address
+    if is_device_kind(client, DeviceKind.MAG_STIRRER):
+        states = [StirrerChannelState() for _ in range(entry_stirrer_channel_count(entry))]
+        programming = DosingProgrammingTracker(hass, address)
+        await programming.async_load()
+        return StirrerChihirosData(entry.title, client, coordinator, states, programming)
+    if is_device_kind(client, DeviceKind.DOSING_PUMP):
+        totals = DosingDailyTotals(hass, address, entry_pump_count(entry))
+        cleanup.callback(totals.async_close)
+        await totals.async_load()
+        programming = DosingProgrammingTracker(hass, address)
+        await programming.async_load()
+        calibration = DosingCalibrationTracker(hass, address)
+        await calibration.async_load()
+        return DosingChihirosData(
+            entry.title, client, coordinator, totals, [1.0] * totals.pump_count, programming, calibration
+        )
+    return ChihirosData(entry.title, client, coordinator)
+
+
+def _async_remove_entry_data(hass: HomeAssistant, entry_id: str) -> None:
+    """Withdraw failed setup state and its capability-dependent services."""
+    hass.data.get(DOMAIN, {}).pop(entry_id, None)
+    _async_update_services(hass)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -92,8 +110,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         chihiros_data.coordinator.async_close()
         if isinstance(chihiros_data, DosingChihirosData):
             chihiros_data.dosing_totals.async_close()
-        await chihiros_data.device.disconnect()
         _async_update_services(hass)
+        await chihiros_data.device.disconnect()
     return unload_ok
 
 

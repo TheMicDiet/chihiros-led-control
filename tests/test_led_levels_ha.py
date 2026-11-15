@@ -17,7 +17,7 @@ from custom_components.chihiros.vendor.chihiros_led_control.devices import Chihi
 from custom_components.chihiros.vendor.chihiros_led_control.devices import base as device_base
 from custom_components.chihiros.vendor.chihiros_led_control.registry import detect_model
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.component, pytest.mark.homeassistant]
 
 
 def _device_data(
