@@ -873,6 +873,62 @@ async def test_fan_temperature_restore_survives_entity_rename(
         assert hass.states.get(stop_id).state == "36.0"
 
 
+@pytest.mark.parametrize("inflight", [False, True], ids=["queued", "inflight"])
+async def test_fan_auto_restore_survives_entity_rename(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, inflight: bool
+) -> None:
+    """Re-adding the same fan resumes Auto restoration cancelled by its rename."""
+    entry, client, _coordinator = await _setup(hass, monkeypatch)
+    fan_id = _entity_id(er.async_get(hass))
+    deferred = _DeferredRestore(hass, monkeypatch, "_restore_auto_mode")
+    gate = _RestoreWriteGate()
+    readded = asyncio.Event()
+    original_auto = client.set_fan_auto
+
+    async def hold_auto() -> None:
+        """Hold the device write until the renamed fan is active again."""
+        await gate()
+        await original_auto()
+
+    def prime() -> None:
+        """Store Auto mode for a runtime whose client is still in Manual."""
+        _prime_restore_state(hass, fan_id, State(fan_id, STATE_ON, {"percentage": 40, "preset_mode": "Auto"}))
+
+    monkeypatch.setattr(client, "set_fan_auto", hold_auto)
+    try:
+        await _reload_entry(hass, entry, prime)
+        await deferred.created.wait()
+        fan = _entity(hass, FAN_DOMAIN, "fan")
+        original_added = fan.async_added_to_hass
+
+        async def added() -> None:
+            """Observe HA finishing the same-instance rename lifecycle."""
+            await original_added()
+            readded.set()
+
+        monkeypatch.setattr(fan, "async_added_to_hass", added)
+        if inflight:
+            deferred.release.set()
+            await gate.entered.wait()
+
+        renamed_id = "fan.renamed_chihiros_fan"
+        er.async_get(hass).async_update_entity(fan_id, new_entity_id=renamed_id)
+        await asyncio.wait_for(readded.wait(), timeout=5)
+        assert entry.state is ConfigEntryState.LOADED
+        assert hass.data[FAN_DOMAIN].get_entity(renamed_id) is fan
+        assert deferred.tasks[0].cancelled()
+        assert len(deferred.tasks) == 2
+    finally:
+        gate.release.set()
+        await deferred.finish()
+
+    assert client.fan_auto_calls == 1
+    assert client.fan_auto is True
+    assert fan.preset_mode == "Auto"
+    assert hass.states.get(renamed_id).state == STATE_ON
+    assert hass.states.get(renamed_id).attributes["preset_mode"] == "Auto"
+
+
 @pytest.mark.parametrize("percentage", [0, 60], ids=["off", "manual"])
 async def test_deferred_fan_auto_restore_respects_explicit_command(
     hass: HomeAssistant,

@@ -84,6 +84,7 @@ class ChihirosFanEntity(
     async def async_added_to_hass(self) -> None:
         """Handle entity about to be added to hass event."""
         await super().async_added_to_hass()
+        self._removed = False
         if last_state := await self.async_get_last_state():
             self._restore_attributes(last_state)
         if self._attr_preset_mode == "Auto":

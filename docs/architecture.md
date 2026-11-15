@@ -109,7 +109,9 @@ ownership changes at that admission boundary, never while waiting in the queue.
   commands supersede queued restoration. The shared restore remains active while
   either temperature number is present; removing the last number cancels and
   awaits it. Renaming the sole enabled number resumes an unfinished snapshot on
-  re-addition. The fan also persists its last nonzero manual speed while off.
+  re-addition. The fan's Auto restore also resumes after an entity-ID rename,
+  without resetting command revisions; unloading still cancels pending restores.
+  The fan also persists its last nonzero manual speed while off.
 - Pump and stirrer programming derive first-of-day flags while holding the
   channel lock through programming, recording, and mirroring. Only an actual
   daily-volume setting consumes the stamp. Once a pump write succeeds, a local
