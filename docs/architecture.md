@@ -85,10 +85,16 @@ The BLE protocol exposes reset and add operations but no atomic replacement or
 reliable read-back suitable for rollback. `set_schedule` validates the complete
 replacement before resetting the device. The driver holds its schedule lock
 through programming and best-effort cleanup, including cancellation, so a
-failed replacement cannot later clear a newer writer's schedule. It attempts
-another reset after failure rather than leaving a partial schedule, then
-Home Assistant reports that the old schedule cannot be restored. If cleanup
-also fails, the error is logged because the hardware contents remain uncertain.
+failed replacement cannot later clear a newer writer's schedule. Cancellation
+while queued for the transport leaves the previous schedule and replay authority
+intact. Once admitted, a failed replacement attempts another reset rather than
+leaving a partial schedule; Home Assistant reports that the old schedule cannot
+be restored. If cleanup also fails, the error is logged because the hardware
+contents remain uncertain.
+
+`ChihirosTransport.send` invokes its optional `on_started` callback only after
+acquiring the operation lock and before connection setup or its prelude. Schedule
+ownership changes at that admission boundary, never while waiting in the queue.
 
 ## State ownership and recovery
 
@@ -100,8 +106,10 @@ also fails, the error is logged because the hardware contents remain uncertain.
   or cancelled BLE batch can still have partially changed physical state.
 - Fan temperature controls share one locked start/stop pair. Startup restoration
   snapshots the saved pair once, including a disabled partner, and later user
-  commands supersede queued restoration. Entity removal cancels restoration
-  tasks. The fan also persists its last nonzero manual speed while off.
+  commands supersede queued restoration. The shared restore remains active while
+  either temperature number is present; removing the last number cancels and
+  awaits it. Renaming the sole enabled number resumes an unfinished snapshot on
+  re-addition. The fan also persists its last nonzero manual speed while off.
 - Pump and stirrer programming derive first-of-day flags while holding the
   channel lock through programming, recording, and mirroring. Only an actual
   daily-volume setting consumes the stamp. Once a pump write succeeds, a local

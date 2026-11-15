@@ -108,9 +108,10 @@ class ChihirosDevice(BaseChihirosDevice):
             raise ValueError(f"Model does not support weekday selection: {self.model.name}")
         return encoded
 
-    def _schedule_setup(self) -> list[bytes]:
+    def _schedule_setup(self, controller_mode: LedControllerMode | None = None) -> list[bytes]:
         """Build the reset/mode pair for the explicitly selected controller."""
-        if self._controller_mode is LedControllerMode.SCENE:
+        mode = self._controller_mode if controller_mode is None else controller_mode
+        if mode is LedControllerMode.SCENE:
             reset = commands.create_reset_scene_settings_command
             switch = commands.create_switch_to_scene_mode_command
         else:
@@ -134,21 +135,37 @@ class ChihirosDevice(BaseChihirosDevice):
         except Exception:
             self._logger.exception("%s: Failed to clear a partial schedule replacement", self.name)
 
-    async def _send_schedule_replacement(self, frames: list[bytes | bytearray]) -> None:
-        """Retain schedule ownership until replacement or cancellation cleanup finishes."""
+    async def _finish_schedule_cleanup(self, failure: BaseException) -> None:
+        """Complete failed-replacement cleanup before propagating cancellation."""
+        cleanup = asyncio.create_task(self._clear_failed_schedule())
+        cancelled = isinstance(failure, asyncio.CancelledError)
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError from failure
+
+    async def _send_schedule_replacement(
+        self, frames: list[bytes | bytearray], controller_mode: LedControllerMode
+    ) -> None:
+        """Retain previous authority until admitted, then own any failure cleanup."""
+        started = False
+
+        def on_started() -> None:
+            nonlocal started
+            started = True
+            self._owned_schedule = None
+            self._controller_mode = controller_mode
+
         try:
-            await self._send_command(frames, 3)
+            await self._send_command(frames, 3, on_started=on_started)
         except (Exception, asyncio.CancelledError) as ex:
-            cleanup = asyncio.create_task(self._clear_failed_schedule())
-            cancelled = isinstance(ex, asyncio.CancelledError)
-            while not cleanup.done():
-                try:
-                    await asyncio.shield(cleanup)
-                except asyncio.CancelledError:
-                    cancelled = True
-            cleanup.result()
-            if cancelled:
-                raise asyncio.CancelledError from ex
+            if not started:
+                raise
+            await self._finish_schedule_cleanup(ex)
             raise
 
     def _replay_schedule(self) -> list[bytes]:
@@ -447,10 +464,12 @@ class ChihirosDevice(BaseChihirosDevice):
             for setting in settings
         ]
         async with self._schedule_lock:
-            self._owned_schedule = None
-            self._controller_mode = LedControllerMode.SCENE
-            batch = [commands.create_set_time_command(self.get_next_msg_id()), *self._schedule_setup(), *entries]
-            await self._send_schedule_replacement(batch)
+            batch = [
+                commands.create_set_time_command(self.get_next_msg_id()),
+                *self._schedule_setup(LedControllerMode.SCENE),
+                *entries,
+            ]
+            await self._send_schedule_replacement(batch, LedControllerMode.SCENE)
             self._owned_schedule = tuple(bytes(entry[6:-1]) for entry in entries)
             self._auto_mode = True
 
@@ -524,10 +543,8 @@ class ChihirosDevice(BaseChihirosDevice):
             for channel, minutes, level in points
         ]
         async with self._schedule_lock:
-            self._owned_schedule = None
-            self._controller_mode = LedControllerMode.CUSTOM_CURVE
-            commands_to_send = [*self._schedule_setup(), *commands_to_send]
-            await self._send_schedule_replacement(commands_to_send)
+            commands_to_send = [*self._schedule_setup(LedControllerMode.CUSTOM_CURVE), *commands_to_send]
+            await self._send_schedule_replacement(commands_to_send, LedControllerMode.CUSTOM_CURVE)
             self._owned_schedule = tuple(bytes(frame[6:-1]) for frame in commands_to_send[2:])
             self._auto_mode = True
 

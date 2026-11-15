@@ -563,8 +563,15 @@ def test_set_auto_curve_sends_all_points_in_one_transaction() -> None:
             DeviceModel("Commander 4", ("DYNLED",), LedSpec(WRGB_CHANNELS, protocol=LedProtocol.SEA_LED)),  # type: ignore[arg-type]
         )
 
-        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+        async def capture_command(
+            command: list[bytes] | bytes | bytearray,
+            retry: int | None = None,
+            *,
+            on_started: Callable[[], None] | None = None,
+        ) -> None:
             del retry
+            if on_started is not None:
+                on_started()
             sent_batches.append(list(command) if isinstance(command, list) else [bytes(command)])
 
         device._send_command = capture_command  # type: ignore[method-assign]

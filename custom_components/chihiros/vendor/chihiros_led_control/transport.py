@@ -46,8 +46,14 @@ class ChihirosTransport(Protocol):
         *,
         attempts: int,
         notification_wait: float,
+        on_started: Callable[[], None] | None = None,
     ) -> None:
-        """Send an already encoded frame batch."""
+        """Send a batch, calling on_started once the operation lock is acquired.
+
+        The synchronous callback precedes connection/prelude I/O, not just the
+        first batch write. Cancellation before it leaves the operation unstarted;
+        afterward, callers must assume the transaction may have mutated the device.
+        """
 
     async def disconnect(self) -> None:
         """Disconnect the current transport session."""
@@ -151,8 +157,15 @@ class BleTransport:
         self.ble_device = ble_device
         self.advertisement_data = advertisement_data
 
-    async def send(self, frames: Sequence[bytes], *, attempts: int, notification_wait: float) -> None:
-        """Connect lazily, run the prelude once per connection, and write a batch."""
+    async def send(
+        self,
+        frames: Sequence[bytes],
+        *,
+        attempts: int,
+        notification_wait: float,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
+        """Admit a batch, connect lazily, run the prelude, and write the frames."""
         if attempts < 1:
             raise ValueError("attempts must be at least 1")
         commands_to_send = [bytes(frame) for frame in frames]
@@ -161,6 +174,8 @@ class BleTransport:
         if self._operation_lock.locked():
             self._logger.debug("%s: Operation already in progress, waiting; RSSI: %s", self.name, self.rssi)
         async with self._operation_lock:
+            if on_started is not None:
+                on_started()
             await self._send_attempts(commands_to_send, attempts, notification_wait)
 
     async def _send_attempts(self, frames: Sequence[bytes], attempts: int, notification_wait: float) -> None:

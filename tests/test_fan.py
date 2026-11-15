@@ -781,6 +781,98 @@ async def test_enabled_fan_start_restores_with_disabled_stop(
     assert _entity(hass, "number", "fan_start_temp").native_value == 45
 
 
+class _RestoreWriteGate:
+    """Block a restore write and expose cancellation to lifecycle assertions."""
+
+    def __init__(self) -> None:
+        """Initialize explicit write-entry, release and cancellation signals."""
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def __call__(self) -> None:
+        """Wait for release while recording cancellation of the pending write."""
+        self.entered.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+
+def _prime_fan_temperature_restore(hass: HomeAssistant, start_id: str, stop_id: str, partner_enabled: bool) -> None:
+    """Store both thresholds, optionally disabling the stop number."""
+    if not partner_enabled:
+        er.async_get(hass).async_update_entity(stop_id, disabled_by=er.RegistryEntryDisabler.USER)
+    _prime_restore_state(hass, start_id, State(start_id, "45.0"))
+    _prime_restore_state(hass, stop_id, State(stop_id, "36.0"))
+
+
+@pytest.mark.parametrize("partner_enabled", [True, False], ids=["both-enabled", "start-only"])
+@pytest.mark.parametrize("inflight", [False, True], ids=["queued", "inflight"])
+async def test_fan_temperature_restore_survives_entity_rename(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    partner_enabled: bool,
+    inflight: bool,
+) -> None:
+    """A registry rename preserves the shared snapshot, including a disabled sibling."""
+    entry, client, _coordinator = await _setup(hass, monkeypatch)
+    start_id = _entity(hass, "number", "fan_start_temp").entity_id
+    stop_id = _entity(hass, "number", "fan_stop_temp").entity_id
+    deferred = _DeferredRestore(hass, monkeypatch, "_restore_temperatures")
+    gate = _RestoreWriteGate()
+    readded = asyncio.Event()
+
+    try:
+        await _reload_entry(
+            hass, entry, lambda: _prime_fan_temperature_restore(hass, start_id, stop_id, partner_enabled)
+        )
+        await deferred.created.wait()
+        start = _entity(hass, "number", "fan_start_temp")
+        original_added = start.async_added_to_hass
+
+        async def added() -> None:
+            """Observe completion of HA's real same-instance remove/add lifecycle."""
+            await original_added()
+            readded.set()
+
+        monkeypatch.setattr(start, "async_added_to_hass", added)
+        if inflight:
+            client.before_fan_temp = gate
+            deferred.release.set()
+            await gate.entered.wait()
+
+        # A rename must reuse the original snapshot, not consult a changed restore store.
+        _prime_restore_state(hass, stop_id, State(stop_id, "30.0"))
+        renamed_id = "number.renamed_fan_start_temperature"
+        er.async_get(hass).async_update_entity(start_id, new_entity_id=renamed_id)
+        await readded.wait()
+        await _flush()
+
+        assert entry.state is ConfigEntryState.LOADED
+        assert hass.data["number"].get_entity(renamed_id) is start
+        assert start.native_value == 45
+        if partner_enabled:
+            assert not deferred.tasks[0].done()
+            assert len(deferred.tasks) == 1
+            assert _entity(hass, "number", "fan_stop_temp").native_value == 36
+        else:
+            assert deferred.tasks[0].cancelled()
+            assert len(deferred.tasks) == 2
+            assert not deferred.tasks[1].done()
+            assert hass.data["number"].get_entity(stop_id) is None
+    finally:
+        gate.release.set()
+        await deferred.finish()
+
+    assert client.fan_temp_calls == [(45, 36)]
+    assert (client.fan_start_temp, client.fan_stop_temp) == (45, 36)
+    assert hass.states.get(renamed_id).state == "45.0"
+    if partner_enabled:
+        assert hass.states.get(stop_id).state == "36.0"
+
+
 @pytest.mark.parametrize("percentage", [0, 60], ids=["off", "manual"])
 async def test_deferred_fan_auto_restore_respects_explicit_command(
     hass: HomeAssistant,
@@ -861,6 +953,12 @@ async def test_unload_cancels_deferred_fan_restoration(
     try:
         await _reload_entry(hass, entry, prime)
         await deferred.created.wait()
+
+        async def disconnect() -> None:
+            """Require the platform to cancel queued work before disconnecting."""
+            assert all(task.cancelled() for task in deferred.tasks)
+
+        monkeypatch.setattr(client, "disconnect", disconnect)
         old_writes = (client.fan_auto_calls, tuple(client.fan_temp_calls))
         expected_temperatures = (
             (45, 33) if method == "_restore_temperatures" else (client.fan_start_temp, client.fan_stop_temp)
@@ -889,18 +987,13 @@ async def test_unload_cancels_inflight_fan_restoration(
     entry, client, _coordinator = await _setup(hass, monkeypatch)
     fan_id = _entity_id(er.async_get(hass))
     start_id = _entity(hass, "number", "fan_start_temp").entity_id
-    entered, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    gate = _RestoreWriteGate()
     original = getattr(client, method)
 
     async def hold_write(*args: int) -> None:
         """Keep the restore in flight until removal cancels its transport await."""
-        entered.set()
-        try:
-            await release.wait()
-            await original(*args)
-        except asyncio.CancelledError:
-            cancelled.set()
-            raise
+        await gate()
+        await original(*args)
 
     def prime() -> None:
         """Store only the configuration whose transport operation is held."""
@@ -911,13 +1004,19 @@ async def test_unload_cancels_inflight_fan_restoration(
 
     monkeypatch.setattr(client, method, hold_write)
     await _reload_entry(hass, entry, prime)
-    await entered.wait()
+    await gate.entered.wait()
     old_writes = (client.fan_auto_calls, tuple(client.fan_temp_calls))
+
+    async def disconnect() -> None:
+        """Require transport cancellation to finish before disconnecting."""
+        assert gate.cancelled.is_set()
+
+    monkeypatch.setattr(client, "disconnect", disconnect)
     try:
         await hass.config_entries.async_unload(entry.entry_id)
-        assert cancelled.is_set()
+        assert gate.cancelled.is_set()
     finally:
-        release.set()
+        gate.release.set()
         await _flush()
     assert (client.fan_auto_calls, tuple(client.fan_temp_calls)) == old_writes
 

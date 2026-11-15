@@ -156,9 +156,24 @@ class FanTemperaturePair:
         self.lock = asyncio.Lock()
         self.revision = 0
         self.initialized = False
-        self.removed = False
+        self.active_entities: set[ChihirosFanTempNumberBase] = set()
         self.restored: tuple[int, int] | None = None
         self.restore_task: asyncio.Task[None] | None = None
+
+    async def _restore_temperatures(self, hass: HomeAssistant, device: LedChihirosClient, revision: int) -> None:
+        """Apply the shared snapshot without depending on any one entity's lifetime."""
+        async with self.lock:
+            if not self.active_entities or revision != self.revision:
+                return
+            if self.restored is None:
+                return
+            try:
+                await device.set_fan_start_stop_temp(*self.restored)
+            except Exception:
+                _LOGGER.debug("Failed to restore fan temperature for %s", device.address, exc_info=True)
+                return
+            self.restored = None
+            async_dispatcher_send(hass, _fan_temp_signal(device.address))
 
 
 class ChihirosFanTempNumberBase(NumberEntity, RestoreEntity):
@@ -182,21 +197,28 @@ class ChihirosFanTempNumberBase(NumberEntity, RestoreEntity):
     async def async_added_to_hass(self) -> None:
         """Snapshot the stored pair once and defer its device write."""
         await super().async_added_to_hass()
+        self._pair.active_entities.add(self)
         last_state = await self.async_get_last_state()
         if not self._pair.initialized and self._pair.revision == 0:
             self._pair.initialized = True
             value = self._stored_value(last_state.state) if last_state is not None else None
             self._pair.restored = self._restored_temperature_pair(value, self._partner_restored_value())
-            if self._pair.restored is not None:
-                self._pair.restore_task = self.hass.async_create_task(self._restore_temperatures(self._pair.revision))
+        if (
+            self._pair.restored is not None
+            and self._pair.revision == 0
+            and (self._pair.restore_task is None or self._pair.restore_task.done())
+        ):
+            self._pair.restore_task = self.hass.async_create_task(
+                self._pair._restore_temperatures(self.hass, self._device, self._pair.revision)
+            )
         self.async_on_remove(
             async_dispatcher_connect(self.hass, _fan_temp_signal(self._device.address), self._async_temp_updated)
         )
 
     async def async_will_remove_from_hass(self) -> None:
-        """Cancel deferred writes before the old runtime is removed."""
-        self._pair.removed = True
-        if self._pair.restore_task is not None:
+        """Cancel shared restoration only after the last active number leaves."""
+        self._pair.active_entities.discard(self)
+        if not self._pair.active_entities and self._pair.restore_task is not None:
             self._pair.restore_task.cancel()
             await asyncio.gather(self._pair.restore_task, return_exceptions=True)
         await super().async_will_remove_from_hass()
@@ -249,21 +271,6 @@ class ChihirosFanTempNumberBase(NumberEntity, RestoreEntity):
         if stored_state is None:
             return None
         return self._stored_value(stored_state.state.state)
-
-    async def _restore_temperatures(self, revision: int) -> None:
-        """Apply the startup snapshot only while no live command supersedes it."""
-        async with self._pair.lock:
-            if self._pair.removed or revision != self._pair.revision:
-                return
-            if self._pair.restored is None:
-                return
-            try:
-                await self._device.set_fan_start_stop_temp(*self._pair.restored)
-            except Exception:
-                _LOGGER.debug("Failed to restore fan temperature for %s", self.name, exc_info=True)
-                return
-            self._pair.restored = None
-            async_dispatcher_send(self.hass, _fan_temp_signal(self._device.address))
 
     def _temperature_pair(self, value: float) -> tuple[int, int]:
         """Derive this command's pair while holding the shared lock."""
