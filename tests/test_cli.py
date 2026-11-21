@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from chihiros_led_control import cli
@@ -320,7 +321,7 @@ def test_program_cli_rejects_weekdays_without_daily_volume(monkeypatch: pytest.M
     monkeypatch.setattr(cli, "get_device_from_address", unexpected_lookup)
     result = RUNNER.invoke(cli.app, ["dosing", "program", TEST_ADDRESS, "1", "--weekdays", "monday"])
     assert result.exit_code == 2
-    assert "requires --daily-ml" in result.output
+    assert "requires --daily-ml" in unstyle(result.output)
 
 
 @pytest.mark.component
