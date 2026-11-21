@@ -189,6 +189,12 @@ These local history sensors remain available independently of Bluetooth.
 A channel that has never been calibrated shows `unknown`, not a fabricated
 calibration timestamp.
 
+On legacy DYDOSE pumps, **Pump N schedule mode** in Diagnostics shows the mode
+reported by that channel: `single`, `auto`, `timer`, `free`, or `inactive`.
+It refreshes with the five-minute status poll; no valid readback means no
+initial value. `inactive` means the schedule is cleared, not that manual dosing
+is blocked. The sensor does not indicate whether the motor is running.
+
 Legacy `DYDOSE` / `DYDOSED` pumps have four physical channels (1–4). Home
 Assistant can expose 2 or 4 of them; generic `DYTDOS` / `DYNDOS` pumps retain
 2, 4, or 8 as options. You can change the count in the integration's Configure

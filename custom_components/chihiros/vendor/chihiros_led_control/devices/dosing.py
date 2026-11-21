@@ -52,7 +52,9 @@ class ChihirosDosingPump(BaseChihirosDevice):
             raise ValueError(f"Channel index must be between 0 and {channel_limit - 1} on this pump")
 
     def _parse_notification(self, data: bytes | bytearray) -> ParsedNotification | None:
-        """Parse dosing-pump counter notifications."""
+        """Parse dosing counters and, on legacy hardware, the info snapshot."""
+        if self.uses_dydose_8_protocol and (info := commands.parse_dydose_info(data)) is not None:
+            return info
         return commands.parse_notification(data)
 
     def _record_notification(self, parsed: ParsedNotification) -> None:
@@ -73,13 +75,15 @@ class ChihirosDosingPump(BaseChihirosDevice):
             )
 
     async def query_status(self) -> None:
-        """Request lifetime and daily dosing counters in app order."""
+        """Request counters and, on legacy pumps, a fresh schedule mode snapshot."""
         commands_to_send = [
             commands.create_dose_auth_1_command(self.get_next_msg_id()),
             commands.create_dose_auth_2_command(self.get_next_msg_id()),
         ]
         # DYDOSE-8 stores one pending reply selector; let the first query be
         # serviced before sending the next one. The transport keeps the link open.
+        if self.uses_dydose_8_protocol:
+            commands_to_send.append(commands.create_dydose_info_query(self.get_next_msg_id()))
         batches = commands_to_send if self.uses_dydose_8_protocol else [commands_to_send]
         for batch in batches:
             await self._send_command(batch, 3, notification_wait=STATUS_NOTIFICATION_WAIT)

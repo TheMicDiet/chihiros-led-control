@@ -200,12 +200,13 @@ async def test_pump_doses_then_queries_counters_in_order() -> None:
     await pump.query_status()
     await pump.disconnect()
     assert ble.connections == 1
-    assert [line for line in _trace(ble) if line.startswith("a5:")] == [
+    assert _trace(ble)[2:] == [
         "a5: 04 04",
         "a5: 04 05",
         "a5: 1b 01 00 02 00 14",
         "a5: 04 04",
         "a5: 04 05",
+        "5a: 04 01",
     ]
     assert pump.last_dosing_totals_notification == DosingTotalsNotification((105500, 0), totals)
 

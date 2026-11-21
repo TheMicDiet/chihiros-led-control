@@ -615,6 +615,13 @@ Dosing pumps answer the `[4]`/`[5]` queries with `0x5b` uplink frames
 | `0x5b` | `0x1e` / `30` | Lifetime totals | Per channel `i`: `(data[6+2i] << 8 | data[7+2i]) * 100` µL |
 | `0x5b` | `0x22` / `34` | Dosed today | Same layout/scaling |
 
+On DYDOSE-8, the info query (`0x5A / 0x04 [1]`) also returns a 50-byte
+`0x5B / 0xFE` snapshot (length field `0x30`). Offsets 9, 18, 27 and 36
+hold the channel modes in **firmware** order: single (0), auto (1), timer (2),
+free (3), inactive (4). See `uart_app.bin` at `0x27cfa–0x27d14`. This is
+not the mode numbering used by the schedule programming API. The legacy status
+refresh requests this snapshot separately from the two counter queries.
+
 Example lifetime frame (channels `0..1` = `105.5 mL`, `0 mL`):
 
 ```text

@@ -44,6 +44,14 @@ class ScheduleSnapshotNotification:
 
 
 @dataclass(frozen=True)
+class DosingModesNotification:
+    """Schedule modes read back from the four legacy DYDOSE channels."""
+
+    modes: tuple[str | None, ...]
+    raw: bytes = field(default=b"", compare=False)
+
+
+@dataclass(frozen=True)
 class DosingTotalsNotification:
     """Per-channel lifetime dosed volumes reported by a dosing pump."""
 
@@ -90,6 +98,7 @@ ParsedNotification = (
     RuntimeNotification
     | FanStatusNotification
     | ScheduleSnapshotNotification
+    | DosingModesNotification
     | DosingTotalsNotification
     | DosingDailyNotification
     | HeaterTemperatureNotification

@@ -205,6 +205,19 @@ async def test_dosing_distinguishes_reported_volume_from_persisted_local_total(
     assert _payloads(ble, 27) == ["01 00 02 00 19"]
 
 
+async def test_dydose_schedule_modes_come_from_device_info(ha: HomeAssistant, proxy: PeripheralProxy) -> None:
+    """Only complete info frames supply modes, with unknown values isolated per channel."""
+    ble = _pump(proxy)
+    info = bytearray(50)
+    info[:6] = bytes.fromhex("5b 08 30 00 01 fe")
+    info[9:37:9] = bytes([4, 2, 3, 255])
+    ble.expect(90, 4, [1], respond=[bytes(info), bytes(info[:20])])
+    entry = await _add_device(ha, PUMP, pump_count=4)
+    modes = [_entity(ha, entry, "sensor", f"dosing_pump_{i}_schedule_mode") for i in range(1, 5)]
+    assert [ha.states.get(entity).state for entity in modes] == ["inactive", "timer", "free", "unknown"]
+    assert ha.states.get(modes[0]).attributes["options"] == ["single", "auto", "timer", "free", "inactive"]
+
+
 async def test_fan_remembers_speed_across_reload(ha: HomeAssistant, proxy: PeripheralProxy) -> None:
     """Auto, off and reload do not erase the last explicitly selected fan speed."""
     ble = ScriptedResponder()
@@ -431,7 +444,9 @@ async def test_generic_pump_keeps_eight_channels_and_iso_programming(ha: HomeAss
     """Legacy-only changes leave the generic pump's service and frame behavior intact."""
     pump = ScriptedResponder()
     proxy.advertise(PUMP, "DYNDOS-test", pump)
-    await _add_device(ha, PUMP, pump_count=8)
+    entry = await _add_device(ha, PUMP, pump_count=8)
+    mode_uid = f"{entry.unique_id}_dosing_pump_1_schedule_mode"
+    assert er.async_get(ha).async_get_entity_id("sensor", DOMAIN, mode_uid) is None
     selector = {"address": PUMP, "channel": 8}
     await _call(ha, DOMAIN, "set_channel_active", **selector)
     assert _payloads(pump, 32) == ["07 00 01"]

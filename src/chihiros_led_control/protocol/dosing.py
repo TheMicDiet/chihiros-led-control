@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 from .frame import create_command_encoding
-from .notifications import DosingDailyNotification, DosingTotalsNotification
+from .notifications import DosingDailyNotification, DosingModesNotification, DosingTotalsNotification
 
 AUTO_SETTING_PARAMETER_COUNT = 14
 AUTO_SETTING_METADATA_PARAMETER_COUNT = 6
@@ -323,6 +323,11 @@ def create_general_temp_run_command(
     return create_command_encoding(165, 20, msg_id, [*duration, *channel_bytes])
 
 
+def create_dydose_info_query(msg_id: tuple[int, int]) -> bytearray:
+    """Request the device info snapshot, including per-channel schedule modes."""
+    return create_command_encoding(90, 4, msg_id, [1])
+
+
 def create_dose_auth_1_command(msg_id: tuple[int, int]) -> bytearray:
     """Request lifetime counters (legacy function name; not authentication)."""
     return create_command_encoding(165, 4, msg_id, [4])
@@ -341,6 +346,18 @@ def create_manual_dose_command(
         raise ValueError("Pump index must be between 0 and 7")
     high, low = split_dose_volume_ml(volume_ml)
     return create_command_encoding(165, 27, msg_id, [pump_idx, 0, 2 if extra else 0, high, low])
+
+
+# Internal scheduler modes, NOT the programming command's DosingMode order.
+DYDOSE_REPORTED_MODES = ("single", "auto", "timer", "free", "inactive")
+
+
+def parse_dydose_info(data: bytes | bytearray) -> DosingModesNotification | None:
+    """Decode the full 50-byte DYDOSE-8 info reply (firmware 0x27cdc–0x27db4)."""
+    if len(data) != 50 or data[0] != 0x5B or data[2] != 0x30 or data[5] != 0xFE:
+        return None
+    modes = tuple(DYDOSE_REPORTED_MODES[n] if n < len(DYDOSE_REPORTED_MODES) else None for n in data[9:37:9])
+    return DosingModesNotification(modes, bytes(data))
 
 
 def parse_notification(data: bytes | bytearray):
