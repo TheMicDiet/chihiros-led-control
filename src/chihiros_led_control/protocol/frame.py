@@ -60,9 +60,12 @@ def create_command_encoding(
     return command + bytes([calculate_checksum(command)])
 
 
-def encode_timestamp(ts: datetime.datetime) -> list[int]:
-    """Encode a timestamp as Chihiros command parameters."""
-    return [ts.year - 2000, ts.month, ts.isoweekday(), ts.hour, ts.minute, ts.second]
+def encode_timestamp(ts: datetime.datetime, *, sunday_first: bool = False) -> list[int]:
+    """Encode a timestamp, using Sunday=1 only on profiles that require it."""
+    weekday = ts.isoweekday()
+    if sunday_first:
+        weekday = weekday % 7 + 1
+    return [ts.year - 2000, ts.month, weekday, ts.hour, ts.minute, ts.second]
 
 
 __all__ = [

@@ -363,7 +363,9 @@ set_dosing_schedule:
     Replace one dosing pump channel's schedule (and optionally its daily dose
     volume). If a magnetic stirrer is linked to this pump as slave
     (chihiros.set_stirrer_master), the write is mirrored to the stirrer
-    automatically. Use YAML mode.
+    automatically. On legacy DYDOSE pumps, setting active to false saves the
+    schedule in Home Assistant without installing it on the pump or linked
+    stirrer. Use YAML mode.
   fields:
     device_id:
       name: Device
@@ -458,7 +460,8 @@ set_channel_active:
   name: Set channel active
   description: >
     Enable or disable one dosing pump channel (and its interrupt
-    compensation). Mirrored to a linked stirrer.
+    compensation). Mirrored to a linked stirrer. Enabling a legacy DYDOSE
+    channel requires a schedule saved with chihiros.set_dosing_schedule.
   fields:
     device_id:
       name: Device

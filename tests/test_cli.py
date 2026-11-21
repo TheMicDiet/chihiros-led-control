@@ -66,7 +66,7 @@ def test_program_translates_one_based_channel_and_weekdays() -> None:
     assert result.exit_code == 0, result.output or result.exception
     assert [frame[5:-1].hex(" ") for frame in peripheral.ble.writes if frame[0] == 165] == [
         "20 01 00 01",
-        "1b 01 40 01 00 00 64",
+        "1b 01 20 01 00 00 64",
         "15 01 03 08 1e 00 19",
     ]
     assert peripheral.ble.connections == 1
@@ -105,6 +105,6 @@ def test_cli_surfaces_failed_dose_without_repeating_it() -> None:
     result = RUNNER.invoke(app, ["dosing", "dose", ADDRESS, "1", "2.5"], obj=peripheral.access)
     assert result.exit_code == 1
     assert isinstance(result.exception, BleakError)
-    assert [frame[6:-1].hex(" ") for frame in peripheral.ble.writes if frame[5] == 27] == ["00 00 00 00 19"]
+    assert [frame[6:-1].hex(" ") for frame in peripheral.ble.writes if frame[5] == 27] == ["00 00 02 00 19"]
     assert peripheral.ble.connections == 1
     assert not peripheral.ble.is_connected

@@ -104,7 +104,7 @@ def parse_start_minutes(value: str | datetime.time) -> int:
     return hour * 60 + minute
 
 
-def frequency_from_service_data(data: dict[str, Any], *, default: int = 127) -> int:
+def frequency_from_service_data(data: dict[str, Any], *, default: int = 127, sunday_first: bool = False) -> int:
     """Resolve the weekday repetition from service data as a bitmask.
 
     Accepts the user-friendly ``weekdays`` selector (a list of weekday
@@ -113,7 +113,7 @@ def frequency_from_service_data(data: dict[str, Any], *, default: int = 127) -> 
     """
     weekdays = data.get(ATTR_WEEKDAYS)
     if weekdays:
-        return encode_selected_weekdays([WeekdaySelect(day) for day in weekdays])
+        return encode_selected_weekdays([WeekdaySelect(day) for day in weekdays], sunday_first=sunday_first)
     frequency = data.get(ATTR_FREQUENCY)
     if frequency is None:
         return default

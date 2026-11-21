@@ -203,7 +203,7 @@ async def test_pump_doses_then_queries_counters_in_order() -> None:
     assert [line for line in _trace(ble) if line.startswith("a5:")] == [
         "a5: 04 04",
         "a5: 04 05",
-        "a5: 1b 01 00 00 00 14",
+        "a5: 1b 01 00 02 00 14",
         "a5: 04 04",
         "a5: 04 05",
     ]
@@ -215,11 +215,11 @@ async def test_pump_never_replays_an_ambiguous_run(timed_calibration: bool) -> N
     """The write may have reached the peripheral before it reported an error."""
     ble = ScriptedTransport(name="DYDOSE-test", realtime=False)
     pump = _pump(ble)
-    mode, params = (22, [1, 10]) if timed_calibration else (27, [1])
+    mode, params = (22, [1, 5]) if timed_calibration else (27, [1])
     ble.expect(165, mode, params, fail=True)
     with pytest.raises(BleakError, match="scripted write failure"):
         if timed_calibration:
-            await pump.calibrate_channel(1, seconds=10)
+            await pump.calibrate_channel(1, seconds=5)
         else:
             await pump.dose_ml(1, 2.0)
     assert ble.connections == 1
@@ -256,6 +256,50 @@ async def test_pump_program_weekdays_require_daily_volume() -> None:
     await pump.program_channel(0, active=True, frequency=64, dose_per_day_ml=1.0, mode=DosingMode.TIMER, points=points)
     await pump.disconnect()
     assert [line for line in _trace(ble) if line.startswith("a5: 1b")] == ["a5: 1b 00 40 01 00 00 0a"]
+
+
+@pytest.mark.parametrize("name", ["DYDOSE-test", "DYDOSED-test"])
+async def test_legacy_pump_uses_sunday_first_clock_and_correct_dose_subtypes(name: str) -> None:
+    """Real legacy driver writes Sunday-first time and distinguishes extra/test doses."""
+    ble = ScriptedTransport(name=name, realtime=False)
+    pump = ChihirosDosingPump(
+        ScriptedBLEDevice(ble.name, ble.address), transport=ble, clock=lambda: datetime(2026, 11, 23, 7, 59)
+    )
+    await pump.dose_ml(0, 2.5)
+    await pump.dose_ml(0, 4.0, extra=False)
+    await pump.disconnect()
+    trace = _trace(ble)
+    assert trace[1] == "5a: 09 1a 0b 02 07 3b 00"  # Monday is weekday 2 on DYDOSE.
+    assert [line for line in trace if line.startswith("a5: 1b")] == [
+        "a5: 1b 00 00 02 00 19",
+        "a5: 1b 00 00 00 00 28",
+    ]
+
+
+async def test_legacy_pump_protects_other_channels_and_rejects_unrepresentable_schedules() -> None:
+    """Errors are local; an invalid replacement never clears the existing schedule."""
+    ble = ScriptedTransport(name="DYDOSE-test", realtime=False)
+    pump = ChihirosDosingPump(ScriptedBLEDevice(ble.name, ble.address), DOSING_PUMP, transport=ble)
+    with pytest.raises(ValueError, match="between 0 and 3"):
+        await pump.reset_total_dosed(4)  # Without this guard, selector 25 resets channel 1.
+    with pytest.raises(ValueError, match="between 0 and 3"):
+        await pump.reset_channel(4)
+    with pytest.raises(ValueError, match="without reprogramming"):
+        await pump.set_channel_active(0)
+    with pytest.raises(ValueError, match="5-second"):
+        await pump.calibrate_channel(0, seconds=10)
+    with pytest.raises(ValueError, match="at most 24"):
+        await pump.set_schedule(0, DosingMode.TIMER, [DosingWorkPoint(8, i, volume_ml=1) for i in range(25)])
+    with pytest.raises(ValueError, match="same day"):
+        await pump.set_schedule(0, DosingMode.FREE, [DosingWorkPoint(23, 0, duration_minutes=120)])
+    with pytest.raises(ValueError, match="distinct dose minutes"):
+        window = DosingWorkPoint(8, 0, duration_minutes=120)
+        await pump.set_schedule(0, DosingMode.FREE, [window, window])
+    assert not ble.writes
+    await pump.set_schedule(0, DosingMode.TIMER, [DosingWorkPoint(8, 0, volume_ml=1)])
+    await pump.program_channel(0, active=True, dose_per_day_ml=1.5, is_first_setting=False)
+    await pump.disconnect()
+    assert _trace(ble)[2:] == ["a5: 20 00 00 01", "a5: 15 00 03 08 00 00 0a", "a5: 1b 00 7f 01 00 00 0f"]
 
 
 async def test_stirrer_status_does_not_contact_peripheral() -> None:

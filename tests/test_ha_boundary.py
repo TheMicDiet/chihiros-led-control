@@ -19,10 +19,11 @@ from homeassistant.config_entries import SOURCE_USER, ConfigEntries, ConfigEntry
 from homeassistant.const import CONF_ADDRESS  # noqa: E402
 from homeassistant.core import HomeAssistant  # noqa: E402
 from homeassistant.core_config import async_process_ha_core_config  # noqa: E402
-from homeassistant.data_entry_flow import FlowResultType  # noqa: E402
+from homeassistant.data_entry_flow import FlowResultType, InvalidData  # noqa: E402
 from homeassistant.exceptions import HomeAssistantError  # noqa: E402
 from homeassistant.helpers import entity_registry as er  # noqa: E402
 from homeassistant.helpers import issue_registry as ir  # noqa: E402
+from homeassistant.helpers.storage import Store  # noqa: E402
 from homeassistant.loader import async_setup as setup_loader  # noqa: E402
 from homeassistant.setup import async_setup_component  # noqa: E402
 
@@ -195,13 +196,13 @@ async def test_dosing_distinguishes_reported_volume_from_persisted_local_total(
         await _call(ha, DOMAIN, "dose_ml", **selector, pump=3, ml=2.5)
     assert _payloads(ble, 27) == []
     await _call(ha, DOMAIN, "dose_ml", **selector, pump=2, ml=2.5)
-    assert _payloads(ble, 27) == ["01 00 00 00 19"]
+    assert _payloads(ble, 27) == ["01 00 02 00 19"]
     assert (ha.states.get(local).state, ha.states.get(reported).state) == ("2.5", "2.7")
 
     assert await ha.config_entries.async_reload(entry.entry_id)
     await ha.async_block_till_done()
     assert (ha.states.get(local).state, ha.states.get(reported).state) == ("2.5", "2.7")
-    assert _payloads(ble, 27) == ["01 00 00 00 19"]
+    assert _payloads(ble, 27) == ["01 00 02 00 19"]
 
 
 async def test_fan_remembers_speed_across_reload(ha: HomeAssistant, proxy: PeripheralProxy) -> None:
@@ -280,16 +281,176 @@ async def test_linked_stirrer_mirrors_program_and_verbatim_dose(ha: HomeAssistan
     await _call(ha, DOMAIN, "set_stirrer_master", address=STIRRER, master_address=PUMP)
     assert stir.data["master_address"] == PUMP
     assert _payloads(stirrer, 21) == _payloads(pump, 21) == ["01 03 08 1e 00 19"]
+    assert _payloads(pump, 27) == ["01 20 01 00 00 19"]  # Monday on a legacy pump.
+    assert _payloads(stirrer, 27) == ["01 40 01 00 00 19"]  # Monday on an ISO stirrer.
 
     stirrer.expect(165, 27, [1], fail=True)
     await _call(ha, DOMAIN, "dose_ml", address=PUMP, pump=2, ml=3.5)
     assert [frame for frame in stirrer.writes if frame[5] == 27][-1] == pump.writes[-1]
-    assert _payloads(stirrer, 27).count("01 00 00 00 23") == 1  # No replay after losing the slave's ACK.
+    assert _payloads(stirrer, 27).count("01 00 02 00 23") == 1  # No replay after losing the slave's ACK.
     await _call(ha, DOMAIN, "set_stirrer_master", address=STIRRER)
     assert "master_address" not in stir.data
     before = list(stirrer.writes)
     await _call(ha, DOMAIN, "dose_ml", address=PUMP, pump=2, ml=3.5)
     assert stirrer.writes == before
+
+
+async def test_legacy_pump_stages_and_resumes_schedule(ha: HomeAssistant, proxy: PeripheralProxy) -> None:
+    """Disabled schedules stay dormant on both devices and survive a reload."""
+    pump, stirrer = _pump(proxy), ScriptedResponder()
+    proxy.advertise(STIRRER, "DYMIXR-test", stirrer)
+    entry = await _add_device(ha, PUMP, pump_count=2)
+    await _add_device(ha, STIRRER, stirrer_channel_count=2)
+    await _call(ha, DOMAIN, "set_stirrer_master", address=STIRRER, master_address=PUMP, mirror=False)
+    selector = {"address": PUMP, "channel": 2}
+    before = [list(ble.writes) for ble in (pump, stirrer)]
+    with pytest.raises(HomeAssistantError, match="No stored schedule"):
+        await _call(ha, DOMAIN, "set_channel_active", **selector)
+    assert [ble.writes for ble in (pump, stirrer)] == before
+
+    await _call(
+        ha,
+        DOMAIN,
+        "set_dosing_schedule",
+        **selector,
+        mode="timer",
+        points=[{"start": "08:30", "ml": 2.5}],
+        active=False,
+        daily_ml=2.5,
+        weekdays=["sunday", "monday"],
+    )
+    assert _payloads(pump, 32) == _payloads(stirrer, 32) == ["01 00 00"]
+    await _call(ha, DOMAIN, "mirror_stirrer", address=STIRRER)
+    assert _payloads(pump, 21) == _payloads(stirrer, 21) == []
+    assert _payloads(pump, 27) == ["01 60 01 00 00 19"]  # Daily settings don't install runnable slots.
+    assert _payloads(stirrer, 27) == ["01 41 01 00 00 19"] * 2  # Live and full replay both translate.
+
+    await _call(ha, DOMAIN, "set_channel_active", **selector, compensate=True)
+    assert _payloads(pump, 32)[-1] == _payloads(stirrer, 32)[-1] == "01 01 01"
+    assert _payloads(pump, 21) == _payloads(stirrer, 21) == ["01 03 08 1e 00 19"]
+    assert _payloads(pump, 27)[-1] == "01 60 01 00 00 19"
+    assert _payloads(stirrer, 27)[-1].split()[1] == "41"
+
+    before = [len(ble.writes) for ble in (pump, stirrer)]
+    await _call(ha, DOMAIN, "set_channel_active", **selector, enable=False)
+    for ble, start in zip((pump, stirrer), before, strict=True):
+        assert [(frame[5], frame[6:-1].hex(" ")) for frame in ble.writes[start:] if frame[0] == 165] == [
+            (32, "01 00 00")
+        ]
+    assert await ha.config_entries.async_reload(entry.entry_id)
+    await ha.async_block_till_done()
+    await _call(ha, DOMAIN, "set_channel_active", **selector)
+    assert _payloads(pump, 21) == _payloads(stirrer, 21) == ["01 03 08 1e 00 19"] * 2
+    assert _payloads(pump, 27)[-1] == "01 60 01 00 00 19"
+
+    # Same-day reprogramming must clear the legacy inhibit latch even with first_setting=False.
+    # Raw frequency, including its high bit, passes through to the pump unchanged.
+    await _call(
+        ha,
+        DOMAIN,
+        "set_dosing_schedule",
+        **selector,
+        mode="free",
+        points=[{"start": "10:00", "end": "12:00"}],
+        daily_ml=4,
+        frequency=0xA0,
+        first_setting=False,
+    )
+    assert _payloads(pump, 27)[-1] == "01 a0 01 00 00 28"
+    assert _payloads(stirrer, 27)[-1] == "01 c0 01 01 00 28"
+    assert _payloads(pump, 23) == _payloads(stirrer, 23) == ["01 0a 00 0c 00 02"]
+
+
+async def test_legacy_pump_resumes_old_iso_record_without_changing_stirrer_days(
+    ha: HomeAssistant, proxy: PeripheralProxy
+) -> None:
+    """An unmarked record stays ISO on a stirrer and converts on a legacy pump."""
+    pump, stirrer = _pump(proxy), ScriptedResponder()
+    proxy.advertise(STIRRER, "DYMIXR-test", stirrer)
+    key = f"{DOMAIN}_dosing_programming_{PUMP.lower().replace(':', '_')}"
+    await Store(ha, 1, key).async_save(
+        {
+            "channels": {
+                "1": {
+                    "active": True,
+                    "mode": "timer",
+                    "points": [{"start_hour": 8, "start_minute": 30, "volume_ml": 2.5}],
+                    "dose_per_day_ml": 2.5,
+                    "frequency": 0xC1,
+                }
+            }
+        }
+    )
+    await _add_device(ha, PUMP, pump_count=2)
+    await _add_device(ha, STIRRER, stirrer_channel_count=2)
+    await _call(ha, DOMAIN, "set_stirrer_master", address=STIRRER, master_address=PUMP)
+    assert _payloads(stirrer, 27) == ["01 c1 01 00 00 19"]
+    await _call(ha, DOMAIN, "set_channel_active", address=PUMP, channel=2)
+    assert _payloads(pump, 27) == ["01 e0 01 00 00 19"]
+    await _call(ha, DOMAIN, "mirror_stirrer", address=STIRRER)
+    assert _payloads(stirrer, 27) == ["01 c1 01 00 00 19"] * 3
+    assert _payloads(stirrer, 21) == ["01 03 08 1e 00 19"] * 3
+
+
+@pytest.mark.parametrize("prefix", ["DYDOSE", "DYDOSED"])
+async def test_legacy_pump_limits_channel_options_and_stale_entries(
+    ha: HomeAssistant, proxy: PeripheralProxy, prefix: str
+) -> None:
+    """Real legacy pumps reject eight-channel config and clamp older entries at setup."""
+    pump = ScriptedResponder()
+    proxy.advertise(PUMP, f"{prefix}-test", pump)
+    flow = ha.config_entries.flow
+    result = await flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    result = await flow.async_configure(result["flow_id"], {CONF_ADDRESS: PUMP})
+    assert result["step_id"] == "dosing_config"
+    with pytest.raises(InvalidData):
+        await flow.async_configure(result["flow_id"], {"pump_count": 8})
+    result = await flow.async_configure(result["flow_id"], {})
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    entry = result["result"]
+    assert entry.data["pump_count"] == 4
+    await ha.async_block_till_done()
+
+    ha.config_entries.async_update_entry(entry, options={"pump_count": 8})
+    assert await ha.config_entries.async_reload(entry.entry_id)
+    await ha.async_block_till_done()
+    with pytest.raises(HomeAssistantError, match="has 4 pumps"):
+        await _call(ha, DOMAIN, "dose_ml", address=PUMP, pump=5, ml=4)
+    assert _payloads(pump, 27) == []
+    options = ha.config_entries.options
+    result = await options.async_init(entry.entry_id)
+    with pytest.raises(InvalidData):
+        await options.async_configure(result["flow_id"], {"pump_count": "8"})
+    result = await options.async_configure(result["flow_id"], {})
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert entry.options["pump_count"] == 4
+    await ha.async_block_till_done()
+
+
+async def test_generic_pump_keeps_eight_channels_and_iso_programming(ha: HomeAssistant, proxy: PeripheralProxy) -> None:
+    """Legacy-only changes leave the generic pump's service and frame behavior intact."""
+    pump = ScriptedResponder()
+    proxy.advertise(PUMP, "DYNDOS-test", pump)
+    await _add_device(ha, PUMP, pump_count=8)
+    selector = {"address": PUMP, "channel": 8}
+    await _call(ha, DOMAIN, "set_channel_active", **selector)
+    assert _payloads(pump, 32) == ["07 00 01"]
+    await _call(
+        ha,
+        DOMAIN,
+        "set_dosing_schedule",
+        **selector,
+        mode="timer",
+        points=[{"start": "08:30", "ml": 2.5}],
+        active=False,
+        daily_ml=2.5,
+        weekdays=["monday"],
+    )
+    assert _payloads(pump, 32)[-1] == "07 00 00"
+    assert _payloads(pump, 21) == ["07 03 08 1e 00 19"]
+    assert _payloads(pump, 27) == ["07 40 01 00 00 19"]
+    await _call(ha, DOMAIN, "dose_ml", address=PUMP, pump=8, ml=2.5)
+    assert _payloads(pump, 27)[-1] == "07 00 00 00 19"
 
 
 async def test_stirrer_service_respects_configured_channels(ha: HomeAssistant, proxy: PeripheralProxy) -> None:
@@ -363,7 +524,7 @@ async def test_calibration_requires_decision_after_ambiguous_timed_run(
     else:
         result = await manager.async_configure(flow_id, {})
     assert result["step_id"] == "calibrate_accuracy"
-    assert _payloads(ble, 27) == ["01 00 00 00 28"]
+    assert _payloads(ble, 27) == ["01 00 00 00 28"]  # Calibration verification is not an extra dose.
     result = await manager.async_configure(flow_id, {"accurate": "yes"})
     await ha.async_block_till_done()
     assert result["reason"] == "calibration_complete"

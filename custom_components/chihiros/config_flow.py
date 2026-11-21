@@ -20,12 +20,12 @@ from .dosing import (
     CONF_PUMP_COUNT,
     CONF_STIRRER_CHANNEL_COUNT,
     PUMP_COUNT,
-    PUMP_COUNT_OPTIONS,
     STIRRER_CHANNEL_COUNT_OPTIONS,
     STIRRER_CHANNEL_MAX,
     is_dosing_capable,
     normalize_pump_count,
     normalize_stirrer_channel_count,
+    pump_count_options,
 )
 from .fake import iter_enabled_fake_devices
 from .master_slave_services import async_mirror_pump_to_stirrer
@@ -112,18 +112,19 @@ class ChihirosConfigFlow(ConfigFlow, domain=DOMAIN):
         """Ask user how many channels a dosing pump has."""
         assert self._entry_title is not None
         assert self._entry_address is not None
+        options = pump_count_options(self._discovered_device)
 
         if user_input is not None:
             return self.async_create_entry(
                 title=self._entry_title,
                 data={
                     CONF_ADDRESS: self._entry_address,
-                    CONF_PUMP_COUNT: normalize_pump_count(user_input[CONF_PUMP_COUNT]),
+                    CONF_PUMP_COUNT: normalize_pump_count(user_input[CONF_PUMP_COUNT], options),
                 },
             )
 
         data_schema = vol.Schema(
-            {vol.Required(CONF_PUMP_COUNT, default=PUMP_COUNT): vol.All(vol.Coerce(int), vol.In(PUMP_COUNT_OPTIONS))}
+            {vol.Required(CONF_PUMP_COUNT, default=PUMP_COUNT): vol.All(vol.Coerce(int), vol.In(options))}
         )
         return self.async_show_form(step_id="dosing_config", data_schema=data_schema, errors={})
 
@@ -282,30 +283,22 @@ class ChihirosOptionsFlow(OptionsFlowWithReload):
         if data is None:
             return self.async_abort(reason="not_loaded")
         if isinstance(data, DosingChihirosData):
-            return self._channel_count_step(CONF_PUMP_COUNT, PUMP_COUNT, PUMP_COUNT_OPTIONS, user_input)
+            return self._pump_count_step(data, user_input)
         if isinstance(data, StirrerChihirosData):
             return await self._async_stirrer_step(data, user_input)
         return self.async_abort(reason="no_options")
 
-    def _channel_count_step(
-        self,
-        key: str,
-        default: int,
-        options: tuple[int, ...],
-        user_input: dict[str, Any] | None,
-    ) -> ConfigFlowResult:
+    def _pump_count_step(self, data: DosingChihirosData, user_input: dict[str, Any] | None) -> ConfigFlowResult:
         """Handle the dosing-pump channel-count form.
 
-        The select carries string values (coerced back to int on save): the
-        frontend reliably preselects the configured value only for string
-        options, so keep this consistent with the stirrer/master selects.
+        The frontend reliably preselects the current value only for string options.
         """
         if user_input is not None:
-            return self.async_create_entry(title="", data={key: int(user_input[key])})
-        current = self.config_entry.options.get(key, self.config_entry.data.get(key, default))
+            return self.async_create_entry(title="", data={CONF_PUMP_COUNT: int(user_input[CONF_PUMP_COUNT])})
+        options = pump_count_options(data.device)
         data_schema = vol.Schema(
             {
-                vol.Required(key, default=str(current)): vol.All(
+                vol.Required(CONF_PUMP_COUNT, default=str(data.dosing_totals.pump_count)): vol.All(
                     vol.Coerce(str), vol.In({str(option): str(option) for option in options})
                 )
             }

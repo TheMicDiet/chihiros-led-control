@@ -85,7 +85,10 @@ def _run_dosing_func(device_address: str, command: DosingDeviceCommand) -> None:
         try:
             if getattr(dev, "device_kind", None) is not DeviceKind.DOSING_PUMP:
                 raise typer.BadParameter(f"{dev.name} is not a dosing pump")
-            await command(dev)
+            try:
+                await command(dev)
+            except ValueError as ex:
+                raise typer.BadParameter(str(ex)) from ex
         finally:
             await dev.disconnect()
 
@@ -357,8 +360,9 @@ def dosing_program(
     Sends the active/compensation frame, an optional ``--daily-ml`` volume,
     and an optional schedule as one paced transaction (the app's ``startWork``).
     Setting weekdays requires ``--daily-ml``. With a daily volume and no
-    weekdays, the pump is programmed for every day. Omit the points to
-    program only the channel state and daily volume.
+    weekdays, the pump is programmed for every day. On legacy DYDOSE, omit
+    points to update daily settings without clearing the schedule, or pass
+    --disable to clear its slots.
     """
     if weekdays and daily_ml is None:
         raise typer.BadParameter("requires --daily-ml", param_hint="--weekdays")
@@ -371,7 +375,9 @@ def dosing_program(
             active=enable,
             compensate=compensate,
             dose_per_day_ml=daily_ml,
-            frequency=encode_selected_weekdays(weekdays) if weekdays else None,
+            frequency=(
+                encode_selected_weekdays(weekdays, sunday_first=dev.uses_dydose_8_protocol) if weekdays else None
+            ),
             is_first_setting=first_setting,
             mode=dosing_mode,
             points=work_points,
@@ -386,7 +392,7 @@ def dosing_active(
     enable: Annotated[bool, typer.Option("--enable/--disable")] = True,
     compensate: Annotated[bool, typer.Option("--compensate/--no-compensate")] = False,
 ) -> None:
-    """Enable or disable a pump channel (and interrupt compensation)."""
+    """Set channel state. To re-enable legacy DYDOSE, use schedule or program."""
     _run_dosing_func(
         device_address,
         lambda dev: dev.set_channel_active(channel - 1, active=enable, compensate=compensate),
@@ -397,7 +403,9 @@ def dosing_active(
 def dosing_calibrate(
     device_address: str,
     channel: Annotated[int, typer.Argument(min=1, max=8)],
-    seconds: Annotated[int | None, typer.Option(min=0, max=254, help="Timed test dose in seconds (0-254).")] = None,
+    seconds: Annotated[
+        int | None, typer.Option(min=0, max=254, help="Timed calibration; legacy DYDOSE requires 5.")
+    ] = None,
     volume: Annotated[float | None, typer.Option(min=0, max=255.99)] = None,
 ) -> None:
     """Calibrate a pump channel via a timed run or a measured volume."""

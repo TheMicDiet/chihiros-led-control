@@ -32,7 +32,7 @@ class FakeDosingDevice(FakeBaseDevice):
         self._notify_callbacks(self.last_dosing_totals_notification)
         self._notify_callbacks(self.last_dosing_daily_notification)
 
-    async def dose_ml(self, pump_idx: int, volume_ml: float) -> bytes:
+    async def dose_ml(self, pump_idx: int, volume_ml: float, *, extra: bool = True) -> bytes:
         await asyncio.sleep(0)
         self._dosed_ml[pump_idx] = round(self._dosed_ml[pump_idx] + volume_ml, 1)
         await self.query_status()

@@ -47,7 +47,8 @@ GENERIC_WHITE = _led("Generic White LED", (), WHITE_CHANNELS)
 GENERIC_RGB = _led("Generic RGB", (), RGB_CHANNELS)
 GENERIC_WRGB = _led("Generic WRGB", (), WRGB_CHANNELS)
 FALLBACK = _led("fallback", (), COMMANDER_CHANNELS, needs_device_type=True, fallback=True)
-DOSING_PUMP = DeviceModel("Dosing Pump", ("DYDOSE", "DYDOSED", "DYTDOS", "DYNDOS"), DosingPumpSpec())
+DYDOSE_PUMP = DeviceModel("Dosing Pump", ("DYDOSE", "DYDOSED"), DosingPumpSpec(channel_limit=4, dydose_8=True))
+DOSING_PUMP = DeviceModel("Dosing Pump", ("DYTDOS", "DYNDOS"), DosingPumpSpec())
 MAG_STIRRER = DeviceModel("Mag Stirrer", ("DYMIXR",), MagStirrerSpec())
 HEATER = DeviceModel("Heater", ("DYHET", "DYH1T"), HeaterSpec())
 
@@ -110,6 +111,7 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     _led("Commander 1", ("DYCOM",), COMMANDER_CHANNELS, needs_device_type=True),
     _led("Commander 4", ("DYLED",), WRGB_CHANNELS),
     _led("Commander 4", ("DYNLED",), WRGB_CHANNELS, protocol=LedProtocol.SEA_LED),
+    DYDOSE_PUMP,
     DOSING_PUMP,
     MAG_STIRRER,
     HEATER,

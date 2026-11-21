@@ -136,6 +136,7 @@ class DosingPumpSpec:
     """Dosing-pump family metadata."""
 
     channel_limit: int = 8
+    dydose_8: bool = False  # Legacy DYDOSE/DYDOSED behavior verified against the DYDOSE-8 image.
 
 
 @dataclass(frozen=True)

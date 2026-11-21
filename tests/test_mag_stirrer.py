@@ -135,8 +135,8 @@ def test_program_channel_replays_inactive_stirrer_schedule() -> None:
 
 @pytest.mark.component
 def test_scripted_pump_schedule_and_settings() -> None:
-    """Pump schedule/settings/calibration/reset commands write the right frames."""
-    transport = ScriptedTransport(realtime=False, name="DYDOSE-test")
+    """Generic pump schedule/settings/calibration/reset commands keep their frames."""
+    transport = ScriptedTransport(realtime=False, name="DYNDOS-test")
 
     async def run() -> None:
         device = ChihirosDosingPump(
