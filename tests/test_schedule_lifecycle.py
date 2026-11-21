@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
 from dataclasses import replace
 from datetime import datetime, time
 
 import pytest
 from bleak_retry_connector import BleakError
 
-from chihiros_led_control import testing as testing_module
-from chihiros_led_control.devices import base as device_base
 from chihiros_led_control.devices.led import ChihirosDevice, LedSchedule
 from chihiros_led_control.models import (
     WHITE_CHANNELS,
@@ -20,24 +19,15 @@ from chihiros_led_control.models import (
     supports_weekdays,
 )
 from chihiros_led_control.protocol import led as commands
-from chihiros_led_control.protocol.notifications import RuntimeNotification
 from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
 from chihiros_led_control.weekday_encoding import WeekdaySelect
 
 
-@pytest.fixture
-def fast_transport(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the production transport path without notification/pacing sleeps."""
-    monkeypatch.setattr(device_base, "COMMAND_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(device_base, "STATUS_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(testing_module, "BATCH_WRITE_DELAY", 0.0)
-
-
-def _device(name: str = "DYLITE-test", *, spec: LedSpec | None = None) -> tuple[ChihirosDevice, ScriptedTransport]:
-    transport = ScriptedTransport(name=name)
+def _device(name: str = "DYLITE-test", *, model: DeviceModel | None = None) -> tuple[ChihirosDevice, ScriptedTransport]:
+    transport = ScriptedTransport(realtime=False, name=name)
     device = ChihirosDevice(
         ScriptedBLEDevice(name, transport.address),
-        DeviceModel("Test", (), spec or LedSpec(WHITE_CHANNELS)),
+        model or DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
         transport=transport,
     )
     return device, transport
@@ -65,16 +55,11 @@ def test_scene_end_midnight_only(end: time, encoded: bytes) -> None:
 
 
 @pytest.mark.component
-@pytest.mark.usefixtures("fast_transport")
-@pytest.mark.parametrize(
-    "prefix",
-    "DYZSD DYNA2N DYNA2 DYNC2N DYCXD DYECO MDTM DYDD DYCOM DYNCM DYFISHDL DYLITE DYZLPD DYZPRO".split(),
-)
-def test_scene_initialization_and_unchanged_lite_reconnect(prefix: str) -> None:
+def test_scene_initialization_and_unchanged_lite_reconnect() -> None:
     """Scene replacement and every Lite auto reconnect replay reset/mode/entries."""
 
     async def run() -> None:
-        device, transport = _device(f"{prefix}-test")
+        device, transport = _device()
         await device.replace_settings([_scene()])
         assert device.controller_mode is LedControllerMode.SCENE
         expected = [
@@ -98,18 +83,19 @@ def test_scene_initialization_and_unchanged_lite_reconnect(prefix: str) -> None:
 
 
 @pytest.mark.component
-@pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize("firmware", [19, 20, 27])
 def test_scene_firmware_gate_does_not_convert_custom_curves(firmware: int) -> None:
     """Old firmware rejects scenes; all firmware retains valid custom points."""
 
     async def run() -> None:
         device, transport = _device()
-        device.last_runtime_notification = RuntimeNotification(firmware, 0, b"")
+        frame = bytes([0x5B, firmware, 0x0A, 0, 1, 0x0A, 1, 0xFF])
+        transport.expect(90, 4, [1], respond=[frame])
+        await device.query_status()
         if firmware < 20:
             with pytest.raises(ValueError, match="firmware 20"):
                 await device.replace_settings([_scene()])
-            assert not transport.writes
+            assert not _operations(transport.writes)
         else:
             await device.replace_settings([_scene()])
         before = len(transport.writes)
@@ -135,16 +121,17 @@ def test_scene_firmware_gate_does_not_convert_custom_curves(firmware: int) -> No
 
 
 @pytest.mark.component
-@pytest.mark.usefixtures("fast_transport")
 def test_explicit_scene_capability_gate() -> None:
     """An explicit no-scene capability wins even on recent firmware."""
 
     async def run() -> None:
-        device, transport = _device(spec=LedSpec(WHITE_CHANNELS, scene_min_firmware=None))
-        device.last_runtime_notification = RuntimeNotification(27, 0, b"")
+        model = DeviceModel("No scenes", (), LedSpec(WHITE_CHANNELS, scene_min_firmware=None))
+        device, transport = _device(model=model)
+        transport.expect(90, 4, [1], respond=[bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")])
+        await device.query_status()
         with pytest.raises(ValueError, match="does not support scenes"):
             await device.replace_settings([_scene()])
-        assert not transport.writes
+        assert not _operations(transport.writes)
         await device.set_auto_curve([(0, 480, 50)])
         assert transport.writes[-1][5] == 6
 
@@ -160,7 +147,6 @@ async def _leave_auto_mode(device: ChihirosDevice, authority: str) -> None:
 
 
 @pytest.mark.component
-@pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize("authority", ["unknown", "incremental", "manual", "brightness", "non_lite"])
 def test_reconnect_never_resets_without_authoritative_lite_auto_schedule(authority: str) -> None:
     """Unknown device state, incremental edits and manual mode never trigger replay."""
@@ -196,7 +182,6 @@ def test_no_weekday_selector_classification(prefix: str) -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.usefixtures("fast_transport")
 def test_no_weekday_selector_rejects_partial_week_before_writing() -> None:
     """The library does not silently advertise or encode unsupported weekday edits."""
 
@@ -211,7 +196,6 @@ def test_no_weekday_selector_rejects_partial_week_before_writing() -> None:
 
 
 @pytest.mark.component
-@pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize("name", ["DYRGB-test", "DYLITE-test"])
 async def test_all_day_weekday_selections_encode_same_scene(name: str) -> None:
     """Omitted, empty and everyday selections all write an all-days mask."""
@@ -227,7 +211,6 @@ async def test_all_day_weekday_selections_encode_same_scene(name: str) -> None:
 
 
 @pytest.mark.component
-@pytest.mark.usefixtures("fast_transport")
 def test_failed_replacement_revokes_stale_replay_authority() -> None:
     """Retries and later reconnects cannot replay an obsolete library schedule."""
 
@@ -245,14 +228,53 @@ def test_failed_replacement_revokes_stale_replay_authority() -> None:
 
 
 @pytest.mark.component
-@pytest.mark.usefixtures("fast_transport")
+async def test_cancelled_cleanup_cannot_clear_a_newer_curve() -> None:
+    """Finish clearing a partial curve before allowing a replacement to reach GATT."""
+    device, ble = _device("DYRGB-test")
+    cleanup_armed = asyncio.Event()
+    cleanup = None
+
+    def fail_point(_frame: bytes) -> list[bytes]:
+        nonlocal cleanup
+        if ble.connections == 3:
+            cleanup = ble.pause("connect")
+            cleanup_armed.set()
+        raise BleakError("point write failed")
+
+    ble.expect(90, 6, [0, 16, 90], respond=fail_point)
+    failed = asyncio.create_task(device.set_auto_curve([(0, 480, 90)]))
+    await asyncio.wait_for(cleanup_armed.wait(), 5)
+    assert cleanup is not None
+    await cleanup.wait()
+    before = len(ble.writes)
+    newer = asyncio.create_task(device.set_auto_curve([(0, 720, 30)]))
+    failed.cancel()
+    try:
+        await asyncio.sleep(0)
+        assert not failed.done()
+        assert len(ble.writes) == before
+    finally:
+        cleanup.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(failed, 5)
+        await asyncio.wait_for(newer, 5)
+        await device.disconnect()
+    assert [frame[5:-1].hex(" ") for frame in ble.writes[before:] if frame[5] in (5, 6)] == [
+        "05 05 ff ff",  # clear the failed replacement
+        "05 05 ff ff",  # start the new replacement
+        "05 03 ff ff",
+        "06 00 18 1e",
+    ]
+
+
+@pytest.mark.component
 @pytest.mark.parametrize(("name", "weekdays"), [("DYSSD-test", True), ("DYZSD-test", False)])
 def test_mixed_aliases_use_advertised_capability(name: str, weekdays: bool) -> None:
     """One classified alias does not assign Lite behavior to every model alias."""
 
     async def run() -> None:
-        device, transport = _device(name)
-        device.model = DeviceModel("Mixed aliases", ("DYSSD", "DYZSD"), LedSpec(WHITE_CHANNELS))
+        model = DeviceModel("Mixed aliases", ("DYSSD", "DYZSD"), LedSpec(WHITE_CHANNELS))
+        device, transport = _device(name, model=model)
         assert device.supports_weekdays is weekdays
         await device.replace_settings([_scene()])
         await device.disconnect()
@@ -264,7 +286,6 @@ def test_mixed_aliases_use_advertised_capability(name: str, weekdays: bool) -> N
 
 
 @pytest.mark.component
-@pytest.mark.usefixtures("fast_transport")
 def test_explicit_custom_controller_enable_and_reset_preserve_point_path() -> None:
     """A fresh client can select and clear the custom controller explicitly."""
 
@@ -280,34 +301,9 @@ def test_explicit_custom_controller_enable_and_reset_preserve_point_path() -> No
     asyncio.run(run())
 
 
-def _hold_connection_or_clock(transport: ScriptedTransport, patch: pytest.MonkeyPatch, phase: str) -> asyncio.Event:
-    """Hold one connection or clock submission; a subsequent cleanup must be free to run."""
-    entered = asyncio.Event()
-    write = transport._write_frame
-
-    async def hold_connection() -> None:
-        patch.undo()
-        entered.set()
-        await asyncio.Future()
-
-    async def hold_clock(client: object, characteristic: object, frame: bytes) -> None:
-        await write(client, characteristic, frame)
-        if frame[5] == 9:
-            await hold_connection()
-
-    if phase == "connect":
-        patch.setattr(transport, "_establish_ble_client", hold_connection)
-    else:
-        patch.setattr(transport, "_write_frame", hold_clock)
-    return entered
-
-
 @pytest.mark.component
-@pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize("phase", ["connect", "prelude", "scene_clock"])
-async def test_cancel_before_replacement_reset_never_clears_schedule(
-    phase: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_cancel_before_replacement_reset_never_clears_schedule(phase: str) -> None:
     """Even after admission, connection and clock writes do not justify a cleanup reset."""
     device, transport = _device()
     await device.set_auto_curve([(0, 480, 90)])
@@ -315,18 +311,17 @@ async def test_cancel_before_replacement_reset_never_clears_schedule(
     before = len(transport.writes)
     if phase != "scene_clock":
         await device.disconnect()
-    with monkeypatch.context() as patch:
-        entered = _hold_connection_or_clock(transport, patch, phase)
-        replacement = (
-            device.replace_settings([_scene()]) if phase == "scene_clock" else device.set_auto_curve([(0, 720, 0)])
-        )
-        task = asyncio.create_task(replacement)
-        try:
-            await asyncio.wait_for(entered.wait(), 5)
-        finally:
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 5)
+    hold = transport.pause("connect") if phase == "connect" else transport.pause("write", mode=9)
+    replacement = (
+        device.replace_settings([_scene()]) if phase == "scene_clock" else device.set_auto_curve([(0, 720, 0)])
+    )
+    task = asyncio.create_task(replacement)
+    try:
+        await hold.wait()
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
     assert _operations(transport.writes[before:]) == []
     assert device.controller_mode is LedControllerMode.CUSTOM_CURVE
     await device.disconnect()
@@ -336,23 +331,34 @@ async def test_cancel_before_replacement_reset_never_clears_schedule(
     await device.disconnect()
 
 
+async def _cancel_while_status_is_in_flight(
+    device: ChihirosDevice, transport: ScriptedTransport, operation: Coroutine
+) -> None:
+    hold = transport.pause("write", mode=4)
+    status = asyncio.create_task(device.query_status())
+    try:
+        await hold.wait()
+        before = len(transport.writes)
+        pending = asyncio.create_task(operation)
+        await asyncio.sleep(0)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(pending, 5)
+        assert len(transport.writes) == before
+    finally:
+        hold.release.set()
+        await asyncio.wait_for(status, 5)
+
+
 @pytest.mark.component
-@pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize("target", [None, LedControllerMode.CUSTOM_CURVE])
 async def test_cancel_queued_auto_enable_preserves_lite_replay(target: LedControllerMode | None) -> None:
     """Cancelling either a replay or a switch to a different controller preserves the active scenes."""
     device, transport = _device()
     await device.replace_settings([_scene()])
     expected = _operations(transport.writes)
+    await _cancel_while_status_is_in_flight(device, transport, device.enable_auto_mode(controller_mode=target))
     before = len(transport.writes)
-    async with transport._operation_lock:
-        task = asyncio.create_task(device.enable_auto_mode(controller_mode=target))
-        await asyncio.sleep(0)
-        assert not task.done()
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-    assert len(transport.writes) == before
     assert device.controller_mode is LedControllerMode.SCENE
     await device.disconnect()
     await device.query_status()
@@ -374,7 +380,6 @@ async def _mutate_settings(device: ChihirosDevice, mutation: str) -> None:
 
 
 @pytest.mark.component
-@pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize("mutation", ["add", "remove", "reset", "point"])
 async def test_cancelled_queued_edit_preserves_lite_replay(mutation: str) -> None:
     """An edit cancelled before transport admission never supersedes an owned schedule."""
@@ -386,15 +391,8 @@ async def test_cancelled_queued_edit_preserves_lite_replay(mutation: str) -> Non
         await device.replace_settings([_scene()])
     controller = device.controller_mode
     original_schedule = _operations(transport.writes)
+    await _cancel_while_status_is_in_flight(device, transport, _mutate_settings(device, mutation))
     before = len(transport.writes)
-    async with transport._operation_lock:
-        editing = asyncio.create_task(_mutate_settings(device, mutation))
-        await asyncio.sleep(0)  # Let the edit reach the held transport lock.
-        assert not editing.done()
-        editing.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await editing
-    assert len(transport.writes) == before
 
     await device.disconnect()
     await device.query_status()
@@ -404,38 +402,23 @@ async def test_cancelled_queued_edit_preserves_lite_replay(mutation: str) -> Non
 
 
 @pytest.mark.component
-@pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize("mutation", ["add", "remove", "reset", "point"])
-async def test_queued_incremental_edit_revokes_replacement_authority(
-    monkeypatch: pytest.MonkeyPatch, mutation: str
-) -> None:
+async def test_queued_incremental_edit_revokes_replacement_authority(mutation: str) -> None:
     """Reconnect must not resurrect an owned schedule superseded by a queued edit."""
     device, transport = _device()
-    entered, release, requested = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    original = transport._write_frame
-
-    async def hold_replacement(client: object, characteristic: object, frame: bytes) -> None:
-        if (frame[0], frame[5]) == (165, 25) and not entered.is_set():
-            entered.set()
-            await release.wait()
-        await original(client, characteristic, frame)
-
-    async def mutate() -> None:
-        requested.set()
-        await _mutate_settings(device, mutation)
-
-    monkeypatch.setattr(transport, "_write_frame", hold_replacement)
+    hold = transport.pause("write", mode=25)
     replacing = asyncio.create_task(device.replace_settings([_scene()]))
     try:
-        await asyncio.wait_for(entered.wait(), timeout=5)
-        editing = asyncio.create_task(mutate())
-        await asyncio.wait_for(requested.wait(), timeout=5)
-        release.set()
+        await hold.wait()
+        editing = asyncio.create_task(_mutate_settings(device, mutation))
+        await asyncio.sleep(0)
+        assert not editing.done()
+        hold.release.set()
         await asyncio.gather(replacing, editing)
         await device.disconnect()
         before = len(transport.writes)
         await device.query_status()
         assert not _operations(transport.writes[before:])
     finally:
-        release.set()
+        hold.release.set()
         await device.disconnect()

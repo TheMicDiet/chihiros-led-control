@@ -31,8 +31,9 @@ Example::
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+import asyncio
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import cast
 
 from bleak_retry_connector import BleakClientWithServiceCache, BleakError
@@ -43,13 +44,10 @@ from .const import (
     UART_RX_CHAR_UUID,
     UART_TX_CHAR_UUID,
 )
-from .transport import BATCH_WRITE_DELAY, BleTransport, PreludeCallback
+from .transport import BATCH_WRITE_DELAY, BleTransport, PreludeCallback, WriteBoundary
 
 NotificationHandler = Callable[[object, bytearray], None]
 DisconnectedCallback = Callable[[object], None]
-
-# Sentinel returned by the responder for rules marked ``fail``.
-_FAIL = object()
 
 
 class ScriptedBLEDevice:
@@ -78,8 +76,13 @@ class _ScriptedServices:
     notification support while retaining DFU to catch accidental pairing.
     """
 
-    def __init__(self, *, include_notify: bool = True) -> None:
-        """Create the UART TX/RX characteristics."""
+    def __init__(self, include_notify: bool, characteristics: Mapping[str, Sequence[str]] | None) -> None:
+        """Create the supplied characteristics or the default layout."""
+        if characteristics is not None:
+            self._characteristics = {
+                uuid: _ScriptedCharacteristic(uuid, props) for uuid, props in characteristics.items()
+            }
+            return
         self._characteristics = {
             UART_RX_CHAR_UUID: _ScriptedCharacteristic(UART_RX_CHAR_UUID, ("write", "write-without-response")),
             HM10_RX_CHAR_UUID: _ScriptedCharacteristic(
@@ -163,33 +166,42 @@ class ScriptedResponder:
         """Return whether a written frame matches a registered rule."""
         return frame[0] == rule.cmd_id and frame[5] == rule.cmd_mode and self._params_match(rule, frame)
 
-    def replies_for(self, frame: bytes) -> tuple[bytes, ...] | object | None:
-        """Return reply frames for a written command.
-
-        Returns ``_FAIL`` when the matching rule simulates a write failure,
-        ``None`` when no rule matches, and a tuple of reply frames otherwise.
-        """
+    def replies_for(self, frame: bytes) -> tuple[bytes, ...]:
+        """Return reply frames or raise the matching scripted write failure."""
         for rule in self._rules:
             if not self._rule_matches(rule, frame):
                 continue
             if rule.fail:
-                return _FAIL
+                raise BleakError("scripted write failure")
             if callable(rule.respond):
                 return tuple(rule.respond(frame))
             return rule.respond
-        return None
+        return ()
+
+
+@dataclass
+class ScriptedPause:
+    """A one-shot pause at the simulated GATT boundary."""
+
+    entered: asyncio.Event = field(default_factory=asyncio.Event)
+    release: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def wait(self, timeout: float = 5) -> None:
+        """Wait until the operation reaches the simulated peripheral."""
+        await asyncio.wait_for(self.entered.wait(), timeout)
 
 
 class _ScriptedBleClient:
     """In-memory GATT client that records writes and pushes scripted replies."""
 
-    def __init__(self, responder: ScriptedResponder, *, include_notify: bool = True) -> None:
+    def __init__(self, transport: ScriptedTransport) -> None:
         """Initialize the scripted GATT client."""
-        self._responder = responder
+        self._transport = transport
+        self._responder = transport.responder
         self._notification_handler: NotificationHandler | None = None
         self._disconnected_callback: DisconnectedCallback | None = None
         self.is_connected = False
-        self.services = _ScriptedServices(include_notify=include_notify)
+        self.services = _ScriptedServices(transport.notify_characteristics, transport.characteristics)
 
     def attach(self, disconnected_callback: DisconnectedCallback) -> None:
         """Reset state for a fresh connection and remember the disconnect callback."""
@@ -197,14 +209,16 @@ class _ScriptedBleClient:
         self.is_connected = True
         self._disconnected_callback = disconnected_callback
 
-    async def start_notify(self, characteristic: object, handler: NotificationHandler) -> None:
+    async def start_notify(self, characteristic: _ScriptedCharacteristic, handler: NotificationHandler) -> None:
         """Register the notification handler used to deliver scripted replies."""
-        del characteristic
+        self._transport.subscriptions.append(characteristic.uuid)
+        await self._transport._wait_at("subscribe")
         self._notification_handler = handler
 
     async def stop_notify(self, characteristic: object) -> None:
         """Drop the registered notification handler."""
         del characteristic
+        await self._transport._wait_at("unsubscribe")
         self._notification_handler = None
 
     async def write_gatt_char(
@@ -214,20 +228,22 @@ class _ScriptedBleClient:
         response: bool = False,
     ) -> None:
         """Record a written command frame and deliver scripted replies."""
-        del characteristic, response
+        del characteristic
         frame = bytes(data)
         self._responder.writes.append(frame)
-        replies = self._responder.replies_for(frame)
-        if replies is _FAIL:
-            raise BleakError("scripted write failure")
-        handler = self._notification_handler
-        if handler is not None and replies:
-            for reply in replies:
-                # The client's notification handler ignores the sender.
-                handler(None, bytearray(reply))
+        self._transport.write_responses.append(response)
+        await self._transport._wait_at("write", frame[5] if len(frame) > 5 else None)
+        for reply in self._responder.replies_for(frame):
+            self.notify(reply)
+
+    def notify(self, frame: bytes) -> None:
+        """Deliver a notification to the current subscription, if any."""
+        if self._notification_handler is not None:
+            self._notification_handler(None, bytearray(frame))
 
     async def disconnect(self) -> None:
         """Disconnect and notify the device client's disconnect handler."""
+        await self._transport._wait_at("disconnect")
         self.is_connected = False
         callback = self._disconnected_callback
         self._disconnected_callback = None
@@ -244,15 +260,22 @@ class ScriptedTransport(BleTransport):
         name: str = "DYNA2-test",
         address: str = "AA:BB:CC:DD:EE:FF",
         notify_characteristics: bool = True,
+        characteristics: Mapping[str, Sequence[str]] | None = None,
+        realtime: bool = True,
         notification_callback: NotificationHandler | None = None,
         prelude_callback: PreludeCallback | None = None,
     ) -> None:
         """Initialize a scripted responder and BLE session factory."""
         self.address = address
-        self._notify_characteristics = notify_characteristics
+        self.notify_characteristics = notify_characteristics
+        self.characteristics = characteristics
+        self.realtime = realtime
         self.responder = ScriptedResponder()
         self.connections = 0
         self.clients: list[_ScriptedBleClient] = []
+        self.subscriptions: list[str] = []
+        self.write_responses: list[bool] = []
+        self._pauses: dict[tuple[str, int | None], ScriptedPause] = {}
         super().__init__(
             ScriptedBLEDevice(name, address),  # type: ignore[arg-type]
             notification_callback=notification_callback,
@@ -267,7 +290,32 @@ class ScriptedTransport(BleTransport):
     @property
     def batch_write_delay(self) -> float:
         """Return the scriptable production pacing interval."""
-        return BATCH_WRITE_DELAY
+        return BATCH_WRITE_DELAY if self.realtime else 0
+
+    async def send(
+        self, frames: Sequence[bytes], *, attempts: int, notification_wait: float, boundary: WriteBoundary | None = None
+    ) -> None:
+        """Send through the real transport, optionally skipping hardware-only delays."""
+        await super().send(
+            frames, attempts=attempts, notification_wait=notification_wait if self.realtime else 0, boundary=boundary
+        )
+
+    def notify(self, frame: bytes) -> None:
+        """Send an unsolicited notification from the connected peripheral."""
+        if self.clients and self.clients[-1].is_connected:
+            self.clients[-1].notify(frame)
+
+    def pause(self, operation: str, *, mode: int | None = None) -> ScriptedPause:
+        """Pause the next matching connect, subscribe, write, unsubscribe or disconnect."""
+        pause = ScriptedPause()
+        self._pauses[operation, mode] = pause
+        return pause
+
+    async def _wait_at(self, operation: str, mode: int | None = None) -> None:
+        pause = self._pauses.pop((operation, mode), None) or self._pauses.pop((operation, None), None)
+        if pause is not None:
+            pause.entered.set()
+            await pause.release.wait()
 
     def expect(
         self,
@@ -283,7 +331,8 @@ class ScriptedTransport(BleTransport):
 
     async def _establish_ble_client(self) -> BleakClientWithServiceCache:
         """Create the next scripted BLE session for production setup to configure."""
-        client = _ScriptedBleClient(self.responder, include_notify=self._notify_characteristics)
+        await self._wait_at("connect")
+        client = _ScriptedBleClient(self)
         client.attach(self._disconnected)
         self.clients.append(client)
         self.connections += 1

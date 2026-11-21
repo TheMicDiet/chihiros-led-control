@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 
@@ -19,22 +17,3 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         raise pytest.UsageError(
             "Each test must have exactly one layer marker (unit, component, integration):\n" + "\n".join(invalid)
         )
-
-
-@pytest.fixture(autouse=True)
-def enable_event_loop_debug():
-    """Enable event loop debug mode (Python 3.10+ compatible).
-
-    Overrides the broken fixture from pytest-homeassistant-custom-component
-    which calls asyncio.get_event_loop() and fails on Python 3.14.
-    """
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        loop.set_debug(True)
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.set_debug(True)

@@ -6,20 +6,12 @@ import asyncio
 
 import pytest
 
-from chihiros_led_control import testing as testing_module
 from chihiros_led_control.devices import ChihirosDevice
-from chihiros_led_control.devices import base as device_base
 from chihiros_led_control.models import WHITE_CHANNELS, DeviceModel, LedLevelScale, LedSpec
 from chihiros_led_control.protocol.led import parse_notification
 from chihiros_led_control.protocol.notifications import SchedulePoint, ScheduleSnapshotNotification
 from chihiros_led_control.registry import detect_model
 from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
-
-
-def _fast_waits(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(device_base, "COMMAND_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(device_base, "STATUS_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(testing_module, "BATCH_WRITE_DELAY", 0.0)
 
 
 def _snapshot(*levels: int) -> bytes:
@@ -28,10 +20,9 @@ def _snapshot(*levels: int) -> bytes:
 
 
 @pytest.mark.component
-def test_verified_vivid_raw_levels_manual_points_and_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_verified_vivid_raw_levels_manual_points_and_snapshot() -> None:
     """DYRGBV forwards extended levels; notifications retain valid model units."""
-    _fast_waits(monkeypatch)
-    transport = ScriptedTransport(name="DYRGBV-test")
+    transport = ScriptedTransport(realtime=False, name="DYRGBV-test")
     snapshot = _snapshot(115, 130, 200, 201)
     transport.expect(90, 4, [1], respond=[snapshot])
 
@@ -83,14 +74,11 @@ def test_verified_vivid_raw_levels_manual_points_and_snapshot(monkeypatch: pytes
 
 @pytest.mark.component
 @pytest.mark.parametrize("scale", [LedLevelScale.NEW_A_SERIES, LedLevelScale.MAGNETIC])
-def test_explicit_scaled_model_manual_points_and_snapshot(
-    monkeypatch: pytest.MonkeyPatch, scale: LedLevelScale
-) -> None:
+def test_explicit_scaled_model_manual_points_and_snapshot(scale: LedLevelScale) -> None:
     """Only explicitly selected scaled setters normalize raw values, including 0/1."""
-    _fast_waits(monkeypatch)
     spec = LedSpec(WHITE_CHANNELS, channel_maxima={0: 125}, level_scale=scale)
     model = DeviceModel("Explicit model, not a prefix assignment", (), spec)
-    transport = ScriptedTransport()
+    transport = ScriptedTransport(realtime=False)
     snapshot = _snapshot(0, 1, 72, 100, 101)
     transport.expect(90, 4, [1], respond=[snapshot])
 

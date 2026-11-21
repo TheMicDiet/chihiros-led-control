@@ -1,55 +1,37 @@
-"""Tests for the vendored library sync script."""
+"""The vendor-sync command against a temporary on-disk package tree."""
 
 from __future__ import annotations
 
-import importlib.util
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.component
-
-SYNC_VENDOR_PATH = Path(__file__).resolve().parents[1] / "scripts" / "sync_vendor.py"
-SYNC_VENDOR_SPEC = importlib.util.spec_from_file_location("sync_vendor", SYNC_VENDOR_PATH)
-assert SYNC_VENDOR_SPEC is not None
-assert SYNC_VENDOR_SPEC.loader is not None
-sync_vendor = importlib.util.module_from_spec(SYNC_VENDOR_SPEC)
-SYNC_VENDOR_SPEC.loader.exec_module(sync_vendor)
+SYNC_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "sync_vendor.py"
 
 
-def test_sync_vendor_copies_runtime_files_and_check_passes(tmp_path, monkeypatch) -> None:
-    """Sync copies runtime files and check mode passes."""
+def test_vendor_sync_and_check(tmp_path: Path) -> None:
+    """Sync ships only runtime files; check detects a stale install without rewriting it."""
+    script = tmp_path / "scripts" / SYNC_SCRIPT.name
+    script.parent.mkdir()
+    shutil.copyfile(SYNC_SCRIPT, script)
     source = tmp_path / "src" / "chihiros_led_control"
-    vendor = tmp_path / "custom_components" / "chihiros" / "vendor" / "chihiros_led_control"
     source.mkdir(parents=True)
     (source / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
-    (source / "cli.py").write_text("CLI_ONLY = True\n", encoding="utf-8")
-    (source / "__pycache__").mkdir()
-    (source / "__pycache__" / "ignored.pyc").write_bytes(b"cache")
+    (source / "cli.py").touch()
+    (source / "testing.py").touch()
+    vendor = tmp_path / "custom_components" / "chihiros" / "vendor" / "chihiros_led_control"
 
-    monkeypatch.setattr(sync_vendor, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(sync_vendor, "SOURCE", source)
-    monkeypatch.setattr(sync_vendor, "VENDOR", vendor)
+    command = [sys.executable, str(script)]
+    subprocess.run(command, check=True, capture_output=True, text=True, timeout=5)
+    assert [file.name for file in vendor.iterdir()] == ["__init__.py"]
+    subprocess.run([*command, "--check"], check=True, capture_output=True, text=True, timeout=5)
 
-    sync_vendor._copy_runtime_tree()
-
+    (source / "__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
+    result = subprocess.run([*command, "--check"], check=False, capture_output=True, text=True, timeout=5)
+    assert result.returncode == 1
+    assert "changed: __init__.py" in result.stdout
     assert (vendor / "__init__.py").read_text(encoding="utf-8") == "VALUE = 1\n"
-    assert not (vendor / "cli.py").exists()
-    assert not (vendor / "__pycache__").exists()
-    assert sync_vendor._check_runtime_tree() == 0
-
-
-def test_sync_vendor_check_fails_when_vendor_is_stale(tmp_path, monkeypatch) -> None:
-    """Check mode fails when the vendored copy is stale."""
-    source = tmp_path / "src" / "chihiros_led_control"
-    vendor = tmp_path / "custom_components" / "chihiros" / "vendor" / "chihiros_led_control"
-    source.mkdir(parents=True)
-    vendor.mkdir(parents=True)
-    (source / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
-    (vendor / "__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
-
-    monkeypatch.setattr(sync_vendor, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(sync_vendor, "SOURCE", source)
-    monkeypatch.setattr(sync_vendor, "VENDOR", vendor)
-
-    assert sync_vendor._check_runtime_tree() == 1
