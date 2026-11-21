@@ -350,6 +350,12 @@ alarms (`insufficient_water`, `power_too_low`, `water_overheat`,
 
 ### Master/slave mirroring (pump → stirrer)
 
+**Upgrading to 0.19.3?** Check existing `chihiros.set_dosing_schedule` actions:
+the old action editor could save `weekdays: [everyday]` even if you never chose
+a day. If there is no `daily_ml`, remove `weekdays` or `frequency` to keep the
+pump's current repetition. Supply the intended `daily_ml` only if you want to
+program the daily volume and repetition together.
+
 The vendor app mirrors a linked stirrer by broadcasting the pump's programming
 frames. Home Assistant cannot broadcast, so mirroring is explicit:
 

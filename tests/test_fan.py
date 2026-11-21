@@ -760,6 +760,30 @@ async def test_deferred_temperature_restore_respects_live_pair(
     ) == expected
 
 
+async def test_failed_temperature_write_preserves_pending_pair_restore(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected explicit threshold write does not discard the saved pair."""
+    entry, client, _coordinator = await _setup(hass, monkeypatch)
+    start_id = _entity(hass, "number", "fan_start_temp").entity_id
+    stop_id = _entity(hass, "number", "fan_stop_temp").entity_id
+    deferred = _DeferredRestore(hass, monkeypatch, "_restore_temperatures")
+
+    async def fail_write() -> None:
+        raise RuntimeError("rejected before write")
+
+    try:
+        await _reload_entry(hass, entry, lambda: _prime_fan_temperature_restore(hass, start_id, stop_id, True))
+        await asyncio.wait_for(deferred.created.wait(), 5)
+        client.before_fan_temp = fail_write
+        with pytest.raises(HomeAssistantError):
+            await _entity(hass, "number", "fan_start_temp").async_set_native_value(40)
+    finally:
+        client.before_fan_temp = None
+        await deferred.finish()
+    assert client.fan_temp_calls == [(45, 36)]
+
+
 async def test_enabled_fan_start_restores_with_disabled_stop(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
@@ -960,6 +984,33 @@ async def test_deferred_fan_auto_restore_respects_explicit_command(
     assert fan.percentage == percentage
     assert client.fan_auto_calls == 0
     assert client.fan_auto is False
+
+
+@pytest.mark.parametrize("command", ["percentage", "preset"])
+async def test_failed_fan_command_preserves_deferred_auto_restore(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    """A rejected manual command must not leave HA reporting Auto without restoring it."""
+    entry, client, _coordinator = await _setup(hass, monkeypatch)
+    fan_id = _entity_id(er.async_get(hass))
+    deferred = _DeferredRestore(hass, monkeypatch, "_restore_auto_mode")
+    try:
+        await _reload_entry(
+            hass, entry, lambda: _prime_restore_state(hass, fan_id, State(fan_id, STATE_ON, {"preset_mode": "Auto"}))
+        )
+        await asyncio.wait_for(deferred.created.wait(), 5)
+        client.set_fan_speed_exception = RuntimeError("rejected before write")
+        fan = _entity(hass, "fan", "fan")
+        with pytest.raises(HomeAssistantError):
+            if command == "percentage":
+                await fan.async_set_percentage(45)
+            else:
+                await fan.async_set_preset_mode("Manual")
+    finally:
+        await deferred.finish()
+    assert client.fan_auto_calls == 1
+    assert client.fan_auto
+    assert fan.preset_mode == "Auto"
 
 
 async def test_off_state_reload_remembers_manual_fan_speed(

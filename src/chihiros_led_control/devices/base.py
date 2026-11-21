@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import logging
 from collections.abc import Callable, Sequence
+from typing import cast
 
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
@@ -13,7 +14,7 @@ from ..models import DeviceKind, DeviceModel
 from ..protocol.frame import create_command_encoding, encode_timestamp, next_message_id
 from ..protocol.notifications import ParsedNotification
 from ..registry import FALLBACK
-from ..transport import BleTransport, ChihirosTransport
+from ..transport import BleTransport, ChihirosTransport, ScheduleTransport, WriteBoundary
 
 DEFAULT_ATTEMPTS = 3
 COMMAND_NOTIFICATION_WAIT = 0.5
@@ -129,7 +130,7 @@ class BaseChihirosDevice:
         retry: int | None = None,
         notification_wait: float | None = None,
         *,
-        on_started: Callable[[], None] | None = None,
+        boundary: WriteBoundary | None = None,
     ) -> None:
         """Submit one complete encoded frame batch to the public transport."""
         commands_to_send = [bytes(item) for item in command] if isinstance(command, list) else [bytes(command)]
@@ -139,9 +140,17 @@ class BaseChihirosDevice:
         if notification_wait is None:
             notification_wait = COMMAND_NOTIFICATION_WAIT
         self._logger.debug("%s: Sending commands %s", self.name, [item.hex() for item in commands_to_send])
-        await self.transport.send(
-            commands_to_send, attempts=attempts, notification_wait=notification_wait, on_started=on_started
-        )
+        if boundary is None:
+            await self.transport.send(commands_to_send, attempts=attempts, notification_wait=notification_wait)
+            return
+        # Catch signature mismatch at coroutine creation, never retry a send that ran.
+        try:
+            send = cast(ScheduleTransport, self.transport).send(
+                commands_to_send, attempts=attempts, notification_wait=notification_wait, boundary=boundary
+            )
+        except TypeError as ex:
+            raise TypeError("Custom transports must implement send(..., boundary=...) for LED schedule changes") from ex
+        await send
 
     def _parse_notification(self, data: bytes | bytearray) -> ParsedNotification | None:
         """Parse a raw notification using the selected family codec."""

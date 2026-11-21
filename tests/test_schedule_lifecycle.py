@@ -280,6 +280,86 @@ def test_explicit_custom_controller_enable_and_reset_preserve_point_path() -> No
     asyncio.run(run())
 
 
+def _hold_connection_or_clock(transport: ScriptedTransport, patch: pytest.MonkeyPatch, phase: str) -> asyncio.Event:
+    """Hold one connection or clock submission; a subsequent cleanup must be free to run."""
+    entered = asyncio.Event()
+    write = transport._write_frame
+
+    async def hold_connection() -> None:
+        patch.undo()
+        entered.set()
+        await asyncio.Future()
+
+    async def hold_clock(client: object, characteristic: object, frame: bytes) -> None:
+        await write(client, characteristic, frame)
+        if frame[5] == 9:
+            await hold_connection()
+
+    if phase == "connect":
+        patch.setattr(transport, "_establish_ble_client", hold_connection)
+    else:
+        patch.setattr(transport, "_write_frame", hold_clock)
+    return entered
+
+
+@pytest.mark.component
+@pytest.mark.usefixtures("fast_transport")
+@pytest.mark.parametrize("phase", ["connect", "prelude", "scene_clock"])
+async def test_cancel_before_replacement_reset_never_clears_schedule(
+    phase: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even after admission, connection and clock writes do not justify a cleanup reset."""
+    device, transport = _device()
+    await device.set_auto_curve([(0, 480, 90)])
+    expected_replay = _operations(transport.writes)
+    before = len(transport.writes)
+    if phase != "scene_clock":
+        await device.disconnect()
+    with monkeypatch.context() as patch:
+        entered = _hold_connection_or_clock(transport, patch, phase)
+        replacement = (
+            device.replace_settings([_scene()]) if phase == "scene_clock" else device.set_auto_curve([(0, 720, 0)])
+        )
+        task = asyncio.create_task(replacement)
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5)
+    assert _operations(transport.writes[before:]) == []
+    assert device.controller_mode is LedControllerMode.CUSTOM_CURVE
+    await device.disconnect()
+    before = len(transport.writes)
+    await device.query_status()
+    assert _operations(transport.writes[before:]) == expected_replay
+    await device.disconnect()
+
+
+@pytest.mark.component
+@pytest.mark.usefixtures("fast_transport")
+@pytest.mark.parametrize("target", [None, LedControllerMode.CUSTOM_CURVE])
+async def test_cancel_queued_auto_enable_preserves_lite_replay(target: LedControllerMode | None) -> None:
+    """Cancelling either a replay or a switch to a different controller preserves the active scenes."""
+    device, transport = _device()
+    await device.replace_settings([_scene()])
+    expected = _operations(transport.writes)
+    before = len(transport.writes)
+    async with transport._operation_lock:
+        task = asyncio.create_task(device.enable_auto_mode(controller_mode=target))
+        await asyncio.sleep(0)
+        assert not task.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert len(transport.writes) == before
+    assert device.controller_mode is LedControllerMode.SCENE
+    await device.disconnect()
+    await device.query_status()
+    assert _operations(transport.writes[before:]) == expected
+    await device.disconnect()
+
+
 async def _mutate_settings(device: ChihirosDevice, mutation: str) -> None:
     """Apply an incremental edit that relinquishes full replay authority."""
     scene = _scene()

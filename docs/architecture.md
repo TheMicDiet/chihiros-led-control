@@ -85,16 +85,23 @@ The BLE protocol exposes reset and add operations but no atomic replacement or
 reliable read-back suitable for rollback. `set_schedule` validates the complete
 replacement before resetting the device. The driver holds its schedule lock
 through programming and best-effort cleanup, including cancellation, so a
-failed replacement cannot later clear a newer writer's schedule. Cancellation
-while queued for the transport leaves the previous schedule and replay authority
-intact. Once admitted, a failed replacement attempts another reset rather than
-leaving a partial schedule; Home Assistant reports that the old schedule cannot
-be restored. If cleanup also fails, the error is logged because the hardware
-contents remain uncertain.
+failed replacement cannot later clear a newer writer's schedule. Waiting for BLE,
+connecting, and syncing the clock do not invalidate an existing schedule. Only
+when the reset frame is submitted can a failed replacement justify another reset
+to clear partial programming. Even a rejected GATT write may have reached the
+device; if cleanup also fails, the hardware contents remain uncertain.
 
-`ChihirosTransport.send` invokes its optional `on_started` callback only after
-acquiring the operation lock and before connection setup or its prelude. Schedule
-ownership changes at that admission boundary, never while waiting in the queue.
+**Custom Python transports:** Ordinary commands still call `send(frames, *,
+attempts, notification_wait)`. To support LED schedule edits, controller changes
+and Lite replay batches, implement `ScheduleTransport.send` (see
+`chihiros_led_control.transport`): accept the optional `boundary=None` keyword.
+When provided, use `boundary.prelude` instead of the usual prelude on every new
+connection for this batch. After local checks, call `boundary.before_write()`
+synchronously just before submitting `frames[boundary.index]` on each attempt.
+The zero-based index excludes prelude frames. Do not notify while queued or
+connecting. This preserves replay for unrelated operations and lets the driver
+distinguish an untouched schedule from an ambiguous write. The built-in BLE and
+scripted transports implement this contract.
 
 ## State ownership and recovery
 
@@ -105,10 +112,10 @@ ownership changes at that admission boundary, never while waiting in the queue.
   Start/stop and paired stirrer settings share the same channel lock. A failed
   or cancelled BLE batch can still have partially changed physical state.
 - Fan temperature controls share one locked start/stop pair. Startup restoration
-  snapshots the saved pair once, including a disabled partner, and later user
-  commands supersede queued restoration. The shared restore remains active while
-  either temperature number is present; removing the last number cancels and
-  awaits it. Renaming the sole enabled number resumes an unfinished snapshot on
+  snapshots the saved pair once, including a disabled partner. Only successful
+  user commands supersede queued fan Auto or temperature restoration. The shared
+  restore remains active while either temperature number is present; removing
+  the last number cancels and awaits it. Renaming the sole enabled number resumes an unfinished snapshot on
   re-addition. The fan's Auto restore also resumes after an entity-ID rename,
   without resetting command revisions; unloading still cancels pending restores.
   The fan also persists its last nonzero manual speed while off.

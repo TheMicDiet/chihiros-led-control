@@ -278,13 +278,13 @@ class ChihirosFanTempNumberBase(NumberEntity, RestoreEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         """Read, derive, write and commit both temperatures as one operation."""
-        self._pair.revision += 1
         async with self._pair.lock:
             start_temp, stop_temp = self._temperature_pair(value)
             try:
                 await self._device.set_fan_start_stop_temp(start_temp, stop_temp)
             except Exception as ex:
                 raise HomeAssistantError(f"Failed to set fan temperature for {self.name}") from ex
+            self._pair.revision += 1
             self._pair.restored = None
             async_dispatcher_send(self.hass, _fan_temp_signal(self._device.address))
 

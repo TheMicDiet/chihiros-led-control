@@ -144,9 +144,9 @@ class ChihirosFanEntity(
         minimum = self._device.model.min_fan_speed
         if 0 < applied_percentage < minimum:
             applied_percentage = minimum
-        self._command_revision += 1
         async with self._command_lock:
             await self._set_fan_speed(applied_percentage)
+            self._command_revision += 1
             self._attr_percentage = applied_percentage
             if applied_percentage > 0:
                 self._last_manual_percentage = applied_percentage
@@ -156,7 +156,6 @@ class ChihirosFanEntity(
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Switch between temperature-controlled auto mode and manual speed."""
         _LOGGER.debug("Setting fan preset: %s to %s", self.name, preset_mode)
-        self._command_revision += 1
         async with self._command_lock:
             if preset_mode == "Auto":
                 await self._set_auto_mode()
@@ -167,6 +166,7 @@ class ChihirosFanEntity(
                 self._attr_percentage = percentage
                 self._last_manual_percentage = percentage
                 self._attr_preset_mode = "Manual"
+            self._command_revision += 1
             self.schedule_update_ha_state()
 
     async def _set_auto_mode(self) -> None:

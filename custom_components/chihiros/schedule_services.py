@@ -127,8 +127,7 @@ async def _async_write_auto_curve(data: ChihirosData, points: list[tuple[int, in
     except Exception as ex:
         raise HomeAssistantError(
             f"Failed to write auto curve for {data.device.name}; "
-            "the previous curve cannot be restored and the integration "
-            "attempted to clear the partial replacement"
+            "if the reset was sent, the previous curve may be lost. Check the device schedule."
         ) from ex
 
 
@@ -272,7 +271,7 @@ async def async_replace_schedule(chihiros_data: ChihirosData, periods: list[dict
     except Exception as ex:
         raise HomeAssistantError(
             f"Failed to replace the schedule for {chihiros_data.device.name}; "
-            "the previous schedule cannot be restored and the integration attempted to clear the partial replacement"
+            "if the reset was sent, the previous schedule may be lost. Check the device schedule."
         ) from ex
 
 

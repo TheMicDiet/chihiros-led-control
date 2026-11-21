@@ -66,7 +66,11 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
           SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          gh release create "$TAG" \
+          notes=()
+          if [[ -f "docs/releases/$TAG.md" ]]; then
+            notes=(--notes-file "docs/releases/$TAG.md")
+          fi
+          gh release create "$TAG" "${notes[@]}" \
             --title "$TAG" \
             --target "$SHA" \
             --generate-notes \

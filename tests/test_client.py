@@ -30,6 +30,7 @@ from chihiros_led_control.protocol.notifications import (
 )
 from chihiros_led_control.registry import DOSING_PUMP, MAG_STIRRER
 from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
+from chihiros_led_control.transport import WriteBoundary
 
 
 class FakeBLEDevice:
@@ -90,6 +91,26 @@ def test_enable_auto_mode_uses_supplied_timestamp() -> None:
 
     assert sent_commands[0][5] == 9
     assert sent_commands[0][6:12] == bytes([26, 6, 2, 20, 30, 45])
+
+
+@pytest.mark.component
+async def test_legacy_transport_supports_ordinary_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Old send signatures still work, and unsupported schedule edits fail before sending anything."""
+    _fast_waits(monkeypatch)
+
+    class LegacyTransport(ScriptedTransport):
+        async def send(self, frames, *, attempts: int, notification_wait: float) -> None:
+            await super().send(frames, attempts=attempts, notification_wait=notification_wait)
+
+    transport = LegacyTransport()
+    device = ChihirosDevice(ScriptedBLEDevice(transport.name, transport.address), transport=transport)
+    await device.query_status()
+    assert transport.writes[-1][5] == 4
+    before = len(transport.writes)
+    with pytest.raises(TypeError, match=r"Custom transports must implement send\(\.\.\., boundary="):
+        await device.set_auto_curve([(0, 480, 0)])
+    assert len(transport.writes) == before
+    await device.disconnect()
 
 
 @pytest.mark.unit
@@ -425,10 +446,11 @@ def test_notification_callback_failure_does_not_block_other_subscribers(
 
 
 def _capture_schedule_edits(device: ChihirosDevice, frames: list[bytes]) -> None:
-    """Capture a submitted edit after simulating transport admission."""
+    """Capture a submitted incremental edit at its GATT write boundary."""
 
-    async def capture(command: bytes | bytearray, _retry: int, *, on_started: Callable[[], None]) -> None:
-        on_started()
+    async def capture(command: bytes | bytearray, _retry: int, *, boundary: WriteBoundary) -> None:
+        assert boundary.index == 0
+        boundary.before_write()
         frames.append(bytes(command))
 
     device._send_command = capture  # type: ignore[method-assign]
@@ -555,11 +577,11 @@ def test_set_auto_curve_sends_all_points_in_one_transaction() -> None:
             command: list[bytes] | bytes | bytearray,
             retry: int | None = None,
             *,
-            on_started: Callable[[], None] | None = None,
+            boundary: WriteBoundary,
         ) -> None:
             del retry
-            if on_started is not None:
-                on_started()
+            assert boundary.index == 0
+            boundary.before_write()
             sent_batches.append(list(command) if isinstance(command, list) else [bytes(command)])
 
         device._send_command = capture_command  # type: ignore[method-assign]
