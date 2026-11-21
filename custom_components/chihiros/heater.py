@@ -14,14 +14,15 @@ from homeassistant.components.bluetooth.passive_update_coordinator import (
     PassiveBluetoothCoordinatorEntity,
 )
 from homeassistant.components.button import ButtonEntity
-from homeassistant.components.number import NumberDeviceClass, NumberEntity, NumberMode
+from homeassistant.components.number import NumberDeviceClass, NumberMode, RestoreNumber
 from homeassistant.components.select import SelectEntity
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, UnitOfTemperature
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .coordinator import (
     ATTR_HEATER_ALARM_BITS,
@@ -85,7 +86,7 @@ class ChihirosHeaterEntity(PassiveBluetoothCoordinatorEntity[ChihirosDataUpdateC
         return super().available
 
 
-class ChihirosHeaterNumber(ChihirosHeaterEntity, NumberEntity, RestoreEntity):
+class ChihirosHeaterNumber(ChihirosHeaterEntity, RestoreNumber):
     """Base for setpoints restored without re-sending commands.
 
     Write-only values remain optimistic. Configured power can additionally be
@@ -112,17 +113,31 @@ class ChihirosHeaterNumber(ChihirosHeaterEntity, NumberEntity, RestoreEntity):
     async def async_added_to_hass(self) -> None:
         """Restore the last value written through Home Assistant, without re-sending it."""
         await super().async_added_to_hass()
-        if last_state := await self.async_get_last_state():
-            try:
-                value = float(last_state.state)
-            except ValueError:
-                return
-            if self.native_min_value <= value <= self.native_max_value:
-                try:
-                    self._restore_client_value(value)
-                except ValueError:
-                    return
-                self._restored_value = value
+        value = await self._async_restore_native_value()
+        if value is None or not self.native_min_value <= value <= self.native_max_value:
+            return
+        try:
+            self._restore_client_value(value)
+        except ValueError:
+            return
+        self._restored_value = value
+
+    async def _async_restore_native_value(self) -> float | None:
+        """Prefer native number data; older versions only saved the displayed state."""
+        if (data := await self.async_get_last_number_data()) is not None:
+            return data.native_value
+        if (state := await self.async_get_last_state()) is None:
+            return None
+        try:
+            return self._legacy_native_value(float(state.state), state.attributes.get(ATTR_UNIT_OF_MEASUREMENT))
+        except (ValueError, HomeAssistantError):
+            return None
+
+    def _legacy_native_value(self, value: float, stored_unit: str | None) -> float:
+        """Convert a legacy temperature using its saved unit, not the current configuration."""
+        if self.device_class == NumberDeviceClass.TEMPERATURE and stored_unit is not None:
+            return TemperatureConverter.convert(value, stored_unit, UnitOfTemperature.CELSIUS)
+        return value
 
     @property
     def native_value(self) -> float | None:

@@ -649,6 +649,52 @@ async def test_real_heater_capture_reaches_home_assistant(hass: HomeAssistant, m
     await hass.config_entries.async_unload(entry.entry_id)
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_heater_fahrenheit_restore_keeps_celsius_in_power_frame(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, legacy: bool
+) -> None:
+    """Restart from a displayed 77 °F target, then change only the wattage."""
+    from chihiros_led_control import testing as testing_module
+    from custom_components.chihiros.vendor.chihiros_led_control.devices import base as client_module
+    from custom_components.chihiros.vendor.chihiros_led_control.devices import heater as heater_module
+
+    monkeypatch.setattr(testing_module, "BATCH_WRITE_DELAY", 0.0)
+    monkeypatch.setattr(client_module, "COMMAND_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(heater_module, "COMMAND_NOTIFICATION_WAIT", 0.0)
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    transport = ScriptedTransport(name="DYHET-test", address=TEST_ADDRESS)
+    ble_device = ScriptedBLEDevice(transport.name, transport.address)
+    entry, _client = await _setup_heater(hass, monkeypatch, ChihirosHeater(ble_device, HEATER, transport=transport))
+    temperature_id = _entity_id(hass, NUMBER_DOMAIN, "heater_temperature")
+    power_id = _entity_id(hass, NUMBER_DOMAIN, "heater_power")
+    await hass.services.async_call(
+        NUMBER_DOMAIN, "set_value", {ATTR_ENTITY_ID: temperature_id, "value": 77}, blocking=True
+    )
+    state = hass.states.get(temperature_id)
+    assert float(state.state) == 77
+    assert state.attributes[ATTR_UNIT_OF_MEASUREMENT] == UnitOfTemperature.FAHRENHEIT
+
+    async def resolve_fresh_runtime(_hass: HomeAssistant, _entry: ConfigEntry) -> ChihirosRuntime:
+        client = ChihirosHeater(ble_device, HEATER, transport=transport)
+        return ChihirosRuntime(client=client, address=TEST_ADDRESS, always_available=True)
+
+    def prime() -> None:
+        if legacy:
+            _prime_restore_state(hass, temperature_id, state)
+        monkeypatch.setattr(chihiros_integration, "resolve_chihiros_runtime", resolve_fresh_runtime)
+
+    await _reload_entry(hass, entry, prime=prime)
+    before = len(transport.writes)
+    await hass.services.async_call(NUMBER_DOMAIN, "set_value", {ATTR_ENTITY_ID: power_id, "value": 400}, blocking=True)
+    set_frames = [frame[6:-1] for frame in transport.writes[before:] if (frame[0], frame[5]) == (90, 43)]
+    assert set_frames == [bytes([0, 25, 0, 40])]
+    if not legacy:
+        extra = async_get_restore_data(hass).last_states[temperature_id].extra_data
+        assert extra.as_dict()["native_value"] == 25
+        assert extra.as_dict()["native_unit_of_measurement"] == UnitOfTemperature.CELSIUS
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_heater_manual_pair_restores_into_a_fresh_client(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,

@@ -267,18 +267,11 @@ class BleTransport:
 
     async def _configure_client(self, client: BleakClientWithServiceCache) -> None:
         """Resolve endpoints, subscribe to notifications, and lazily send prelude."""
-        if not await self._resolve_client_characteristics(client):
+        if not self._resolve_characteristics(client.services):
             raise CharacteristicMissingError("Write characteristic missing")
         self._client = client
         await self._subscribe_client(client)
         await self._send_prelude()
-
-    async def _resolve_client_characteristics(self, client: BleakClientWithServiceCache) -> bool:
-        """Resolve endpoints from cached services, then the live service list."""
-        resolved = self._resolve_characteristics(client.services)
-        if not resolved:
-            resolved = self._resolve_characteristics(await client.get_services())
-        return resolved
 
     async def _subscribe_client(self, client: BleakClientWithServiceCache) -> None:
         """Subscribe to notifications when a paired endpoint is available."""

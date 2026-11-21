@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as datetime_module
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime, tzinfo
 from types import SimpleNamespace
 from typing import Any
 
@@ -37,6 +38,7 @@ try:
     from homeassistant.helpers import entity_registry as er
     from homeassistant.helpers.entity import EntityCategory
     from homeassistant.setup import async_setup_component
+    from homeassistant.util import dt as dt_util
     from pytest_homeassistant_custom_component.common import MockConfigEntry
 
     import custom_components.chihiros as chihiros_integration
@@ -45,7 +47,7 @@ try:
     from custom_components.chihiros.coordinator import ChihirosDataUpdateCoordinator
     from custom_components.chihiros.dosing import CONF_PUMP_COUNT
     from custom_components.chihiros.dosing_services import ATTR_ML, ATTR_PUMP, SERVICE_DOSE_ML
-    from custom_components.chihiros.runtime import ChihirosRuntime
+    from custom_components.chihiros.runtime import ChihirosRuntime, resolve_chihiros_runtime
     from custom_components.chihiros.schedule_services import (
         SERVICE_ADD_SCHEDULE,
         SERVICE_REMOVE_SCHEDULE,
@@ -59,6 +61,10 @@ except ImportError as err:
         allow_module_level=True,
     )
 
+from chihiros_led_control import testing as testing_module
+from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
+from custom_components.chihiros.vendor.chihiros_led_control.devices import base as vendor_base
+from custom_components.chihiros.vendor.chihiros_led_control.devices.led import LedSchedule
 from custom_components.chihiros.vendor.chihiros_led_control.models import RGB_CHANNELS, DeviceKind, DeviceModel, LedSpec
 from custom_components.chihiros.vendor.chihiros_led_control.protocol.led import (
     RuntimeNotification,
@@ -80,6 +86,60 @@ pytestmark = [
 ]
 
 TEST_ADDRESS = "FA:CE:C0:00:10:01"
+
+
+async def test_device_clocks_follow_home_assistant_across_midnight(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both clock writers use the HA time zone, even when the host clock is UTC."""
+    transport = ScriptedTransport(name="DYRGBV-test")
+    ble_device = ScriptedBLEDevice(transport.name, transport.address)
+    monkeypatch.setattr(chihiros_integration.runtime.bluetooth, "async_ble_device_from_address", lambda *_: ble_device)
+    monkeypatch.setattr(vendor_base, "COMMAND_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(vendor_base, "STATUS_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(testing_module, "BATCH_WRITE_DELAY", 0.0)
+
+    def create_transport(*_args: object, **kwargs: Any) -> ScriptedTransport:
+        transport.set_callbacks(
+            notification_callback=kwargs["notification_callback"], prelude_callback=kwargs["prelude_callback"]
+        )
+        return transport
+
+    monkeypatch.setattr(vendor_base, "BleTransport", create_transport)
+    entry = MockConfigEntry(domain=DOMAIN, title=transport.name, unique_id=transport.address)
+    runtime = await resolve_chihiros_runtime(hass, entry)
+    device = runtime.client
+    now = datetime(2026, 10, 19, 1, 2, 3, tzinfo=UTC)
+
+    class UTCProcessClock(datetime):
+        """Model a UTC host without freezing asyncio's scheduling clock."""
+
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            """Read the simulated clock in the requested zone or host local UTC."""
+            return now.astimezone(tz) if tz is not None else now.replace(tzinfo=None)
+
+    try:
+        await hass.config.async_set_time_zone("America/Los_Angeles")
+        with monkeypatch.context() as patch:
+            patch.setattr(datetime_module, "datetime", UTCProcessClock)
+            await device.replace_settings([LedSchedule(datetime(2026, 10, 18, 8), datetime(2026, 10, 18, 20))])
+            # The initial connection and replacement both happen on Sunday in HA.
+            assert [frame[6:-1] for frame in transport.writes if (frame[0], frame[5]) == (90, 9)] == [
+                bytes([26, 10, 7, 18, 2, 3]),
+                bytes([26, 10, 7, 18, 2, 3]),
+            ]
+            await device.disconnect()
+            before = len(transport.writes)
+            now = datetime(2026, 10, 19, 7, 3, 4, tzinfo=UTC)
+            await device.query_status()
+            assert [frame[6:-1] for frame in transport.writes[before:] if (frame[0], frame[5]) == (90, 9)] == [
+                bytes([26, 10, 1, 0, 3, 4])
+            ]
+            assert transport.connections == 2
+    finally:
+        dt_util.set_default_time_zone(UTC)
+        await device.disconnect()
 
 
 class TrackingChihirosClient:

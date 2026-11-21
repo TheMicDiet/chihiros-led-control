@@ -424,6 +424,16 @@ def test_notification_callback_failure_does_not_block_other_subscribers(
     assert received[0].raw == frame
 
 
+def _capture_schedule_edits(device: ChihirosDevice, frames: list[bytes]) -> None:
+    """Capture a submitted edit after simulating transport admission."""
+
+    async def capture(command: bytes | bytearray, _retry: int, *, on_started: Callable[[], None]) -> None:
+        on_started()
+        frames.append(bytes(command))
+
+    device._send_command = capture  # type: ignore[method-assign]
+
+
 @pytest.mark.unit
 def test_add_setting_sends_four_channel_brightness() -> None:
     """True WRGB auto schedules encode red, green, blue, and white levels."""
@@ -432,11 +442,7 @@ def test_add_setting_sends_four_channel_brightness() -> None:
     async def run() -> None:
         device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test WRGB", (), LedSpec(WRGB_CHANNELS)))  # type: ignore[arg-type]
 
-        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del retry
-            sent_commands.append(bytes(command))
-
-        device._send_command = capture_command  # type: ignore[method-assign]
+        _capture_schedule_edits(device, sent_commands)
 
         await device.add_setting(
             sunrise=datetime(2026, 6, 14, 8, 0),
@@ -456,12 +462,7 @@ def test_add_setting_uses_white_channel_for_true_wrgb_models() -> None:
 
     async def run() -> None:
         device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test WRGB", (), LedSpec(WRGB_CHANNELS)))  # type: ignore[arg-type]
-
-        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del retry
-            sent_commands.append(bytes(command))
-
-        device._send_command = capture_command  # type: ignore[method-assign]
+        _capture_schedule_edits(device, sent_commands)
 
         await device.add_setting(
             sunrise=datetime(2026, 6, 14, 8, 0),
@@ -481,12 +482,7 @@ def test_add_setting_uses_first_channel_when_model_has_no_white_channel() -> Non
 
     async def run() -> None:
         device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))  # type: ignore[arg-type]
-
-        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del retry
-            sent_commands.append(bytes(command))
-
-        device._send_command = capture_command  # type: ignore[method-assign]
+        _capture_schedule_edits(device, sent_commands)
 
         await device.add_setting(
             sunrise=datetime(2026, 6, 14, 8, 0),
@@ -515,16 +511,8 @@ def test_set_auto_point_sends_family_specific_encoding() -> None:
             DeviceModel("Commander 4", ("DYNLED",), LedSpec(WRGB_CHANNELS, protocol=LedProtocol.SEA_LED)),  # type: ignore[arg-type]
         )
 
-        async def capture_bleled(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del retry
-            bleled_sent.append(bytes(command))
-
-        async def capture_sealed(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del retry
-            sealed_sent.append(bytes(command))
-
-        bleled._send_command = capture_bleled  # type: ignore[method-assign]
-        sealed._send_command = capture_sealed  # type: ignore[method-assign]
+        _capture_schedule_edits(bleled, bleled_sent)
+        _capture_schedule_edits(sealed, sealed_sent)
 
         await bleled.set_auto_point(2, 8 * 60 + 30, 80)
         await sealed.set_auto_point(3, 8 * 60 + 30, 60)

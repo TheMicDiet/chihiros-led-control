@@ -197,10 +197,6 @@ class _ScriptedBleClient:
         self.is_connected = True
         self._disconnected_callback = disconnected_callback
 
-    async def get_services(self) -> _ScriptedServices:
-        """Return the scripted service collection."""
-        return self.services
-
     async def start_notify(self, characteristic: object, handler: NotificationHandler) -> None:
         """Register the notification handler used to deliver scripted replies."""
         del characteristic

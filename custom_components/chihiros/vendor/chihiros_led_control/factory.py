@@ -6,6 +6,7 @@ from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
+from .devices.base import DeviceClock
 from .devices.dosing import ChihirosDosingPump
 from .devices.heater import ChihirosHeater
 from .devices.led import ChihirosDevice
@@ -54,13 +55,15 @@ def create_device(
     model: DeviceModel | None = None,
     device_type: str | None = None,
     advertisement_data: AdvertisementData | None = None,
-):
-    """Create the family driver selected by the resolved profile."""
+    *,
+    clock: DeviceClock | None = None,
+) -> ChihirosDevice | ChihirosDosingPump | ChihirosMagStirrer | ChihirosHeater:
+    """Create the selected family driver with an optional local wall clock."""
     if is_known_unsupported_device(ble_device.name):
         raise UnsupportedDeviceError(f"Unsupported Chihiros device: {ble_device.name}")
     resolved_model = resolve_model(ble_device.name, model, device_type)
     driver = _DEVICE_DRIVERS.get(type(resolved_model.spec), ChihirosDevice)
-    return driver(ble_device, resolved_model, advertisement_data)
+    return driver(ble_device, resolved_model, advertisement_data, clock=clock)
 
 
 async def get_device_from_address(device_address: str, device_type: str | None = None):

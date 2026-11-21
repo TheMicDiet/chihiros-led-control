@@ -52,8 +52,7 @@ async def test_async_load_restores_today_totals(hass: Any) -> None:
     assert totals.lifetime_ml(1) == round(20.5, 1)
     assert totals.lifetime_cycles(0) == 3
     assert totals.lifetime_cycles(1) == 4
-    # The stored list has a third entry; pump_count=2 so only two are read,
-    # and out-of-range indices return the coerced stored value (or 0.0).
+    # The stored list has a third entry, but pump_count=2 hides it.
     with pytest.raises(ValueError, match="Pump index must be between 0 and 1"):
         totals.total_ml(2)
     with pytest.raises(ValueError, match="Pump index must be between 0 and 1"):
@@ -97,6 +96,38 @@ async def test_async_load_stale_date_resets_totals(hass: Any) -> None:
     assert saved[0]["totals_ml"] == [0.0, 0.0]
     assert saved[0]["lifetime_ml"] == [round(12.3, 1), round(4.5, 1)]
     assert saved[0]["lifetime_cycles"] == [7, 1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reset_day", [False, True])
+async def test_hidden_pump_history_survives_save(hass: Any, reset_day: bool) -> None:
+    """Hiding four channels does not erase their history on the next save."""
+    address = "FA:CE:C0:FF:00:08"
+    reduced = DosingDailyTotals(hass, address, pump_count=4)
+    await reduced._store.async_save(
+        {
+            "date": "1999-01-01" if reset_day else dt_util.now().date().isoformat(),
+            "totals_ml": [float(i) for i in range(8)],
+            "lifetime_ml": [100.0 + i for i in range(8)],
+            "lifetime_cycles": list(range(10, 18)),
+        }
+    )
+    try:
+        await reduced.async_load()
+        with pytest.raises(ValueError, match="between 0 and 3"):
+            await reduced.async_add_dose(4, 2.0)
+        await reduced.async_add_dose(0, 2.0)
+    finally:
+        reduced.async_close()
+
+    restored = DosingDailyTotals(hass, address, pump_count=8)
+    try:
+        await restored.async_load()
+        assert [restored.lifetime_ml(i) for i in range(4, 8)] == [104.0, 105.0, 106.0, 107.0]
+        assert [restored.lifetime_cycles(i) for i in range(4, 8)] == [14, 15, 16, 17]
+        assert [restored.total_ml(i) for i in range(4, 8)] == ([0] * 4 if reset_day else [4, 5, 6, 7])
+    finally:
+        restored.async_close()
 
 
 @pytest.mark.asyncio

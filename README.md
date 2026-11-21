@@ -354,7 +354,9 @@ The vendor app mirrors a linked stirrer by broadcasting the pump's programming
 frames. Home Assistant cannot broadcast, so mirroring is explicit:
 
 - `chihiros.set_dosing_schedule` and `chihiros.set_channel_active` program a
-  pump channel and replay the write to linked stirrers automatically.
+  pump channel and replay the write to linked stirrers automatically. To set
+  `weekdays` (or the raw `frequency`), supply `daily_ml` in the same call. If
+  you omit all three, the pump's existing daily volume and repetition are unchanged.
 - `chihiros.set_stirrer_master` links a stirrer to a pump and replays the
   pump's recorded programming on linking; omit the master fields to unlink.
 - `chihiros.mirror_stirrer` replays the pump's full recorded programming on

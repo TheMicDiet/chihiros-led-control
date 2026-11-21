@@ -11,7 +11,7 @@ from ..models import DeviceModel
 from ..protocol import dosing, stirrer
 from ..registry import MAG_STIRRER
 from ..transport import ChihirosTransport
-from .base import BaseChihirosDevice
+from .base import BaseChihirosDevice, DeviceClock
 
 
 class ChihirosMagStirrer(BaseChihirosDevice):
@@ -24,9 +24,10 @@ class ChihirosMagStirrer(BaseChihirosDevice):
         advertisement_data: AdvertisementData | None = None,
         *,
         transport: ChihirosTransport | None = None,
+        clock: DeviceClock | None = None,
     ) -> None:
         """Create a magnetic-stirrer client."""
-        super().__init__(ble_device, model, advertisement_data, transport=transport)
+        super().__init__(ble_device, model, advertisement_data, transport=transport, clock=clock)
 
     async def send_frame(self, frame: bytes | bytearray) -> None:
         """Send a pre-built frame verbatim (master/slave broadcast replay).

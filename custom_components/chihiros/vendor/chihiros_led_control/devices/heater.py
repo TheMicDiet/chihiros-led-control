@@ -17,7 +17,7 @@ from ..protocol.notifications import (
 )
 from ..registry import HEATER
 from ..transport import ChihirosTransport
-from .base import COMMAND_NOTIFICATION_WAIT, STATUS_NOTIFICATION_WAIT, BaseChihirosDevice
+from .base import COMMAND_NOTIFICATION_WAIT, STATUS_NOTIFICATION_WAIT, BaseChihirosDevice, DeviceClock
 
 
 class ChihirosHeater(BaseChihirosDevice):
@@ -30,9 +30,10 @@ class ChihirosHeater(BaseChihirosDevice):
         advertisement_data: AdvertisementData | None = None,
         *,
         transport: ChihirosTransport | None = None,
+        clock: DeviceClock | None = None,
     ) -> None:
         """Create a heater client."""
-        super().__init__(ble_device, model, advertisement_data, transport=transport)
+        super().__init__(ble_device, model, advertisement_data, transport=transport, clock=clock)
         self._state_lock = asyncio.Lock()
         self._setting_temperature = commands.HEATER_DEFAULT_TEMPERATURE_C
         self._power_watts = commands.HEATER_DEFAULT_POWER_WATTS

@@ -115,7 +115,7 @@ class _TrackingPump:
         active: bool,
         compensate: bool = False,
         dose_per_day_ml: float | None = None,
-        frequency: int = 127,
+        frequency: int | None = None,
         is_first_setting: bool = True,
         mode: DosingMode | None = None,
         points: Any = (),
@@ -770,10 +770,42 @@ async def test_schedule_rejects_weekdays_and_frequency(hass: HomeAssistant, monk
     await hass.services.async_call(
         DOMAIN,
         SERVICE_SET_DOSING_SCHEDULE,
-        {**base, "frequency": 4},
+        {**base, "daily_ml": 1.0, "frequency": 4},
         blocking=True,
     )
     assert pump.program_calls[-1]["frequency"] == 4
+
+
+@pytest.mark.parametrize("repeat", [{"weekdays": ["monday"]}, {"weekdays": []}, {"frequency": 127}])
+async def test_schedule_repeat_requires_daily_volume(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, repeat: dict[str, Any]
+) -> None:
+    """An explicit repeat update without daily volume never writes or changes the tracker."""
+    pump, stirrer = await _setup_pair(hass, monkeypatch)
+    tracker = _pump_programming(hass)
+    base = {
+        ATTR_ADDRESS: PUMP_ADDRESS,
+        ATTR_CHANNEL: 1,
+        ATTR_MODE: "timer",
+        ATTR_POINTS: [{"start": "08:00", "ml": 1.0}],
+    }
+    await hass.services.async_call(
+        DOMAIN, SERVICE_SET_DOSING_SCHEDULE, {**base, "daily_ml": 1.0, "weekdays": ["tuesday"]}, blocking=True
+    )
+    original = dict(tracker.channels[0])
+    assert original["frequency"] == 32
+
+    with pytest.raises(HomeAssistantError, match="daily_ml"):
+        await hass.services.async_call(DOMAIN, SERVICE_SET_DOSING_SCHEDULE, {**base, **repeat}, blocking=True)
+    assert len(pump.program_calls) == 1
+    assert tracker.channels[0] == original
+    assert not stirrer.program_calls
+
+    # A points-only update leaves the previously programmed weekdays and volume alone.
+    await hass.services.async_call(DOMAIN, SERVICE_SET_DOSING_SCHEDULE, base, blocking=True)
+    assert len(pump.program_calls) == 2
+    assert tracker.channels[0]["frequency"] == 32
+    assert tracker.channels[0]["dose_per_day_ml"] == 1.0
 
 
 async def test_mirror_respects_configured_stirrer_channel_count(

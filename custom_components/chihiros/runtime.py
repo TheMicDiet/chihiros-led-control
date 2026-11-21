@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.util import dt as dt_util
 
 from .dosing import entry_pump_count
 from .fake import create_fake_device, fake_devices_enabled, is_fake_address
@@ -356,7 +357,7 @@ async def _resolve_ble_runtime(hass: HomeAssistant, entry: ConfigEntry, address:
     if needs_device_type(ble_device.name):
         _apply_entry_name(ble_device, entry)
     try:
-        client = create_device(ble_device, device_type=entry.data.get("device_type"))
+        client = create_device(ble_device, device_type=entry.data.get("device_type"), clock=dt_util.now)
     except UnsupportedDeviceError as ex:
         raise ConfigEntryNotReady(str(ex)) from ex
     return ChihirosRuntime(client=client, address=ble_device.address)

@@ -285,6 +285,45 @@ def test_dose_cli_triggers_dosing_pump(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.component
+@pytest.mark.parametrize(
+    ("options", "expected_mask"),
+    [([], None), (["--daily-ml", "1.0"], 127), (["--daily-ml", "1.0", "--weekdays", "monday"], 64)],
+)
+def test_program_cli_weekday_mask(
+    monkeypatch: pytest.MonkeyPatch, options: list[str], expected_mask: int | None
+) -> None:
+    """The CLI leaves repetition alone without volume and encodes it when supplied."""
+    masks: list[int] = []
+
+    async def get_device_from_address(address: str) -> ChihirosDosingPump:
+        device = ChihirosDosingPump(FakeBLEDevice(address=address), DOSING_PUMP)  # type: ignore[arg-type]
+
+        async def capture(commands: list[bytes], _: int) -> None:
+            masks.extend(frame[7] for frame in commands if (frame[0], frame[5]) == (165, 27))
+
+        device._send_command = capture  # type: ignore[method-assign]
+        return device
+
+    monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
+    result = RUNNER.invoke(cli.app, ["dosing", "program", TEST_ADDRESS, "1", "08:00:1.0", *options])
+    assert result.exit_code == 0, result.output
+    assert masks == ([] if expected_mask is None else [expected_mask])
+
+
+@pytest.mark.unit
+def test_program_cli_rejects_weekdays_without_daily_volume(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invalid weekday updates fail before looking for a pump."""
+
+    async def unexpected_lookup(_: str) -> None:
+        pytest.fail("Invalid program request should not resolve a pump")
+
+    monkeypatch.setattr(cli, "get_device_from_address", unexpected_lookup)
+    result = RUNNER.invoke(cli.app, ["dosing", "program", TEST_ADDRESS, "1", "--weekdays", "monday"])
+    assert result.exit_code == 2
+    assert "requires --daily-ml" in result.output
+
+
+@pytest.mark.component
 def test_dose_cli_rejects_non_dosing_device(monkeypatch: pytest.MonkeyPatch) -> None:
     """The dose command fails clearly for light devices."""
 

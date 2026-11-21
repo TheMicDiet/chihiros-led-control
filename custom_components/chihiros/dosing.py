@@ -111,7 +111,7 @@ class DosingDailyTotals:
     async def async_reset(self) -> None:
         """Reset totals for the current day."""
         self._date = self._today()
-        self._totals = [0.0] * self.pump_count
+        self._totals = [0.0] * len(self._totals)
         await self.async_save()
         async_dispatcher_send(self.hass, self.address_signal)
 
@@ -137,7 +137,7 @@ class DosingDailyTotals:
         today = self._today()
         if self._date != today:
             self._date = today
-            self._totals = [0.0] * self.pump_count
+            self._totals = [0.0] * len(self._totals)
 
     def _today(self) -> str:
         return dt_util.now().date().isoformat()
@@ -419,23 +419,18 @@ def _coerce_total(value: object) -> float:
 
 
 def _coerce_total_list(values: object, pump_count: int) -> list[float]:
-    """Coerce a stored list of per-pump totals into a fixed-length float list."""
-    if not isinstance(values, list):
-        return [0.0] * pump_count
-    return [_coerce_total(values[index]) if index < len(values) else 0.0 for index in range(pump_count)]
+    """Restore volumes, padding missing channels without discarding hidden ones."""
+    totals = [_coerce_total(value) for value in values] if isinstance(values, list) else []
+    return totals + [0.0] * (pump_count - len(totals))
 
 
 def _coerce_cycles_list(values: object, pump_count: int) -> list[int]:
-    """Coerce a stored list of per-pump cycle counts into a fixed-length int list."""
-    if not isinstance(values, list):
-        return [0] * pump_count
-    coerced: list[int] = []
-    for index in range(pump_count):
-        if index >= len(values):
-            coerced.append(0)
-            continue
-        try:
-            coerced.append(int(round(float(values[index]))))
-        except (TypeError, ValueError):
-            coerced.append(0)
-    return coerced
+    """Restore cycle counts, padding missing channels without discarding hidden ones."""
+    cycles: list[int] = []
+    if isinstance(values, list):
+        for value in values:
+            try:
+                cycles.append(int(round(float(value))))
+            except (TypeError, ValueError, OverflowError):
+                cycles.append(0)
+    return cycles + [0] * (pump_count - len(cycles))

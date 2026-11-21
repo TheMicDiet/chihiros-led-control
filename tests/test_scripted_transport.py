@@ -19,7 +19,9 @@ from chihiros_led_control import testing as testing_module
 from chihiros_led_control.const import DFU_CHAR_UUID, HM10_RX_CHAR_UUID, UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
 from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump
 from chihiros_led_control.devices import base as device_base
+from chihiros_led_control.exceptions import CharacteristicMissingError
 from chihiros_led_control.models import WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel, LedFeature, LedSpec
+from chihiros_led_control.protocol.dosing import DosingMode, DosingWorkPoint
 from chihiros_led_control.protocol.notifications import DosingTotalsNotification, RuntimeNotification
 from chihiros_led_control.registry import DOSING_PUMP
 from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
@@ -395,38 +397,74 @@ def test_scripted_set_log_level_configures_device_logger() -> None:
 
 
 @pytest.mark.component
-def test_cancel_during_service_discovery_disconnects_client(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_missing_write_characteristic_disconnects_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing write endpoints raise the transport error with the actual Bleak API."""
+    transport = ScriptedTransport()
+    device = ChihirosDevice(ScriptedBLEDevice(transport.name, transport.address), transport=transport)
+    original_establish = transport._establish_ble_client
+
+    async def establish_without_write_endpoints() -> object:
+        client = await original_establish()
+        monkeypatch.setattr(client, "services", _FilteredServices(client.services, frozenset({DFU_CHAR_UUID})))
+        assert not hasattr(client, "get_services")
+        return client
+
+    monkeypatch.setattr(transport, "_establish_ble_client", establish_without_write_endpoints)
+    with pytest.raises(CharacteristicMissingError, match="Write characteristic missing"):
+        await device.query_status()
+
+    assert transport.connections == 1
+    assert not transport.clients[0].is_connected
+    assert not transport.is_connected
+    assert not transport.writes
+
+
+@pytest.mark.component
+async def test_cancel_during_notification_subscription_disconnects_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """A cancelled setup cannot leave a connected client untracked."""
+    transport = ScriptedTransport()
+    device = ChihirosDevice(ScriptedBLEDevice(transport.name, transport.address), transport=transport)
+    subscribing = asyncio.Event()
+    original_establish = transport._establish_ble_client
 
-    async def run() -> None:
-        transport = ScriptedTransport()
-        device = ChihirosDevice(ScriptedBLEDevice(transport.name, transport.address), transport=transport)
-        discovering = asyncio.Event()
-        original_establish = transport._establish_ble_client
+    async def establish_with_slow_subscription() -> object:
+        client = await original_establish()
 
-        async def establish_with_slow_services() -> object:
-            client = await original_establish()
-            monkeypatch.setattr(client, "services", _FilteredServices(client.services, frozenset()))
+        async def start_notify(*_args: object) -> None:
+            subscribing.set()
+            await asyncio.Event().wait()
 
-            async def get_services() -> object:
-                discovering.set()
-                await asyncio.Event().wait()
-                return client.services
+        monkeypatch.setattr(client, "start_notify", start_notify)
+        return client
 
-            monkeypatch.setattr(client, "get_services", get_services)
-            return client
+    monkeypatch.setattr(transport, "_establish_ble_client", establish_with_slow_subscription)
+    pending = asyncio.create_task(device.query_status())
+    await asyncio.wait_for(subscribing.wait(), timeout=5)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
 
-        monkeypatch.setattr(transport, "_establish_ble_client", establish_with_slow_services)
-        pending = asyncio.create_task(device.query_status())
-        await asyncio.wait_for(discovering.wait(), timeout=5)
-        pending.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await pending
+    assert transport.connections == 1
+    assert not transport.clients[0].is_connected
+    assert not transport.is_connected
 
-        assert transport.connections == 1
-        assert not transport.clients[0].is_connected
 
-    asyncio.run(run())
+@pytest.mark.component
+async def test_program_pump_weekdays_require_daily_volume(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No mask is silently lost, and an accepted mask is present on the wire."""
+    _fast_waits(monkeypatch)
+    transport = ScriptedTransport(name="DYDOSE-test")
+    pump = ChihirosDosingPump(ScriptedBLEDevice(transport.name, transport.address), DOSING_PUMP, transport=transport)
+    points = [DosingWorkPoint(8, 0, volume_ml=1.0)]
+    with pytest.raises(ValueError, match="daily volume"):
+        await pump.program_channel(0, active=True, frequency=64, mode=DosingMode.TIMER, points=points)
+    assert not transport.writes
+    assert transport.connections == 0
+
+    await pump.program_channel(0, active=True, frequency=64, dose_per_day_ml=1.0, mode=DosingMode.TIMER, points=points)
+    await pump.disconnect()
+    settings = [frame[6:-1] for frame in transport.writes if (frame[0], frame[5]) == (165, 27)]
+    assert settings == [bytes([0, 64, 1, 0, 0, 10])]
 
 
 @pytest.mark.component

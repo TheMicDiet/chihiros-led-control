@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, time
 
 import pytest
@@ -211,6 +212,22 @@ def test_no_weekday_selector_rejects_partial_week_before_writing() -> None:
 
 @pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
+@pytest.mark.parametrize("name", ["DYRGB-test", "DYLITE-test"])
+async def test_all_day_weekday_selections_encode_same_scene(name: str) -> None:
+    """Omitted, empty and everyday selections all write an all-days mask."""
+    device, transport = _device(name)
+    for weekdays in (None, [], [WeekdaySelect.everyday]):
+        await device.replace_settings([replace(_scene(), weekdays=weekdays)])
+        await device.add_setting(_scene().sunrise, _scene().sunset, weekdays=weekdays)
+        await device.remove_setting(_scene().sunrise, _scene().sunset, weekdays=weekdays)
+    await device.disconnect()
+
+    masks = [payload[5] for cmd, mode, payload in _operations(transport.writes) if (cmd, mode) == (165, 25)]
+    assert masks == [127] * 9
+
+
+@pytest.mark.component
+@pytest.mark.usefixtures("fast_transport")
 def test_failed_replacement_revokes_stale_replay_authority() -> None:
     """Retries and later reconnects cannot replay an obsolete library schedule."""
 
@@ -271,9 +288,39 @@ async def _mutate_settings(device: ChihirosDevice, mutation: str) -> None:
     elif mutation == "remove":
         await device.remove_setting(scene.sunrise, scene.sunset)
     elif mutation == "reset":
-        await device.reset_settings()
+        await device.reset_settings(controller_mode=LedControllerMode.CUSTOM_CURVE)
     else:
         await device.set_auto_point(0, 480, 50)
+
+
+@pytest.mark.component
+@pytest.mark.usefixtures("fast_transport")
+@pytest.mark.parametrize("mutation", ["add", "remove", "reset", "point"])
+async def test_cancelled_queued_edit_preserves_lite_replay(mutation: str) -> None:
+    """An edit cancelled before transport admission never supersedes an owned schedule."""
+    device, transport = _device()
+    # Start with the opposite controller so the test also detects a premature mode change.
+    if mutation in ("add", "remove"):
+        await device.set_auto_curve([(0, 480, 90)])
+    else:
+        await device.replace_settings([_scene()])
+    controller = device.controller_mode
+    original_schedule = _operations(transport.writes)
+    before = len(transport.writes)
+    async with transport._operation_lock:
+        editing = asyncio.create_task(_mutate_settings(device, mutation))
+        await asyncio.sleep(0)  # Let the edit reach the held transport lock.
+        assert not editing.done()
+        editing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await editing
+    assert len(transport.writes) == before
+
+    await device.disconnect()
+    await device.query_status()
+    assert device.controller_mode is controller
+    assert _operations(transport.writes[before:]) == original_schedule
+    await device.disconnect()
 
 
 @pytest.mark.component

@@ -27,9 +27,10 @@ from ..protocol.notifications import (
     ScheduleSnapshotNotification,
 )
 from ..registry import FALLBACK
+from ..schedule_validation import normalize_schedule_weekdays
 from ..transport import ChihirosTransport
 from ..weekday_encoding import WeekdaySelect, encode_selected_weekdays
-from .base import STATUS_NOTIFICATION_WAIT, BaseChihirosDevice
+from .base import STATUS_NOTIFICATION_WAIT, BaseChihirosDevice, DeviceClock
 
 
 @dataclass(frozen=True)
@@ -53,9 +54,10 @@ class ChihirosDevice(BaseChihirosDevice):
         advertisement_data: AdvertisementData | None = None,
         *,
         transport: ChihirosTransport | None = None,
+        clock: DeviceClock | None = None,
     ) -> None:
         """Create an LED device and initialize its optimistic optional state."""
-        super().__init__(ble_device, model, advertisement_data, transport=transport)
+        super().__init__(ble_device, model, advertisement_data, transport=transport, clock=clock)
         self._fan_auto = False
         self._fan_start_temp = 38
         self._fan_stop_temp = 33
@@ -102,8 +104,7 @@ class ChihirosDevice(BaseChihirosDevice):
 
     def _scene_weekdays(self, weekdays: Sequence[WeekdaySelect] | None) -> int:
         """Encode weekdays without advertising an unsupported selector."""
-        selected = list(weekdays) if weekdays is not None else [WeekdaySelect.everyday]
-        encoded = encode_selected_weekdays(selected)
+        encoded = encode_selected_weekdays(list(normalize_schedule_weekdays(weekdays)))
         if not self.supports_weekdays and encoded != 127:
             raise ValueError(f"Model does not support weekday selection: {self.model.name}")
         return encoded
@@ -111,27 +112,35 @@ class ChihirosDevice(BaseChihirosDevice):
     def _schedule_setup(self, controller_mode: LedControllerMode | None = None) -> list[bytes]:
         """Build the reset/mode pair for the explicitly selected controller."""
         mode = self._controller_mode if controller_mode is None else controller_mode
-        if mode is LedControllerMode.SCENE:
-            reset = commands.create_reset_scene_settings_command
-            switch = commands.create_switch_to_scene_mode_command
-        else:
-            reset = commands.create_reset_auto_settings_command
-            switch = commands.create_switch_to_auto_mode_command
-        return [bytes(reset(self.get_next_msg_id())), bytes(switch(self.get_next_msg_id()))]
+        switch = (
+            commands.create_switch_to_scene_mode_command
+            if mode is LedControllerMode.SCENE
+            else commands.create_switch_to_auto_mode_command
+        )
+        return [bytes(self._schedule_reset(mode)), bytes(switch(self.get_next_msg_id()))]
 
-    async def _reset_settings_locked(self) -> None:
-        """Reset the selected schedule while its authority lock remains held."""
+    def _schedule_reset(self, mode: LedControllerMode) -> bytearray:
+        """Encode the reset for the requested controller."""
         reset = (
             commands.create_reset_scene_settings_command
-            if self._controller_mode is LedControllerMode.SCENE
+            if mode is LedControllerMode.SCENE
             else commands.create_reset_auto_settings_command
         )
-        await self._send_command(reset(self.get_next_msg_id()), 3)
+        return reset(self.get_next_msg_id())
+
+    def _start_schedule_edit(self, controller_mode: LedControllerMode) -> None:
+        """Revoke stale replay authority when the transport admits an edit."""
+        self._owned_schedule = None
+        self._controller_mode = controller_mode
+
+    async def _send_schedule_edit(self, frame: bytearray, controller_mode: LedControllerMode) -> None:
+        """Submit an incremental edit while the schedule lock is held."""
+        await self._send_command(frame, 3, on_started=lambda: self._start_schedule_edit(controller_mode))
 
     async def _clear_failed_schedule(self) -> None:
         """Best-effort clear a partial replacement without claiming rollback."""
         try:
-            await self._reset_settings_locked()
+            await self._send_command(self._schedule_reset(self._controller_mode), 3)
         except Exception:
             self._logger.exception("%s: Failed to clear a partial schedule replacement", self.name)
 
@@ -157,8 +166,7 @@ class ChihirosDevice(BaseChihirosDevice):
         def on_started() -> None:
             nonlocal started
             started = True
-            self._owned_schedule = None
-            self._controller_mode = controller_mode
+            self._start_schedule_edit(controller_mode)
 
         try:
             await self._send_command(frames, 3, on_started=on_started)
@@ -445,9 +453,7 @@ class ChihirosDevice(BaseChihirosDevice):
             self._scene_weekdays(weekdays),
         )
         async with self._schedule_lock:
-            self._owned_schedule = None
-            self._controller_mode = LedControllerMode.SCENE
-            await self._send_command(cmd, 3)
+            await self._send_schedule_edit(cmd, LedControllerMode.SCENE)
 
     async def replace_settings(self, settings: Sequence[LedSchedule]) -> None:
         """Replace all scenes in one paced transaction and retain replay authority."""
@@ -465,7 +471,7 @@ class ChihirosDevice(BaseChihirosDevice):
         ]
         async with self._schedule_lock:
             batch = [
-                commands.create_set_time_command(self.get_next_msg_id()),
+                commands.create_set_time_command(self.get_next_msg_id(), self._device_time()),
                 *self._schedule_setup(LedControllerMode.SCENE),
                 *entries,
             ]
@@ -491,9 +497,7 @@ class ChihirosDevice(BaseChihirosDevice):
             brightness_channels=self._channel_count(),
         )
         async with self._schedule_lock:
-            self._owned_schedule = None
-            self._controller_mode = LedControllerMode.SCENE
-            await self._send_command(cmd, 3)
+            await self._send_schedule_edit(cmd, LedControllerMode.SCENE)
 
     async def reset_settings(self, *, controller_mode: LedControllerMode | None = None) -> None:
         """Clear scenes or custom curves without conflating their reset commands."""
@@ -501,9 +505,7 @@ class ChihirosDevice(BaseChihirosDevice):
             mode = self._controller_mode if controller_mode is None else controller_mode
             if mode is LedControllerMode.SCENE:
                 self._validate_scene_support()
-            self._controller_mode = mode
-            self._owned_schedule = None
-            await self._reset_settings_locked()
+            await self._send_schedule_edit(self._schedule_reset(mode), mode)
 
     async def set_auto_point(self, channel: int, minutes: int, level: int) -> None:
         """Write one auto-curve point (``0x5A, 6``) in raw model units.
@@ -520,9 +522,7 @@ class ChihirosDevice(BaseChihirosDevice):
             protocol=self.model.spec.protocol,
         )
         async with self._schedule_lock:
-            self._owned_schedule = None
-            self._controller_mode = LedControllerMode.CUSTOM_CURVE
-            await self._send_command(cmd, 3)
+            await self._send_schedule_edit(cmd, LedControllerMode.CUSTOM_CURVE)
 
     async def set_auto_curve(self, points: Sequence[tuple[int, int, int]]) -> None:
         """Replace raw model-unit points using reset, custom mode and paced writes."""
@@ -578,7 +578,7 @@ class ChihirosDevice(BaseChihirosDevice):
             switch = commands.create_switch_to_scene_mode_command
         else:
             switch = commands.create_switch_to_auto_mode_command
-        time_cmd = commands.create_set_time_command(self.get_next_msg_id(), timestamp)
+        time_cmd = commands.create_set_time_command(self.get_next_msg_id(), timestamp or self._device_time())
         lite = self.model.replay_auto_on_reconnect or replay_auto_on_reconnect(self.name)
         if lite and self._owned_schedule is not None:
             # This batch owns initialization; suppress a duplicate prelude replay.

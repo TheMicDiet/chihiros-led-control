@@ -19,6 +19,7 @@ DEFAULT_ATTEMPTS = 3
 COMMAND_NOTIFICATION_WAIT = 0.5
 STATUS_NOTIFICATION_WAIT = 1.0
 NotificationCallback = Callable[[ParsedNotification], None]
+DeviceClock = Callable[[], datetime.datetime]
 
 
 class BaseChihirosDevice:
@@ -31,8 +32,10 @@ class BaseChihirosDevice:
         advertisement_data: AdvertisementData | None = None,
         *,
         transport: ChihirosTransport | None = None,
+        clock: DeviceClock | None = None,
     ) -> None:
-        """Create a family device backed by an injected or production transport."""
+        """Create a device; clock supplies local wall time, defaulting to system local time."""
+        self._clock = clock
         self._ble_device = ble_device
         self.model = model
         self._logger = logging.getLogger(ble_device.address.replace(":", "-"))
@@ -153,11 +156,15 @@ class BaseChihirosDevice:
         self._record_notification(parsed)
         self._notify_callbacks(parsed)
 
+    def _device_time(self) -> datetime.datetime:
+        """Read local wall time for device clock frames."""
+        return datetime.datetime.now() if self._clock is None else self._clock()
+
     async def _connection_prelude(self) -> Sequence[bytes]:
         """Build the startup batch lazily for a newly established connection."""
         prelude = [
             create_command_encoding(90, 4, self.get_next_msg_id(), [1]),
-            create_command_encoding(90, 9, self.get_next_msg_id(), encode_timestamp(datetime.datetime.now())),
+            create_command_encoding(90, 9, self.get_next_msg_id(), encode_timestamp(self._device_time())),
         ]
         self._logger.debug(
             "%s: Sending connection prelude %s",

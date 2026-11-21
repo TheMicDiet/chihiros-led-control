@@ -454,6 +454,15 @@ async def _async_reset_dosing_channel(hass: HomeAssistant, call: ServiceCall) ->
         )
 
 
+def _pump_schedule_frequency(data: dict[str, Any], daily_ml: float | None) -> int | None:
+    """Only the daily-volume frame can set weekdays on the pump."""
+    if daily_ml is not None:
+        return frequency_from_service_data(data)
+    if ATTR_WEEKDAYS in data or ATTR_FREQUENCY in data:
+        raise HomeAssistantError("Setting weekdays or frequency requires daily_ml")
+    return None
+
+
 def async_register_pump_services(hass: HomeAssistant) -> None:
     """Register the dosing pump programming services."""
 
@@ -465,7 +474,8 @@ def async_register_pump_services(hass: HomeAssistant) -> None:
         _validate_pump_channel(data, channel)
         mode = call.data[ATTR_MODE]
         points = build_work_points(mode, call.data[ATTR_POINTS])
-        frequency = frequency_from_service_data(call.data)
+        daily_ml = call.data.get(ATTR_DAILY_ML)
+        frequency = _pump_schedule_frequency(call.data, daily_ml)
         async with data.dosing_programming.channel_lock(channel):
             first_setting = derive_first_setting(data.dosing_programming, channel, call.data.get(ATTR_FIRST_SETTING))
             # Structured programming retains its existing idempotent batch retry policy.
@@ -475,7 +485,7 @@ def async_register_pump_services(hass: HomeAssistant) -> None:
                 channel,
                 active=bool(call.data[ATTR_ACTIVE]),
                 compensate=False,
-                dose_per_day_ml=call.data.get(ATTR_DAILY_ML),
+                dose_per_day_ml=daily_ml,
                 frequency=frequency,
                 is_first_setting=first_setting,
                 mode=DosingMode[mode.upper()],
@@ -484,14 +494,12 @@ def async_register_pump_services(hass: HomeAssistant) -> None:
             setup: dict[str, Any] = {
                 "active": bool(call.data[ATTR_ACTIVE]),
                 "compensate": False,
-                "frequency": frequency,
                 "mode": mode,
                 "points": serialize_points(points),
                 "first_setting": first_setting,
             }
-            daily_ml = call.data.get(ATTR_DAILY_ML)
             if daily_ml is not None:
-                setup["dose_per_day_ml"] = float(daily_ml)
+                setup.update(dose_per_day_ml=float(daily_ml), frequency=frequency)
             await _record_and_mirror(hass, data, channel, setup, stamp_programmed=daily_ml is not None)
 
     async def async_set_channel_active(call: ServiceCall) -> None:
