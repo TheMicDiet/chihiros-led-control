@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from bleak.backends.device import BLEDevice
 from bleak_retry_connector import BleakError
+from click import unstyle
 from typer.testing import CliRunner
 
 from chihiros_led_control.cli import BluetoothAccess, CliDevice, app
@@ -85,7 +86,7 @@ def test_cli_rejects_invalid_input_before_using_bluetooth(args: list[str], messa
     """These local errors do not require a discovered device or any BLE I/O."""
     result = RUNNER.invoke(app, args)
     assert result.exit_code == 2
-    assert message in result.output
+    assert message in unstyle(result.output)
 
 
 def test_cli_rejects_wrong_family() -> None:
@@ -93,7 +94,7 @@ def test_cli_rejects_wrong_family() -> None:
     peripheral = BluetoothPeripheral("DYMIXR-test")
     result = RUNNER.invoke(app, ["dosing", "dose", ADDRESS, "1", "2.5"], obj=peripheral.access)
     assert result.exit_code == 2
-    assert "not a dosing pump" in result.output
+    assert "not a dosing pump" in unstyle(result.output)
     assert peripheral.ble.writes == []
 
 
