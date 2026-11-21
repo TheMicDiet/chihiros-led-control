@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime
 import functools
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import voluptuous as vol
@@ -385,21 +386,55 @@ async def async_broadcast_frame_to_linked_stirrers(
         )
 
 
+async def _record_and_propagate(
+    record: Callable[[], Awaitable[None]], propagate: Callable[[], Awaitable[None]], action: str
+) -> None:
+    """Finish both post-write steps and report failures without obscuring pump success."""
+    failures: list[str] = []
+    for label, operation in (("local storage", record), ("linked stirrers", propagate)):
+        try:
+            await operation()
+        except Exception as ex:  # noqa: BLE001 — neither failure should skip the other post-write step
+            failures.append(f"{label}: {ex}")
+    if failures:
+        raise HomeAssistantError(f"Pump {action} succeeded, but " + "; ".join(failures))
+
+
+async def _record_and_mirror(
+    hass: HomeAssistant, data: DosingChihirosData, channel: int, setup: dict[str, Any], *, stamp_programmed: bool
+) -> None:
+    """Persist accepted programming and mirror even if local persistence fails."""
+    await _record_and_propagate(
+        functools.partial(data.dosing_programming.async_record, channel, setup, stamp_programmed=stamp_programmed),
+        functools.partial(_mirror_to_linked_stirrers, hass, data.device.address, channel, setup),
+        "programming",
+    )
+
+
+async def _mirror_dose_delay(hass: HomeAssistant, address: str, enabled: bool) -> None:
+    """Attempt the accepted delay setting on every linked stirrer."""
+    failures: list[str] = []
+    for slave in _linked_stirrers(hass, address):
+        try:
+            await stirrer_client(slave.device).set_dose_delay(enabled)
+        except Exception as ex:  # noqa: BLE001 — attempt every slave before reporting errors
+            failures.append(f"{slave.device.name}: {ex}")
+    if failures:
+        raise HomeAssistantError("; ".join(failures))
+
+
 async def _async_set_dose_delay(hass: HomeAssistant, call: ServiceCall) -> None:
     """Set the pump's dose-delay flag, record it, and mirror it to linked stirrers."""
     data = resolve_service_device(hass, call.data)
     _ensure_programmable(data)
     enabled = bool(call.data[ATTR_ENABLED])
-    await data.device.set_dose_delay(enabled)
-    await data.dosing_programming.async_record_device({"dose_delay": enabled})
-    failures: list[str] = []
-    for slave in _linked_stirrers(hass, data.device.address):
-        try:
-            await stirrer_client(slave.device).set_dose_delay(enabled)
-        except Exception as ex:  # noqa: BLE001 — collect every failure for the combined error
-            failures.append(f"{slave.device.name}: {ex}")
-    if failures:
-        raise HomeAssistantError("Dose delay was set on the pump, but mirroring failed: " + "; ".join(failures))
+    async with data.dosing_programming.channel_lock(-1):
+        await data.device.set_dose_delay(enabled)
+        await _record_and_propagate(
+            functools.partial(data.dosing_programming.async_record_device, {"dose_delay": enabled}),
+            functools.partial(_mirror_dose_delay, hass, data.device.address, enabled),
+            "dose delay",
+        )
 
 
 async def _async_reset_dosing_channel(hass: HomeAssistant, call: ServiceCall) -> None:
@@ -408,9 +443,24 @@ async def _async_reset_dosing_channel(hass: HomeAssistant, call: ServiceCall) ->
     _ensure_programmable(data)
     channel = int(call.data[ATTR_CHANNEL]) - 1
     _validate_pump_channel(data, channel)
-    frame = await data.device.reset_channel(channel)
-    await data.dosing_programming.async_clear_channel(channel)
-    await async_broadcast_frame_to_linked_stirrers(hass, data.device.address, frame, "channel reset")
+    async with data.dosing_programming.channel_lock(channel):
+        frame = await data.device.reset_channel(channel)
+        await _record_and_propagate(
+            functools.partial(data.dosing_programming.async_clear_channel, channel),
+            functools.partial(
+                async_broadcast_frame_to_linked_stirrers, hass, data.device.address, frame, "channel reset"
+            ),
+            "channel reset",
+        )
+
+
+def _pump_schedule_frequency(data: dict[str, Any], daily_ml: float | None) -> int | None:
+    """Only the daily-volume frame can set weekdays on the pump."""
+    if daily_ml is not None:
+        return frequency_from_service_data(data)
+    if ATTR_WEEKDAYS in data or ATTR_FREQUENCY in data:
+        raise HomeAssistantError("Setting weekdays or frequency requires daily_ml")
+    return None
 
 
 def async_register_pump_services(hass: HomeAssistant) -> None:
@@ -424,38 +474,33 @@ def async_register_pump_services(hass: HomeAssistant) -> None:
         _validate_pump_channel(data, channel)
         mode = call.data[ATTR_MODE]
         points = build_work_points(mode, call.data[ATTR_POINTS])
-        frequency = frequency_from_service_data(call.data)
-        # The device resets its daily counters on the first dosingSet of the
-        # day for a channel; derive the flag from the programming record when
-        # the caller does not pass it explicitly.
-        first_setting = derive_first_setting(data.dosing_programming, channel, call.data.get(ATTR_FIRST_SETTING))
-        # One paced write batch. The frames are idempotent and the whole batch
-        # is retried on failure, so a transient disconnect converges — but a
-        # BLE batch is not atomic: if every retry fails partway, the pump is
-        # left half-programmed and the record below then mirrors what was
-        # *sent*, not what the hardware holds. Mirroring replays it verbatim.
-        await data.device.program_channel(
-            channel,
-            active=bool(call.data[ATTR_ACTIVE]),
-            compensate=False,
-            dose_per_day_ml=call.data.get(ATTR_DAILY_ML),
-            frequency=frequency,
-            is_first_setting=first_setting,
-            mode=DosingMode[mode.upper()],
-            points=points,
-        )
-        setup: dict[str, Any] = {
-            "active": bool(call.data[ATTR_ACTIVE]),
-            "compensate": False,
-            "frequency": frequency,
-            "mode": mode,
-            "points": serialize_points(points),
-            "first_setting": first_setting,
-        }
-        if call.data.get(ATTR_DAILY_ML) is not None:
-            setup["dose_per_day_ml"] = float(call.data[ATTR_DAILY_ML])
-        await data.dosing_programming.async_record(channel, setup)
-        await _mirror_to_linked_stirrers(hass, data.device.address, channel, setup)
+        daily_ml = call.data.get(ATTR_DAILY_ML)
+        frequency = _pump_schedule_frequency(call.data, daily_ml)
+        async with data.dosing_programming.channel_lock(channel):
+            first_setting = derive_first_setting(data.dosing_programming, channel, call.data.get(ATTR_FIRST_SETTING))
+            # Structured programming retains its existing idempotent batch retry policy.
+            # Failed or cancelled batches may leave partial hardware state, so only
+            # successful writes are committed locally and propagated.
+            await data.device.program_channel(
+                channel,
+                active=bool(call.data[ATTR_ACTIVE]),
+                compensate=False,
+                dose_per_day_ml=daily_ml,
+                frequency=frequency,
+                is_first_setting=first_setting,
+                mode=DosingMode[mode.upper()],
+                points=points,
+            )
+            setup: dict[str, Any] = {
+                "active": bool(call.data[ATTR_ACTIVE]),
+                "compensate": False,
+                "mode": mode,
+                "points": serialize_points(points),
+                "first_setting": first_setting,
+            }
+            if daily_ml is not None:
+                setup.update(dose_per_day_ml=float(daily_ml), frequency=frequency)
+            await _record_and_mirror(hass, data, channel, setup, stamp_programmed=daily_ml is not None)
 
     async def async_set_channel_active(call: ServiceCall) -> None:
         """Enable/disable one pump channel and mirror it to linked stirrers."""
@@ -464,12 +509,9 @@ def async_register_pump_services(hass: HomeAssistant) -> None:
         channel = int(call.data[ATTR_CHANNEL]) - 1
         _validate_pump_channel(data, channel)
         setup = {"active": bool(call.data[ATTR_ENABLE]), "compensate": bool(call.data[ATTR_COMPENSATE])}
-        await data.device.set_channel_active(channel, active=setup["active"], compensate=setup["compensate"])
-        # State-only write: it does not send dosingSet, so it must not count
-        # as the channel's "first setting of the day" for later schedule
-        # writes — keep any existing programming stamp.
-        await data.dosing_programming.async_record(channel, setup, stamp_programmed=False)
-        await _mirror_to_linked_stirrers(hass, data.device.address, channel, setup)
+        async with data.dosing_programming.channel_lock(channel):
+            await data.device.set_channel_active(channel, active=setup["active"], compensate=setup["compensate"])
+            await _record_and_mirror(hass, data, channel, setup, stamp_programmed=False)
 
     hass.services.async_register(
         DOMAIN, SERVICE_SET_DOSING_SCHEDULE, async_set_dosing_schedule, schema=SET_DOSING_SCHEDULE_SCHEMA

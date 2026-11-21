@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -47,6 +48,7 @@ class DosingDailyTotals:
     _lifetime_ml: list[float] = field(init=False)
     _lifetime_cycles: list[int] = field(init=False)
     _unsub_midnight_reset: Any = None
+    _closed: bool = False
 
     def __post_init__(self) -> None:
         """Initialize storage metadata."""
@@ -64,6 +66,7 @@ class DosingDailyTotals:
 
     async def async_load(self) -> None:
         """Load today's totals from Home Assistant storage."""
+        self._closed = False
         stored = await self._store.async_load()
         if isinstance(stored, dict):
             self._lifetime_ml = _coerce_total_list(stored.get("lifetime_ml"), self.pump_count)
@@ -108,7 +111,7 @@ class DosingDailyTotals:
     async def async_reset(self) -> None:
         """Reset totals for the current day."""
         self._date = self._today()
-        self._totals = [0.0] * self.pump_count
+        self._totals = [0.0] * len(self._totals)
         await self.async_save()
         async_dispatcher_send(self.hass, self.address_signal)
 
@@ -125,6 +128,7 @@ class DosingDailyTotals:
 
     def async_close(self) -> None:
         """Cancel scheduled callbacks."""
+        self._closed = True
         if self._unsub_midnight_reset:
             self._unsub_midnight_reset()
             self._unsub_midnight_reset = None
@@ -133,22 +137,28 @@ class DosingDailyTotals:
         today = self._today()
         if self._date != today:
             self._date = today
-            self._totals = [0.0] * self.pump_count
+            self._totals = [0.0] * len(self._totals)
 
     def _today(self) -> str:
         return dt_util.now().date().isoformat()
 
     def _schedule_midnight_reset(self) -> None:
         """Schedule the next local midnight reset while Home Assistant keeps running."""
+        if self._closed:
+            return
         if self._unsub_midnight_reset:
             self._unsub_midnight_reset()
         next_midnight = dt_util.start_of_local_day(dt_util.now() + timedelta(days=1))
         self._unsub_midnight_reset = async_track_point_in_time(self.hass, self._async_midnight_reset, next_midnight)
 
     async def _async_midnight_reset(self, _now: Any) -> None:
-        """Reset totals at local midnight and schedule the next reset."""
-        await self.async_reset()
-        self._schedule_midnight_reset()
+        """Roll over once per date, retaining doses recorded before callback delivery."""
+        self._ensure_today_sync()
+        try:
+            await self.async_save()
+        finally:
+            async_dispatcher_send(self.hass, self.address_signal)
+            self._schedule_midnight_reset()
 
     def _validate_pump_idx(self, pump_idx: int) -> None:
         if pump_idx < 0 or pump_idx >= self.pump_count:
@@ -247,6 +257,7 @@ class DosingProgrammingTracker:
     _store: Store[dict[str, Any]] = field(init=False)
     _channels: dict[int, dict[str, Any]] = field(init=False, default_factory=dict)
     _device: dict[str, Any] = field(init=False, default_factory=dict)
+    _channel_locks: dict[int, asyncio.Lock] = field(init=False, default_factory=dict)
 
     def __post_init__(self) -> None:
         """Create the per-address store."""
@@ -275,13 +286,19 @@ class DosingProgrammingTracker:
         """Return a copy of the recorded device-level settings."""
         return dict(self._device)
 
+    def channel_lock(self, channel: int) -> asyncio.Lock:
+        """Serialize deriving, sending and recording one channel's programming."""
+        if channel not in self._channel_locks:
+            self._channel_locks[channel] = asyncio.Lock()
+        return self._channel_locks[channel]
+
     async def async_record(self, channel: int, setup: dict[str, Any], *, stamp_programmed: bool = True) -> None:
         """Merge one channel's programming write into the record and persist it.
 
-        ``stamp_programmed`` records the date of the write; schedule writes
-        (which send the device's ``dosingSet`` frame) set it, so the service
-        can derive the "first setting of the day" flag. State-only writes
-        (``set_channel_active``) keep any earlier stamp.
+        ``stamp_programmed`` marks writes that actually sent ``dosingSet``.
+        Schedule-only and state-only writes keep any earlier stamp. The
+        in-memory record is retained if persistence fails: the hardware write
+        already succeeded and must still inform subsequent programming.
         """
         record = {**self._channels.get(channel, {}), **setup}
         if stamp_programmed:
@@ -402,23 +419,18 @@ def _coerce_total(value: object) -> float:
 
 
 def _coerce_total_list(values: object, pump_count: int) -> list[float]:
-    """Coerce a stored list of per-pump totals into a fixed-length float list."""
-    if not isinstance(values, list):
-        return [0.0] * pump_count
-    return [_coerce_total(values[index]) if index < len(values) else 0.0 for index in range(pump_count)]
+    """Restore volumes, padding missing channels without discarding hidden ones."""
+    totals = [_coerce_total(value) for value in values] if isinstance(values, list) else []
+    return totals + [0.0] * (pump_count - len(totals))
 
 
 def _coerce_cycles_list(values: object, pump_count: int) -> list[int]:
-    """Coerce a stored list of per-pump cycle counts into a fixed-length int list."""
-    if not isinstance(values, list):
-        return [0] * pump_count
-    coerced: list[int] = []
-    for index in range(pump_count):
-        if index >= len(values):
-            coerced.append(0)
-            continue
-        try:
-            coerced.append(int(round(float(values[index]))))
-        except (TypeError, ValueError):
-            coerced.append(0)
-    return coerced
+    """Restore cycle counts, padding missing channels without discarding hidden ones."""
+    cycles: list[int] = []
+    if isinstance(values, list):
+        for value in values:
+            try:
+                cycles.append(int(round(float(value))))
+            except (TypeError, ValueError, OverflowError):
+                cycles.append(0)
+    return cycles + [0] * (pump_count - len(cycles))

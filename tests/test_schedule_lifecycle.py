@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, time
 
 import pytest
@@ -50,6 +51,7 @@ def _operations(frames: list[bytes]) -> list[tuple[int, int, bytes]]:
     return [(frame[0], frame[5], frame[6:-1]) for frame in frames if frame[5] not in (4, 9)]
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(("end", "encoded"), [(time(0, 0), b"\x17\x3b"), (time(18, 0), b"\x12\x00")])
 def test_scene_end_midnight_only(end: time, encoded: bytes) -> None:
     """Only total end minutes zero becomes 23:59; inactive slots remain FF."""
@@ -62,6 +64,7 @@ def test_scene_end_midnight_only(end: time, encoded: bytes) -> None:
     assert inactive[12:-1] == bytes([255] * 8)
 
 
+@pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize(
     "prefix",
@@ -94,6 +97,7 @@ def test_scene_initialization_and_unchanged_lite_reconnect(prefix: str) -> None:
     asyncio.run(run())
 
 
+@pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize("firmware", [19, 20, 27])
 def test_scene_firmware_gate_does_not_convert_custom_curves(firmware: int) -> None:
@@ -130,6 +134,7 @@ def test_scene_firmware_gate_does_not_convert_custom_curves(firmware: int) -> No
     asyncio.run(run())
 
 
+@pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
 def test_explicit_scene_capability_gate() -> None:
     """An explicit no-scene capability wins even on recent firmware."""
@@ -154,6 +159,7 @@ async def _leave_auto_mode(device: ChihirosDevice, authority: str) -> None:
         await device.set_brightness(50)
 
 
+@pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize("authority", ["unknown", "incremental", "manual", "brightness", "non_lite"])
 def test_reconnect_never_resets_without_authoritative_lite_auto_schedule(authority: str) -> None:
@@ -177,6 +183,7 @@ def test_reconnect_never_resets_without_authoritative_lite_auto_schedule(authori
     asyncio.run(run())
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "prefix",
     "DYZSD DYNA2N DYNA2 DYNC2N DYCXD DYECO MDTM DYDD DYCOM DYNCM DYFISHDL DYLITE DYZLPD DYZPRO".split(),
@@ -188,6 +195,7 @@ def test_no_weekday_selector_classification(prefix: str) -> None:
     assert supports_weekdays("unclassified-test")
 
 
+@pytest.mark.unit
 @pytest.mark.usefixtures("fast_transport")
 def test_no_weekday_selector_rejects_partial_week_before_writing() -> None:
     """The library does not silently advertise or encode unsupported weekday edits."""
@@ -202,6 +210,23 @@ def test_no_weekday_selector_rejects_partial_week_before_writing() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.component
+@pytest.mark.usefixtures("fast_transport")
+@pytest.mark.parametrize("name", ["DYRGB-test", "DYLITE-test"])
+async def test_all_day_weekday_selections_encode_same_scene(name: str) -> None:
+    """Omitted, empty and everyday selections all write an all-days mask."""
+    device, transport = _device(name)
+    for weekdays in (None, [], [WeekdaySelect.everyday]):
+        await device.replace_settings([replace(_scene(), weekdays=weekdays)])
+        await device.add_setting(_scene().sunrise, _scene().sunset, weekdays=weekdays)
+        await device.remove_setting(_scene().sunrise, _scene().sunset, weekdays=weekdays)
+    await device.disconnect()
+
+    masks = [payload[5] for cmd, mode, payload in _operations(transport.writes) if (cmd, mode) == (165, 25)]
+    assert masks == [127] * 9
+
+
+@pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
 def test_failed_replacement_revokes_stale_replay_authority() -> None:
     """Retries and later reconnects cannot replay an obsolete library schedule."""
@@ -219,6 +244,7 @@ def test_failed_replacement_revokes_stale_replay_authority() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
 @pytest.mark.parametrize(("name", "weekdays"), [("DYSSD-test", True), ("DYZSD-test", False)])
 def test_mixed_aliases_use_advertised_capability(name: str, weekdays: bool) -> None:
@@ -237,6 +263,7 @@ def test_mixed_aliases_use_advertised_capability(name: str, weekdays: bool) -> N
     asyncio.run(run())
 
 
+@pytest.mark.component
 @pytest.mark.usefixtures("fast_transport")
 def test_explicit_custom_controller_enable_and_reset_preserve_point_path() -> None:
     """A fresh client can select and clear the custom controller explicitly."""
@@ -251,3 +278,164 @@ def test_explicit_custom_controller_enable_and_reset_preserve_point_path() -> No
         ]
 
     asyncio.run(run())
+
+
+def _hold_connection_or_clock(transport: ScriptedTransport, patch: pytest.MonkeyPatch, phase: str) -> asyncio.Event:
+    """Hold one connection or clock submission; a subsequent cleanup must be free to run."""
+    entered = asyncio.Event()
+    write = transport._write_frame
+
+    async def hold_connection() -> None:
+        patch.undo()
+        entered.set()
+        await asyncio.Future()
+
+    async def hold_clock(client: object, characteristic: object, frame: bytes) -> None:
+        await write(client, characteristic, frame)
+        if frame[5] == 9:
+            await hold_connection()
+
+    if phase == "connect":
+        patch.setattr(transport, "_establish_ble_client", hold_connection)
+    else:
+        patch.setattr(transport, "_write_frame", hold_clock)
+    return entered
+
+
+@pytest.mark.component
+@pytest.mark.usefixtures("fast_transport")
+@pytest.mark.parametrize("phase", ["connect", "prelude", "scene_clock"])
+async def test_cancel_before_replacement_reset_never_clears_schedule(
+    phase: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even after admission, connection and clock writes do not justify a cleanup reset."""
+    device, transport = _device()
+    await device.set_auto_curve([(0, 480, 90)])
+    expected_replay = _operations(transport.writes)
+    before = len(transport.writes)
+    if phase != "scene_clock":
+        await device.disconnect()
+    with monkeypatch.context() as patch:
+        entered = _hold_connection_or_clock(transport, patch, phase)
+        replacement = (
+            device.replace_settings([_scene()]) if phase == "scene_clock" else device.set_auto_curve([(0, 720, 0)])
+        )
+        task = asyncio.create_task(replacement)
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5)
+    assert _operations(transport.writes[before:]) == []
+    assert device.controller_mode is LedControllerMode.CUSTOM_CURVE
+    await device.disconnect()
+    before = len(transport.writes)
+    await device.query_status()
+    assert _operations(transport.writes[before:]) == expected_replay
+    await device.disconnect()
+
+
+@pytest.mark.component
+@pytest.mark.usefixtures("fast_transport")
+@pytest.mark.parametrize("target", [None, LedControllerMode.CUSTOM_CURVE])
+async def test_cancel_queued_auto_enable_preserves_lite_replay(target: LedControllerMode | None) -> None:
+    """Cancelling either a replay or a switch to a different controller preserves the active scenes."""
+    device, transport = _device()
+    await device.replace_settings([_scene()])
+    expected = _operations(transport.writes)
+    before = len(transport.writes)
+    async with transport._operation_lock:
+        task = asyncio.create_task(device.enable_auto_mode(controller_mode=target))
+        await asyncio.sleep(0)
+        assert not task.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert len(transport.writes) == before
+    assert device.controller_mode is LedControllerMode.SCENE
+    await device.disconnect()
+    await device.query_status()
+    assert _operations(transport.writes[before:]) == expected
+    await device.disconnect()
+
+
+async def _mutate_settings(device: ChihirosDevice, mutation: str) -> None:
+    """Apply an incremental edit that relinquishes full replay authority."""
+    scene = _scene()
+    if mutation == "add":
+        await device.add_setting(scene.sunrise, scene.sunset, 50)
+    elif mutation == "remove":
+        await device.remove_setting(scene.sunrise, scene.sunset)
+    elif mutation == "reset":
+        await device.reset_settings(controller_mode=LedControllerMode.CUSTOM_CURVE)
+    else:
+        await device.set_auto_point(0, 480, 50)
+
+
+@pytest.mark.component
+@pytest.mark.usefixtures("fast_transport")
+@pytest.mark.parametrize("mutation", ["add", "remove", "reset", "point"])
+async def test_cancelled_queued_edit_preserves_lite_replay(mutation: str) -> None:
+    """An edit cancelled before transport admission never supersedes an owned schedule."""
+    device, transport = _device()
+    # Start with the opposite controller so the test also detects a premature mode change.
+    if mutation in ("add", "remove"):
+        await device.set_auto_curve([(0, 480, 90)])
+    else:
+        await device.replace_settings([_scene()])
+    controller = device.controller_mode
+    original_schedule = _operations(transport.writes)
+    before = len(transport.writes)
+    async with transport._operation_lock:
+        editing = asyncio.create_task(_mutate_settings(device, mutation))
+        await asyncio.sleep(0)  # Let the edit reach the held transport lock.
+        assert not editing.done()
+        editing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await editing
+    assert len(transport.writes) == before
+
+    await device.disconnect()
+    await device.query_status()
+    assert device.controller_mode is controller
+    assert _operations(transport.writes[before:]) == original_schedule
+    await device.disconnect()
+
+
+@pytest.mark.component
+@pytest.mark.usefixtures("fast_transport")
+@pytest.mark.parametrize("mutation", ["add", "remove", "reset", "point"])
+async def test_queued_incremental_edit_revokes_replacement_authority(
+    monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """Reconnect must not resurrect an owned schedule superseded by a queued edit."""
+    device, transport = _device()
+    entered, release, requested = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original = transport._write_frame
+
+    async def hold_replacement(client: object, characteristic: object, frame: bytes) -> None:
+        if (frame[0], frame[5]) == (165, 25) and not entered.is_set():
+            entered.set()
+            await release.wait()
+        await original(client, characteristic, frame)
+
+    async def mutate() -> None:
+        requested.set()
+        await _mutate_settings(device, mutation)
+
+    monkeypatch.setattr(transport, "_write_frame", hold_replacement)
+    replacing = asyncio.create_task(device.replace_settings([_scene()]))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        editing = asyncio.create_task(mutate())
+        await asyncio.wait_for(requested.wait(), timeout=5)
+        release.set()
+        await asyncio.gather(replacing, editing)
+        await device.disconnect()
+        before = len(transport.writes)
+        await device.query_status()
+        assert not _operations(transport.writes[before:])
+    finally:
+        release.set()
+        await device.disconnect()

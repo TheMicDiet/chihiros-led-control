@@ -109,26 +109,28 @@ async def _async_set_stir_schedule(hass: HomeAssistant, call: ServiceCall) -> No
     points = validate_stir_points(call.data[ATTR_STIR_POINTS])
     frequency = frequency_from_service_data(call.data)
     active = bool(call.data[ATTR_ACTIVE])
-    first_setting = derive_first_setting(data.dosing_programming, channel, call.data.get(ATTR_FIRST_SETTING))
-    await stirrer_client(data.device).set_stir_schedule(
-        channel,
-        points,
-        frequency=frequency,
-        active=active,
-        is_first_setting=first_setting,
-    )
-    await data.dosing_programming.async_record(
-        channel,
-        {
-            "active": active,
-            "compensate": False,
-            "dose_per_day_ml": 0.0,
-            "frequency": frequency,
-            "mode": "timer",
-            "points": serialize_points(points),
-            "first_setting": first_setting,
-        },
-    )
+    async with data.dosing_programming.channel_lock(channel):
+        first_setting = derive_first_setting(data.dosing_programming, channel, call.data.get(ATTR_FIRST_SETTING))
+        await stirrer_client(data.device).set_stir_schedule(
+            channel,
+            points,
+            frequency=frequency,
+            active=active,
+            is_first_setting=first_setting,
+        )
+        # set_stir_schedule sends dosingSet even for inactive channels.
+        await data.dosing_programming.async_record(
+            channel,
+            {
+                "active": active,
+                "compensate": False,
+                "dose_per_day_ml": 0.0,
+                "frequency": frequency,
+                "mode": "timer",
+                "points": serialize_points(points),
+                "first_setting": first_setting,
+            },
+        )
 
 
 def async_register_stirrer_service(hass: HomeAssistant) -> None:

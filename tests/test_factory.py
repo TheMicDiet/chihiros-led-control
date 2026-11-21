@@ -17,6 +17,8 @@ from chihiros_led_control.factory import (
 from chihiros_led_control.models import DeviceKind, LedFeature, LedProtocol
 from chihiros_led_control.registry import FALLBACK
 
+pytestmark = pytest.mark.unit
+
 
 class FakeBLEDevice:
     """Small BLEDevice stand-in for factory tests."""
@@ -59,7 +61,7 @@ def test_detect_model_new_gen_families_are_sea_led() -> None:
         "DYWPR1201234567890": "WRGB II Pro",
         "DYSILN1234567890": "WRGB II Slim",
         "DYSL301234567890": "WRGB II Slim",
-        "DYSL1201234567890": "WRGB II Slim",
+        "DYSL120-short": "WRGB II Slim",
         "DYNC2N1234567890": "C II",
         "DYNCRGP1234567890": "C II RGB",
         "DYNCRGB1234567890": "C II RGB",
@@ -73,17 +75,6 @@ def test_detect_model_new_gen_families_are_sea_led() -> None:
     # WRGB VIVID III: device_type "NewVivid3" is not in {BleLed, NewBleLed},
     # so _judgeNewLed sets field_147 true → SeaLed family (binary-verified).
     assert detect_model("DYVVD31234567890").spec.protocol is LedProtocol.SEA_LED
-
-
-def test_detect_model_does_not_rely_on_fixed_slicing() -> None:
-    """Model detection works without fixed suffix slicing."""
-    assert detect_model("DYSL120-short").name == "WRGB II Slim"
-
-
-def test_detect_model_matches_dosing_pump_prefix() -> None:
-    """Model detection matches dosing pump advertisements."""
-    assert detect_model("DYDOSE1234567890").name == "Dosing Pump"
-    assert detect_model("DYNDOSCDA1ECD07A4D").name == "Dosing Pump"
 
 
 def test_detect_model_matches_wrgb_vivid_iii_prefix() -> None:
@@ -138,15 +129,13 @@ def test_factory_rejects_known_unsupported_devices() -> None:
 
 
 def test_factory_created_dosing_pump_uses_dosing_client() -> None:
-    """Factory-created dosing pump devices use the dosing client class."""
+    """Every pump alias resolves matching metadata and the dosing client class."""
+    for name in ("DYDOSE1234567890", "DYNDOSCDA1ECD07A4D"):
+        device = create_device(FakeBLEDevice(name))  # type: ignore[arg-type]
 
-    async def create() -> ChihirosDosingPump:
-        return create_device(FakeBLEDevice("DYDOSE1234567890"))  # type: ignore[arg-type, return-value]
-
-    device = asyncio.run(create())
-
-    assert isinstance(device, ChihirosDosingPump)
-    assert device.device_kind is DeviceKind.DOSING_PUMP
+        assert isinstance(device, ChihirosDosingPump)
+        assert device.device_kind is DeviceKind.DOSING_PUMP
+        assert device.model_name == "Dosing Pump"
 
 
 def test_detect_model_matches_rgb_aplus_prefixes() -> None:

@@ -421,9 +421,10 @@ set_dosing_schedule:
         object:
     weekdays:
       name: Weekdays
-      description: Days when the schedule applies. Leave empty for every day.
-      default:
-        - everyday
+      description: >
+        Days when the schedule applies. Requires a daily dose volume.
+        Without a daily volume, omit this field to leave the repetition unchanged.
+        With a daily volume, omitting the field or selecting no days means every day.
       selector:
         select:
           multiple: true
@@ -444,7 +445,7 @@ set_dosing_schedule:
         boolean:
     daily_ml:
       name: Daily dose
-      description: Optional daily dose volume in mL, sent as the channel's dosingSet frame.
+      description: Daily dose volume in mL. Required when setting the weekday repetition.
       selector:
         number:
           min: 0

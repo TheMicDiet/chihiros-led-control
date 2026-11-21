@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import logging
 from collections.abc import Callable, Sequence
+from typing import cast
 
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
@@ -13,12 +14,13 @@ from ..models import DeviceKind, DeviceModel
 from ..protocol.frame import create_command_encoding, encode_timestamp, next_message_id
 from ..protocol.notifications import ParsedNotification
 from ..registry import FALLBACK
-from ..transport import BleTransport, ChihirosTransport
+from ..transport import BleTransport, ChihirosTransport, ScheduleTransport, WriteBoundary
 
 DEFAULT_ATTEMPTS = 3
 COMMAND_NOTIFICATION_WAIT = 0.5
 STATUS_NOTIFICATION_WAIT = 1.0
 NotificationCallback = Callable[[ParsedNotification], None]
+DeviceClock = Callable[[], datetime.datetime]
 
 
 class BaseChihirosDevice:
@@ -31,8 +33,10 @@ class BaseChihirosDevice:
         advertisement_data: AdvertisementData | None = None,
         *,
         transport: ChihirosTransport | None = None,
+        clock: DeviceClock | None = None,
     ) -> None:
-        """Create a family device backed by an injected or production transport."""
+        """Create a device; clock supplies local wall time, defaulting to system local time."""
+        self._clock = clock
         self._ble_device = ble_device
         self.model = model
         self._logger = logging.getLogger(ble_device.address.replace(":", "-"))
@@ -122,9 +126,11 @@ class BaseChihirosDevice:
 
     async def _send_command(
         self,
-        command: list[bytes] | bytes | bytearray,
+        command: list[bytes | bytearray] | bytes | bytearray,
         retry: int | None = None,
         notification_wait: float | None = None,
+        *,
+        boundary: WriteBoundary | None = None,
     ) -> None:
         """Submit one complete encoded frame batch to the public transport."""
         commands_to_send = [bytes(item) for item in command] if isinstance(command, list) else [bytes(command)]
@@ -134,7 +140,17 @@ class BaseChihirosDevice:
         if notification_wait is None:
             notification_wait = COMMAND_NOTIFICATION_WAIT
         self._logger.debug("%s: Sending commands %s", self.name, [item.hex() for item in commands_to_send])
-        await self.transport.send(commands_to_send, attempts=attempts, notification_wait=notification_wait)
+        if boundary is None:
+            await self.transport.send(commands_to_send, attempts=attempts, notification_wait=notification_wait)
+            return
+        # Catch signature mismatch at coroutine creation, never retry a send that ran.
+        try:
+            send = cast(ScheduleTransport, self.transport).send(
+                commands_to_send, attempts=attempts, notification_wait=notification_wait, boundary=boundary
+            )
+        except TypeError as ex:
+            raise TypeError("Custom transports must implement send(..., boundary=...) for LED schedule changes") from ex
+        await send
 
     def _parse_notification(self, data: bytes | bytearray) -> ParsedNotification | None:
         """Parse a raw notification using the selected family codec."""
@@ -149,11 +165,15 @@ class BaseChihirosDevice:
         self._record_notification(parsed)
         self._notify_callbacks(parsed)
 
+    def _device_time(self) -> datetime.datetime:
+        """Read local wall time for device clock frames."""
+        return datetime.datetime.now() if self._clock is None else self._clock()
+
     async def _connection_prelude(self) -> Sequence[bytes]:
         """Build the startup batch lazily for a newly established connection."""
         prelude = [
             create_command_encoding(90, 4, self.get_next_msg_id(), [1]),
-            create_command_encoding(90, 9, self.get_next_msg_id(), encode_timestamp(datetime.datetime.now())),
+            create_command_encoding(90, 9, self.get_next_msg_id(), encode_timestamp(self._device_time())),
         ]
         self._logger.debug(
             "%s: Sending connection prelude %s",

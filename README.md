@@ -350,11 +350,19 @@ alarms (`insufficient_water`, `power_too_low`, `water_overheat`,
 
 ### Master/slave mirroring (pump → stirrer)
 
+**Upgrading to 0.19.3?** Check existing `chihiros.set_dosing_schedule` actions:
+the old action editor could save `weekdays: [everyday]` even if you never chose
+a day. If there is no `daily_ml`, remove `weekdays` or `frequency` to keep the
+pump's current repetition. Supply the intended `daily_ml` only if you want to
+program the daily volume and repetition together.
+
 The vendor app mirrors a linked stirrer by broadcasting the pump's programming
 frames. Home Assistant cannot broadcast, so mirroring is explicit:
 
 - `chihiros.set_dosing_schedule` and `chihiros.set_channel_active` program a
-  pump channel and replay the write to linked stirrers automatically.
+  pump channel and replay the write to linked stirrers automatically. To set
+  `weekdays` (or the raw `frequency`), supply `daily_ml` in the same call. If
+  you omit all three, the pump's existing daily volume and repetition are unchanged.
 - `chihiros.set_stirrer_master` links a stirrer to a pump and replays the
   pump's recorded programming on linking; omit the master fields to unlink.
 - `chihiros.mirror_stirrer` replays the pump's full recorded programming on
@@ -532,19 +540,19 @@ uv --cache-dir .uv-cache run --group dev pytest
 uv --cache-dir .uv-cache run --group dev pre-commit run --all-files
 ```
 
-Home Assistant integration tests use the separate `ha-test` dependency group
-because they install Home Assistant and its test-time runtime dependencies. Run
+Home Assistant tests at every pyramid level use the `ha-test` dependency group
+because they import Home Assistant and its test-time runtime dependencies. Run
 them explicitly when changing files under `custom_components/chihiros/`:
 
 ```bash
-uv --cache-dir .uv-cache run --group ha-test pytest tests/test_home_assistant_integration.py tests/test_manifest_requirements.py
+uv --cache-dir .uv-cache run --group ha-test pytest -m homeassistant
 ```
 
-The integration test creates a temporary Home Assistant config directory,
-symlinks this repository's `custom_components/` directory into it, and patches
-storage writes so the test does not need a running Home Assistant instance or
-real Bluetooth hardware. The manifest requirements test keeps the integration's
-runtime requirement pins aligned with `pyproject.toml`.
+Unit tests exercise isolated behavior; component tests connect real local
+layers with hardware boundaries replaced; integration tests load config entries
+and exercise HA services and entity lifecycle. Start with the lowest layer that
+can reproduce a failure. See the [test pyramid strategy](docs/testing-without-hardware.md#test-pyramid)
+for layer-specific commands and rules for placing new tests.
 
 After changing library code, refresh the vendored copy:
 

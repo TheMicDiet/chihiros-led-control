@@ -58,6 +58,7 @@ from custom_components.chihiros.vendor.chihiros_led_control.registry import HEAT
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.homeassistant,
     pytest.mark.asyncio,
     pytest.mark.usefixtures("enable_custom_integrations", "mock_bluetooth"),
 ]
@@ -648,6 +649,52 @@ async def test_real_heater_capture_reaches_home_assistant(hass: HomeAssistant, m
     await hass.config_entries.async_unload(entry.entry_id)
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_heater_fahrenheit_restore_keeps_celsius_in_power_frame(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, legacy: bool
+) -> None:
+    """Restart from a displayed 77 °F target, then change only the wattage."""
+    from chihiros_led_control import testing as testing_module
+    from custom_components.chihiros.vendor.chihiros_led_control.devices import base as client_module
+    from custom_components.chihiros.vendor.chihiros_led_control.devices import heater as heater_module
+
+    monkeypatch.setattr(testing_module, "BATCH_WRITE_DELAY", 0.0)
+    monkeypatch.setattr(client_module, "COMMAND_NOTIFICATION_WAIT", 0.0)
+    monkeypatch.setattr(heater_module, "COMMAND_NOTIFICATION_WAIT", 0.0)
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    transport = ScriptedTransport(name="DYHET-test", address=TEST_ADDRESS)
+    ble_device = ScriptedBLEDevice(transport.name, transport.address)
+    entry, _client = await _setup_heater(hass, monkeypatch, ChihirosHeater(ble_device, HEATER, transport=transport))
+    temperature_id = _entity_id(hass, NUMBER_DOMAIN, "heater_temperature")
+    power_id = _entity_id(hass, NUMBER_DOMAIN, "heater_power")
+    await hass.services.async_call(
+        NUMBER_DOMAIN, "set_value", {ATTR_ENTITY_ID: temperature_id, "value": 77}, blocking=True
+    )
+    state = hass.states.get(temperature_id)
+    assert float(state.state) == 77
+    assert state.attributes[ATTR_UNIT_OF_MEASUREMENT] == UnitOfTemperature.FAHRENHEIT
+
+    async def resolve_fresh_runtime(_hass: HomeAssistant, _entry: ConfigEntry) -> ChihirosRuntime:
+        client = ChihirosHeater(ble_device, HEATER, transport=transport)
+        return ChihirosRuntime(client=client, address=TEST_ADDRESS, always_available=True)
+
+    def prime() -> None:
+        if legacy:
+            _prime_restore_state(hass, temperature_id, state)
+        monkeypatch.setattr(chihiros_integration, "resolve_chihiros_runtime", resolve_fresh_runtime)
+
+    await _reload_entry(hass, entry, prime=prime)
+    before = len(transport.writes)
+    await hass.services.async_call(NUMBER_DOMAIN, "set_value", {ATTR_ENTITY_ID: power_id, "value": 400}, blocking=True)
+    set_frames = [frame[6:-1] for frame in transport.writes[before:] if (frame[0], frame[5]) == (90, 43)]
+    assert set_frames == [bytes([0, 25, 0, 40])]
+    if not legacy:
+        extra = async_get_restore_data(hass).last_states[temperature_id].extra_data
+        assert extra.as_dict()["native_value"] == 25
+        assert extra.as_dict()["native_unit_of_measurement"] == UnitOfTemperature.CELSIUS
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_heater_manual_pair_restores_into_a_fresh_client(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
@@ -912,6 +959,86 @@ async def test_heater_write_failure_raises_home_assistant_error(
 
     assert client.temperature_calls == []
     assert float(hass.states.get(entity_id).state) == pytest.approx(25.0)
+
+
+async def test_heater_cancelled_write_preserves_committed_target(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation before submission neither commits a target nor retains the write lock."""
+    entry, client = await _setup_heater(hass, monkeypatch)
+    entity_id = _entity_id(hass, NUMBER_DOMAIN, "heater_temperature")
+    entity = hass.data[NUMBER_DOMAIN].get_entity(entity_id)
+    assert entity is not None
+    await entity.async_set_native_value(24.5)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_write = client._write
+
+    async def hold_submission() -> None:
+        """Wait before submitting any hardware frame."""
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(client, "_write", hold_submission)
+    write = asyncio.create_task(entity.async_set_native_value(30.0))
+    await asyncio.wait_for(entered.wait(), 3)
+    write.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await write
+
+    assert entity.native_value == pytest.approx(24.5)
+    assert float(hass.states.get(entity_id).state) == pytest.approx(24.5)
+    assert client.setting_temperature_celsius == pytest.approx(24.5)
+    assert client.temperature_calls == [24.5]
+    monkeypatch.setattr(client, "_write", original_write)
+    await entity.async_set_native_value(26.0)
+    assert entity.native_value == pytest.approx(26.0)
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_heater_concurrent_failed_writes_preserve_committed_target(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two queued failures must not resurrect the first request as committed state."""
+    entry, client = await _setup_heater(hass, monkeypatch)
+    entity_id = _entity_id(hass, NUMBER_DOMAIN, "heater_temperature")
+    entity = hass.data[NUMBER_DOMAIN].get_entity(entity_id)
+    assert entity is not None
+    await entity.async_set_native_value(24.5)
+    entered = {value: asyncio.Event() for value in (27.0, 30.0)}
+    release = {value: asyncio.Event() for value in entered}
+    hardware_lock = asyncio.Lock()
+    second_requested = asyncio.Event()
+
+    async def reject_submission(value: float) -> None:
+        """Serialize rejected hardware writes independently of the entity."""
+        async with hardware_lock:
+            entered[value].set()
+            await release[value].wait()
+            raise RuntimeError("rejected before submission")
+
+    async def second_request() -> None:
+        """Mark submission before awaiting the entity's write lock."""
+        second_requested.set()
+        await entity.async_set_native_value(30.0)
+
+    monkeypatch.setattr(client, "set_temperature", reject_submission)
+    first = asyncio.create_task(entity.async_set_native_value(27.0))
+    await asyncio.wait_for(entered[27.0].wait(), 3)
+    second = asyncio.create_task(second_request())
+    await asyncio.wait_for(second_requested.wait(), 3)
+    release[27.0].set()
+    with pytest.raises(HomeAssistantError, match="Failed to set"):
+        await first
+    await asyncio.wait_for(entered[30.0].wait(), 3)
+    release[30.0].set()
+    with pytest.raises(HomeAssistantError, match="Failed to set"):
+        await second
+
+    assert entity.native_value == pytest.approx(24.5)
+    assert float(hass.states.get(entity_id).state) == pytest.approx(24.5)
+    assert client.setting_temperature_celsius == pytest.approx(24.5)
+    assert client.temperature_calls == [24.5]
+    await hass.config_entries.async_unload(entry.entry_id)
 
 
 @pytest.mark.parametrize("name", ["DYHET-abc", "DYH1T-abc"])

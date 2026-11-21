@@ -13,12 +13,15 @@ import pytest
 from chihiros_led_control.protocol import dosing as commands
 from chihiros_led_control.protocol import stirrer as stirrer_protocol
 from chihiros_led_control.protocol.dosing import DosingMode, DosingWorkPoint
+from chihiros_led_control.protocol.frame import calculate_checksum
 from chihiros_led_control.protocol.notifications import DosingDailyNotification, DosingTotalsNotification
 from chihiros_led_control.protocol.stirrer import (
     stirrer_dosage_for_minutes,
     stirrer_minutes_for_dosage,
     validate_stirrer_work_points,
 )
+
+pytestmark = pytest.mark.unit
 
 MSG_ID = (0, 6)
 
@@ -225,6 +228,7 @@ def test_stirrer_pre_second_command_layout() -> None:
     frame = stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 90, 20)
     assert frame[5] == 42
     assert _payload(frame) == [0, 0, 90, 20]
+    assert calculate_checksum(frame[:-1]) == frame[-1]
     minimum = stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 0, 0)
     assert _payload(minimum) == [0, 0, 0, 0]
     long_run = stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 3, 999, 20)
@@ -258,13 +262,3 @@ def test_parse_captured_firmware_reply_frames() -> None:
     lifetime_frame = bytes.fromhex("5b 01 0a 00 02 1e 02 b2 27 7c 08 7a 07 30 84")
     parsed = parse_notification(lifetime_frame)
     assert parsed == DosingTotalsNotification((69000, 1010800, 217000, 184000), lifetime_frame)
-
-
-def test_dosing_frames_are_not_reserved_byte_escaped() -> None:
-    """Stirrer duration bytes are sent verbatim without reserved-byte escaping."""
-    frame = stirrer_protocol.create_stirrer_pre_second_command(MSG_ID, 0, 90, stirrer_protocol.STIRRER_SPEED_DEFAULT)
-    assert frame[8] == 0x5A  # 90 seconds, unescaped
-    # The checksum stays valid.
-    from chihiros_led_control.protocol.frame import calculate_checksum
-
-    assert calculate_checksum(frame[:-1]) == frame[-1]

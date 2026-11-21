@@ -12,7 +12,7 @@ from ..protocol import dosing as commands
 from ..protocol.notifications import DosingDailyNotification, DosingTotalsNotification, ParsedNotification
 from ..registry import DOSING_PUMP
 from ..transport import ChihirosTransport
-from .base import STATUS_NOTIFICATION_WAIT, BaseChihirosDevice
+from .base import STATUS_NOTIFICATION_WAIT, BaseChihirosDevice, DeviceClock
 
 
 class ChihirosDosingPump(BaseChihirosDevice):
@@ -25,9 +25,10 @@ class ChihirosDosingPump(BaseChihirosDevice):
         advertisement_data: AdvertisementData | None = None,
         *,
         transport: ChihirosTransport | None = None,
+        clock: DeviceClock | None = None,
     ) -> None:
         """Create a dosing-pump client."""
-        super().__init__(ble_device, model, advertisement_data, transport=transport)
+        super().__init__(ble_device, model, advertisement_data, transport=transport, clock=clock)
         self.last_dosing_totals_notification: DosingTotalsNotification | None = None
         self.last_dosing_daily_notification: DosingDailyNotification | None = None
 
@@ -135,7 +136,7 @@ class ChihirosDosingPump(BaseChihirosDevice):
         active: bool,
         compensate: bool = False,
         dose_per_day_ml: float | None = None,
-        frequency: int = 127,
+        frequency: int | None = None,
         is_first_setting: bool = True,
         mode: commands.DosingMode | None = None,
         points: Sequence[commands.DosingWorkPoint] = (),
@@ -147,9 +148,12 @@ class ChihirosDosingPump(BaseChihirosDevice):
         are idempotent and the whole batch is retried on failure, so a retry
         that eventually succeeds converges the channel — but a BLE write batch
         is not atomic: if every retry fails partway, the pump can end up
-        half-programmed. ``dose_per_day_ml=None``
-        skips the ``dosingSet`` frame; ``mode=None`` skips the schedule frames.
+        half-programmed. Omitting daily volume skips the ``dosingSet`` frame;
+        a frequency may only be supplied with daily volume and defaults to
+        every day in that case. ``mode=None`` skips the schedule frames.
         """
+        if dose_per_day_ml is None and frequency is not None:
+            raise ValueError("A weekday frequency requires a daily volume")
         commands_to_send = [
             commands.create_dosing_active_compensation_command(
                 self.get_next_msg_id(), channel, active=active, compensate=compensate
@@ -158,7 +162,11 @@ class ChihirosDosingPump(BaseChihirosDevice):
         if dose_per_day_ml is not None:
             commands_to_send.append(
                 commands.create_dosing_set_command(
-                    self.get_next_msg_id(), channel, dose_per_day_ml, frequency, is_first_setting=is_first_setting
+                    self.get_next_msg_id(),
+                    channel,
+                    dose_per_day_ml,
+                    127 if frequency is None else frequency,
+                    is_first_setting=is_first_setting,
                 )
             )
         if mode is not None:
@@ -195,8 +203,11 @@ class ChihirosDosingPump(BaseChihirosDevice):
         byte, including message id and checksum — to every connected device
         when a stirrer slave is linked (DOSING_CONTROL.md §5). This is the
         equivalent primitive for replaying such a frame onto another device.
+
+        Opaque frames may trigger physical dosing. Attempt once because a
+        failed write can already have been accepted by the device.
         """
-        await self._send_command(bytearray(frame), 3)
+        await self._send_command(bytearray(frame), 1)
 
     async def reset_total_dosed(self, channel: int) -> None:
         """Zero one channel's lifetime dosed counter (app's ``resetTotalDosing``)."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from inspect import isawaitable
 from typing import Protocol
 
@@ -32,6 +33,15 @@ PreludeResult = Sequence[bytes] | Awaitable[Sequence[bytes]]
 PreludeCallback = Callable[[], PreludeResult]
 
 
+@dataclass(frozen=True)
+class WriteBoundary:
+    """Use this prelude for this batch only; notify before submitting frame `index` on each attempt."""
+
+    index: int
+    before_write: Callable[[], None]
+    prelude: PreludeCallback
+
+
 class ChihirosTransport(Protocol):
     """Transport contract consumed by device drivers.
 
@@ -47,7 +57,7 @@ class ChihirosTransport(Protocol):
         attempts: int,
         notification_wait: float,
     ) -> None:
-        """Send an already encoded frame batch."""
+        """Send an encoded frame batch."""
 
     async def disconnect(self) -> None:
         """Disconnect the current transport session."""
@@ -62,6 +72,15 @@ class ChihirosTransport(Protocol):
         prelude_callback: PreludeCallback,
     ) -> None:
         """Set raw notification and lazy connection-prelude callbacks."""
+
+
+class ScheduleTransport(ChihirosTransport, Protocol):
+    """Transport extension for LED commands that need to observe a schedule-changing write."""
+
+    async def send(
+        self, frames: Sequence[bytes], *, attempts: int, notification_wait: float, boundary: WriteBoundary | None = None
+    ) -> None:
+        """Honor the per-batch prelude and notify synchronously before the specified GATT write."""
 
 
 def pair_notify_characteristic(
@@ -96,6 +115,7 @@ class BleTransport:
         self._logger = logger or logging.getLogger(self._log_name())
         self._notification_callback = notification_callback
         self._prelude_callback = prelude_callback
+        self._active_boundary: WriteBoundary | None = None  # scoped by the operation lock
         self._client: BleakClientWithServiceCache | None = None
         self._read_char: BleakGATTCharacteristic | None = None
         self._write_char: BleakGATTCharacteristic | None = None
@@ -151,8 +171,15 @@ class BleTransport:
         self.ble_device = ble_device
         self.advertisement_data = advertisement_data
 
-    async def send(self, frames: Sequence[bytes], *, attempts: int, notification_wait: float) -> None:
-        """Connect lazily, run the prelude once per connection, and write a batch."""
+    async def send(
+        self,
+        frames: Sequence[bytes],
+        *,
+        attempts: int,
+        notification_wait: float,
+        boundary: WriteBoundary | None = None,
+    ) -> None:
+        """Send one batch, optionally observing a specific write (never prelude or connection I/O)."""
         if attempts < 1:
             raise ValueError("attempts must be at least 1")
         commands_to_send = [bytes(frame) for frame in frames]
@@ -161,7 +188,11 @@ class BleTransport:
         if self._operation_lock.locked():
             self._logger.debug("%s: Operation already in progress, waiting; RSSI: %s", self.name, self.rssi)
         async with self._operation_lock:
-            await self._send_attempts(commands_to_send, attempts, notification_wait)
+            self._active_boundary = boundary
+            try:
+                await self._send_attempts(commands_to_send, attempts, notification_wait)
+            finally:
+                self._active_boundary = None
 
     async def _send_attempts(self, frames: Sequence[bytes], attempts: int, notification_wait: float) -> None:
         """Run transaction attempts while retaining the operation lock."""
@@ -200,7 +231,7 @@ class BleTransport:
     async def _send_transaction(self, frames: Sequence[bytes], notification_wait: float) -> None:
         """Write one complete frame batch over the current connection."""
         await self._ensure_connected()
-        await self._write_frames(frames)
+        await self._write_frames(frames, self._active_boundary)
         if notification_wait:
             await asyncio.sleep(notification_wait)
 
@@ -252,18 +283,11 @@ class BleTransport:
 
     async def _configure_client(self, client: BleakClientWithServiceCache) -> None:
         """Resolve endpoints, subscribe to notifications, and lazily send prelude."""
-        if not await self._resolve_client_characteristics(client):
+        if not self._resolve_characteristics(client.services):
             raise CharacteristicMissingError("Write characteristic missing")
         self._client = client
         await self._subscribe_client(client)
         await self._send_prelude()
-
-    async def _resolve_client_characteristics(self, client: BleakClientWithServiceCache) -> bool:
-        """Resolve endpoints from cached services, then the live service list."""
-        resolved = self._resolve_characteristics(client.services)
-        if not resolved:
-            resolved = self._resolve_characteristics(await client.get_services())
-        return resolved
 
     async def _subscribe_client(self, client: BleakClientWithServiceCache) -> None:
         """Subscribe to notifications when a paired endpoint is available."""
@@ -281,9 +305,10 @@ class BleTransport:
 
     async def _send_prelude(self) -> None:
         """Run the connection prelude, if configured."""
-        if self._prelude_callback is None:
+        callback = self._active_boundary.prelude if self._active_boundary is not None else self._prelude_callback
+        if callback is None:
             return
-        prelude = self._prelude_callback()
+        prelude = callback()
         if isawaitable(prelude):
             prelude = await prelude
         await self._write_frames(prelude)
@@ -329,7 +354,7 @@ class BleTransport:
         self._logger.warning("%s: Device unexpectedly disconnected; RSSI: %s", self.name, self.rssi)
         self._unexpected_disconnect.set()
 
-    async def _write_frames(self, frames: Sequence[bytes]) -> None:
+    async def _write_frames(self, frames: Sequence[bytes], boundary: WriteBoundary | None = None) -> None:
         """Write an encoded frame batch with vendor pacing."""
         client = self._client
         if client is None:
@@ -338,9 +363,17 @@ class BleTransport:
         if write_char is None:
             raise CharacteristicMissingError("Write characteristic missing")
         for index, frame in enumerate(frames):
+            self._prepare_write(index, boundary)
             await self._write_frame(client, write_char, frame)
             if index < len(frames) - 1:
                 await asyncio.sleep(self.batch_write_delay)
+
+    def _prepare_write(self, index: int, boundary: WriteBoundary | None) -> None:
+        """After local checks, mark the frame as possibly accepted before awaiting GATT."""
+        if self._unexpected_disconnect.is_set():
+            raise BleakError("Device unexpectedly disconnected during command batch")
+        if boundary is not None and index == boundary.index:
+            boundary.before_write()
 
     async def _write_frame(
         self,
@@ -349,8 +382,6 @@ class BleTransport:
         frame: bytes,
     ) -> None:
         """Await acknowledged writes when supported, preserving legacy no-response endpoints."""
-        if self._unexpected_disconnect.is_set():
-            raise BleakError("Device unexpectedly disconnected during command batch")
         await client.write_gatt_char(write_char, frame, response="write" in write_char.properties)
         if self._unexpected_disconnect.is_set():
             raise BleakError("Device unexpectedly disconnected during command batch")
@@ -420,11 +451,30 @@ class BleTransport:
         """Disconnect one BLE client without taking the connection lock."""
         if not client.is_connected:
             return
-        if read_char is not None:
+        try:
+            if read_char is not None:
+                try:
+                    await client.stop_notify(read_char)
+                except BleakError:
+                    self._logger.debug("%s: Failed to stop notifications", self.name, exc_info=True)
+        finally:
+            await self._finish_client_disconnect(client)
+
+    async def _finish_client_disconnect(self, client: BleakClientWithServiceCache) -> None:
+        """Finish releasing the connection before propagating cancellation."""
+        cleanup = asyncio.create_task(self._disconnect_ble_client(client))
+        cancelled = False
+        while not cleanup.done():
             try:
-                await client.stop_notify(read_char)
-            except BleakError:
-                self._logger.debug("%s: Failed to stop notifications", self.name, exc_info=True)
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _disconnect_ble_client(self, client: BleakClientWithServiceCache) -> None:
+        """Release the physical client, logging ordinary BLE teardown failures."""
         try:
             await client.disconnect()
         except BleakError:
@@ -435,6 +485,8 @@ __all__ = [
     "BATCH_WRITE_DELAY",
     "BleTransport",
     "ChihirosTransport",
+    "ScheduleTransport",
+    "WriteBoundary",
     "PreludeCallback",
     "RawNotificationCallback",
     "pair_notify_characteristic",

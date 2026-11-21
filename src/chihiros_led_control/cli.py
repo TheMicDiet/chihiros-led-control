@@ -329,7 +329,7 @@ def dosing_program(
     points: Annotated[list[str] | None, typer.Argument()] = None,
     mode: Annotated[str, typer.Option(case_sensitive=False)] = "timer",
     daily_ml: Annotated[float | None, typer.Option(min=0, max=DOSE_VOLUME_MAX_ML)] = None,
-    weekdays: Annotated[list[WeekdaySelect], typer.Option()] = [WeekdaySelect.everyday],
+    weekdays: Annotated[list[WeekdaySelect] | None, typer.Option()] = None,
     enable: Annotated[bool, typer.Option("--enable/--disable")] = True,
     compensate: Annotated[bool, typer.Option("--compensate/--no-compensate")] = False,
     first_setting: Annotated[bool, typer.Option("--first-setting/--not-first-setting")] = True,
@@ -338,8 +338,12 @@ def dosing_program(
 
     Sends the active/compensation frame, an optional ``--daily-ml`` volume,
     and an optional schedule as one paced transaction (the app's ``startWork``).
-    Omit the points to program only the channel state and daily volume.
+    Setting weekdays requires ``--daily-ml``. With a daily volume and no
+    weekdays, the pump is programmed for every day. Omit the points to
+    program only the channel state and daily volume.
     """
+    if weekdays and daily_ml is None:
+        raise typer.BadParameter("requires --daily-ml", param_hint="--weekdays")
     dosing_mode = _parse_mode(mode) if points else None
     work_points = _parse_work_points(points, dosing_mode) if dosing_mode is not None else []
     _run_dosing_func(
@@ -349,7 +353,7 @@ def dosing_program(
             active=enable,
             compensate=compensate,
             dose_per_day_ml=daily_ml,
-            frequency=encode_selected_weekdays(weekdays),
+            frequency=encode_selected_weekdays(weekdays) if weekdays else None,
             is_first_setting=first_setting,
             mode=dosing_mode,
             points=work_points,

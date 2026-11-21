@@ -140,14 +140,15 @@ class ChihirosStirSwitch(
         await self._apply(False)
 
     async def _apply(self, on: bool) -> None:
-        """Send the manual start/stop frame and update the optimistic state."""
-        client = stirrer_client(self._device)
-        try:
-            await client.stir(self._channel, on)
-        except Exception as ex:
-            raise HomeAssistantError(f"Failed to {'start' if on else 'stop'} {self._attr_name}") from ex
-        self._state.running = on
-        self.async_write_ha_state()
+        """Serialize start/stop with configuration and commit after success."""
+        async with self._state.lock:
+            client = stirrer_client(self._device)
+            try:
+                await client.stir(self._channel, on)
+            except Exception as ex:
+                raise HomeAssistantError(f"Failed to {'start' if on else 'stop'} {self._attr_name}") from ex
+            self._state.running = on
+            self.async_write_ha_state()
 
 
 class ChihirosStirNumberBase(
@@ -197,6 +198,10 @@ class ChihirosStirNumberBase(
         """Store this number's value into the shared channel state."""
         raise NotImplementedError
 
+    def _paired_values(self, value: int) -> tuple[int, int]:
+        """Return the proposed pre-run and speed without changing committed state."""
+        raise NotImplementedError
+
     async def async_added_to_hass(self) -> None:
         """Restore the last configured value into the shared state (no write)."""
         await super().async_added_to_hass()
@@ -226,22 +231,17 @@ class ChihirosStirNumberBase(
         # writes so the second frame always carries both committed values.
         async with self._state.lock:
             clamped = int(min(max(value, self.native_min_value), self.native_max_value))
-            previous = self._read_state()
-            self._write_state(clamped)
+            seconds, speed = self._paired_values(clamped)
             client = stirrer_client(self._device)
             try:
                 if self._state.running and self._restart_when_running:
-                    await client.set_pre_second(
-                        self._channel,
-                        self._state.pre_seconds,
-                        self._state.speed,
-                        restart=True,
-                    )
+                    await client.set_pre_second(self._channel, seconds, speed, restart=True)
                 else:
-                    await client.set_pre_second(self._channel, self._state.pre_seconds, self._state.speed)
+                    await client.set_pre_second(self._channel, seconds, speed)
             except Exception as ex:
-                self._write_state(previous)
                 raise HomeAssistantError(f"Failed to set {self._attr_name}") from ex
+            # A failed/cancelled call may have sent a prefix; it is not a local commit.
+            self._write_state(clamped)
         self.async_write_ha_state()
 
 
@@ -260,6 +260,10 @@ class ChihirosStirSpeedNumber(ChihirosStirNumberBase):
     def _write_state(self, value: int) -> None:
         """Store the channel's stir speed."""
         self._state.speed = value
+
+    def _paired_values(self, value: int) -> tuple[int, int]:
+        """Pair the requested speed with the committed pre-run duration."""
+        return self._state.pre_seconds, value
 
 
 class ChihirosStirPreRunNumber(ChihirosStirNumberBase):
@@ -283,3 +287,7 @@ class ChihirosStirPreRunNumber(ChihirosStirNumberBase):
     def _write_state(self, value: int) -> None:
         """Store the channel's pre-stir seconds."""
         self._state.pre_seconds = value
+
+    def _paired_values(self, value: int) -> tuple[int, int]:
+        """Pair the requested pre-run duration with the committed speed."""
+        return value, self._state.speed

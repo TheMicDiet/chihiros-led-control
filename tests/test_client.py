@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Callable
 from datetime import datetime
 
@@ -26,10 +25,12 @@ from chihiros_led_control.protocol.notifications import (
     DosingTotalsNotification,
     FanStatusNotification,
     RuntimeNotification,
+    SchedulePoint,
     ScheduleSnapshotNotification,
 )
 from chihiros_led_control.registry import DOSING_PUMP, MAG_STIRRER
 from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
+from chihiros_led_control.transport import WriteBoundary
 
 
 class FakeBLEDevice:
@@ -49,6 +50,7 @@ def framed(values: list[int]) -> bytearray:
     return frame
 
 
+@pytest.mark.unit
 def test_enable_auto_mode_sends_time_before_switch() -> None:
     """Auto mode setup syncs time before enabling auto mode."""
     sent_commands: list[bytes] = []
@@ -69,6 +71,7 @@ def test_enable_auto_mode_sends_time_before_switch() -> None:
     assert [command[5] for command in sent_commands] == [9, 5]
 
 
+@pytest.mark.unit
 def test_enable_auto_mode_uses_supplied_timestamp() -> None:
     """Auto mode time sync can use a caller-supplied local timestamp."""
     sent_commands: list[bytes] = []
@@ -90,6 +93,27 @@ def test_enable_auto_mode_uses_supplied_timestamp() -> None:
     assert sent_commands[0][6:12] == bytes([26, 6, 2, 20, 30, 45])
 
 
+@pytest.mark.component
+async def test_legacy_transport_supports_ordinary_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Old send signatures still work, and unsupported schedule edits fail before sending anything."""
+    _fast_waits(monkeypatch)
+
+    class LegacyTransport(ScriptedTransport):
+        async def send(self, frames, *, attempts: int, notification_wait: float) -> None:
+            await super().send(frames, attempts=attempts, notification_wait=notification_wait)
+
+    transport = LegacyTransport()
+    device = ChihirosDevice(ScriptedBLEDevice(transport.name, transport.address), transport=transport)
+    await device.query_status()
+    assert transport.writes[-1][5] == 4
+    before = len(transport.writes)
+    with pytest.raises(TypeError, match=r"Custom transports must implement send\(\.\.\., boundary="):
+        await device.set_auto_curve([(0, 480, 0)])
+    assert len(transport.writes) == before
+    await device.disconnect()
+
+
+@pytest.mark.unit
 def test_query_status_sends_runtime_status_query() -> None:
     """Status refresh sends the legacy runtime/status query."""
     sent_commands: list[bytes] = []
@@ -117,6 +141,7 @@ def test_query_status_sends_runtime_status_query() -> None:
     assert notification_waits == [1.0]
 
 
+@pytest.mark.unit
 def test_dosing_pump_status_queries_counters_in_app_order(monkeypatch: pytest.MonkeyPatch) -> None:
     """Dosing refresh batches lifetime/daily queries and waits for their replies."""
     from chihiros_led_control.devices import dosing
@@ -147,6 +172,7 @@ def test_dosing_pump_status_queries_counters_in_app_order(monkeypatch: pytest.Mo
     assert notification_waits == [2.5]
 
 
+@pytest.mark.unit
 def test_mag_stirrer_status_refresh_is_fire_and_forget() -> None:
     """Stirrers do not request the generic runtime snapshot."""
     sent_commands: list[bytes] = []
@@ -197,6 +223,7 @@ def _respond_once(frame: bytes) -> Callable[[bytes], list[bytes]]:
     return respond
 
 
+@pytest.mark.component
 def test_scripted_connection_reuse_runs_prelude_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """Two public commands reuse one physical connection and one prelude."""
     transport = ScriptedTransport()
@@ -217,6 +244,7 @@ def test_scripted_connection_reuse_runs_prelude_once(monkeypatch: pytest.MonkeyP
     assert [frame[5] for frame in transport.writes] == [4, 9, 5, 5]
 
 
+@pytest.mark.component
 def test_scripted_idle_disconnect_closes_connection(monkeypatch: pytest.MonkeyPatch) -> None:
     """An idle connection is closed by the transport before the next command."""
     transport = ScriptedTransport()
@@ -246,6 +274,7 @@ def test_scripted_idle_disconnect_closes_connection(monkeypatch: pytest.MonkeyPa
     asyncio.run(run())
 
 
+@pytest.mark.component
 def test_scripted_concurrent_commands_are_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
     """Concurrent public calls remain complete, ordered transport transactions."""
     transport = ScriptedTransport()
@@ -266,82 +295,7 @@ def test_scripted_concurrent_commands_are_serialized(monkeypatch: pytest.MonkeyP
     assert actions == [(5, [11, 255, 255]), (7, [0, 100]), (5, [11, 255, 255]), (7, [0, 0])]
 
 
-def test_scripted_transient_failure_reconnects(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A transient write failure retries through a fresh physical connection."""
-    transport = ScriptedTransport()
-    calls = 0
-
-    def flaky(_frame: bytes) -> list[bytes]:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise BleakError("temporary")
-        if calls == 2:
-            return [bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")]
-        return []
-
-    transport.expect(90, 4, [1], respond=flaky)
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-            transport=transport,
-        )
-        await device.query_status()
-
-    asyncio.run(run())
-
-    assert transport.connections == 2
-    assert calls == 3
-
-
-def test_scripted_missing_notify_characteristic_is_fire_and_forget(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """A device without a notify endpoint still accepts public commands."""
-    transport = ScriptedTransport(notify_characteristics=False)
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-            transport=transport,
-        )
-        with caplog.at_level(logging.WARNING):
-            await device.query_status()
-        assert device.last_runtime_notification is None
-
-    asyncio.run(run())
-
-    assert transport.connections == 1
-    assert "No notify characteristic" in caplog.text
-
-
-def test_scripted_characteristic_pairing_delivers_notifications(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The family driver receives replies through the paired notify endpoint."""
-    transport = ScriptedTransport()
-    runtime_frame = bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")
-    transport.expect(90, 4, [1], respond=_respond_once(runtime_frame))
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-            transport=transport,
-        )
-        await device.query_status()
-        assert device.last_runtime_notification == RuntimeNotification(27, 511, runtime_frame)
-
-    asyncio.run(run())
-
-    assert transport.connections == 1
-    assert transport.writes[0][5] == 4
-
-
+@pytest.mark.component
 def test_scripted_prelude_failure_disconnects_temporary_session(monkeypatch: pytest.MonkeyPatch) -> None:
     """A failed connection prelude does not leave a scripted session open."""
     transport = ScriptedTransport()
@@ -363,29 +317,7 @@ def test_scripted_prelude_failure_disconnects_temporary_session(monkeypatch: pyt
     assert not transport.is_connected
 
 
-def test_scripted_runtime_notification_is_stored_and_published(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A runtime notification delivered by transport reaches subscribers."""
-    received: list[RuntimeNotification] = []
-    frame = bytes.fromhex("5b170a00010a01ffffffffff13888c")
-    transport = ScriptedTransport()
-    transport.expect(90, 4, [1], respond=_respond_once(frame))
-    _fast_waits(monkeypatch)
-
-    async def run() -> ChihirosDevice:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-            transport=transport,
-        )
-        device.add_notification_callback(received.append)
-        await device.query_status()
-        return device
-
-    device = asyncio.run(run())
-    assert device.last_runtime_notification == RuntimeNotification(23, 511, frame)
-    assert received == [device.last_runtime_notification]
-
-
+@pytest.mark.component
 def test_scripted_schedule_notification_is_stored_and_published(monkeypatch: pytest.MonkeyPatch) -> None:
     """A schedule snapshot delivered by transport reaches subscribers."""
     received: list[ScheduleSnapshotNotification] = []
@@ -405,10 +337,15 @@ def test_scripted_schedule_notification_is_stored_and_published(monkeypatch: pyt
         return device
 
     device = asyncio.run(run())
-    assert isinstance(device.last_schedule_snapshot_notification, ScheduleSnapshotNotification)
+    assert device.last_schedule_snapshot_notification == ScheduleSnapshotNotification(
+        23, (SchedulePoint(8, 0, {"white": 50}),), frame
+    )
     assert received == [device.last_schedule_snapshot_notification]
+    assert received[0] is device.last_schedule_snapshot_notification
+    assert received[0].raw == frame
 
 
+@pytest.mark.component
 def test_scripted_fan_notification_is_stored_and_published(monkeypatch: pytest.MonkeyPatch) -> None:
     """A fan status delivered by transport reaches subscribers."""
     received: list[FanStatusNotification] = []
@@ -431,8 +368,11 @@ def test_scripted_fan_notification_is_stored_and_published(monkeypatch: pytest.M
     device = asyncio.run(run())
     assert device.last_fan_status_notification == FanStatusNotification(27, 600, 25, frame)
     assert received == [device.last_fan_status_notification]
+    assert received[0] is device.last_fan_status_notification
+    assert received[0].raw == frame
 
 
+@pytest.mark.unit
 def test_set_fan_speed_rejects_models_without_fan() -> None:
     """Fan control is limited to fan-equipped models."""
 
@@ -444,6 +384,7 @@ def test_set_fan_speed_rejects_models_without_fan() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.unit
 def test_set_brightness_sends_all_true_wrgb_channels() -> None:
     """Brightness commands can set red, green, blue, and white in one call."""
     sent_commands: list[list[bytes]] = []
@@ -473,6 +414,7 @@ def test_set_brightness_sends_all_true_wrgb_channels() -> None:
     ]
 
 
+@pytest.mark.component
 def test_notification_callback_failure_does_not_block_other_subscribers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -499,9 +441,22 @@ def test_notification_callback_failure_does_not_block_other_subscribers(
 
     asyncio.run(run())
 
-    assert len(received) == 1
+    assert received == [RuntimeNotification(27, 511, frame)]
+    assert received[0].raw == frame
 
 
+def _capture_schedule_edits(device: ChihirosDevice, frames: list[bytes]) -> None:
+    """Capture a submitted incremental edit at its GATT write boundary."""
+
+    async def capture(command: bytes | bytearray, _retry: int, *, boundary: WriteBoundary) -> None:
+        assert boundary.index == 0
+        boundary.before_write()
+        frames.append(bytes(command))
+
+    device._send_command = capture  # type: ignore[method-assign]
+
+
+@pytest.mark.unit
 def test_add_setting_sends_four_channel_brightness() -> None:
     """True WRGB auto schedules encode red, green, blue, and white levels."""
     sent_commands: list[bytes] = []
@@ -509,11 +464,7 @@ def test_add_setting_sends_four_channel_brightness() -> None:
     async def run() -> None:
         device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test WRGB", (), LedSpec(WRGB_CHANNELS)))  # type: ignore[arg-type]
 
-        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del retry
-            sent_commands.append(bytes(command))
-
-        device._send_command = capture_command  # type: ignore[method-assign]
+        _capture_schedule_edits(device, sent_commands)
 
         await device.add_setting(
             sunrise=datetime(2026, 6, 14, 8, 0),
@@ -526,18 +477,14 @@ def test_add_setting_sends_four_channel_brightness() -> None:
     assert sent_commands[0][6:-1] == bytes([8, 0, 18, 30, 0, 127, 10, 20, 30, 40, 255, 255, 255, 255])
 
 
+@pytest.mark.unit
 def test_add_setting_uses_white_channel_for_true_wrgb_models() -> None:
     """Single-channel auto schedules target the white slot on true WRGB models."""
     sent_commands: list[bytes] = []
 
     async def run() -> None:
         device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test WRGB", (), LedSpec(WRGB_CHANNELS)))  # type: ignore[arg-type]
-
-        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del retry
-            sent_commands.append(bytes(command))
-
-        device._send_command = capture_command  # type: ignore[method-assign]
+        _capture_schedule_edits(device, sent_commands)
 
         await device.add_setting(
             sunrise=datetime(2026, 6, 14, 8, 0),
@@ -550,18 +497,14 @@ def test_add_setting_uses_white_channel_for_true_wrgb_models() -> None:
     assert sent_commands[0][6:-1] == bytes([8, 0, 18, 30, 0, 127, 255, 255, 255, 40, 255, 255, 255, 255])
 
 
+@pytest.mark.unit
 def test_add_setting_uses_first_channel_when_model_has_no_white_channel() -> None:
     """Single-channel auto schedules keep targeting the first channel on RGB-only models."""
     sent_commands: list[bytes] = []
 
     async def run() -> None:
         device = ChihirosDevice(FakeBLEDevice(), DeviceModel("Test RGB", (), LedSpec(RGB_CHANNELS)))  # type: ignore[arg-type]
-
-        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del retry
-            sent_commands.append(bytes(command))
-
-        device._send_command = capture_command  # type: ignore[method-assign]
+        _capture_schedule_edits(device, sent_commands)
 
         await device.add_setting(
             sunrise=datetime(2026, 6, 14, 8, 0),
@@ -574,6 +517,7 @@ def test_add_setting_uses_first_channel_when_model_has_no_white_channel() -> Non
     assert sent_commands[0][6:-1] == bytes([8, 0, 18, 30, 0, 127, 40, 255, 255, 255, 255, 255, 255, 255])
 
 
+@pytest.mark.unit
 def test_set_auto_point_sends_family_specific_encoding() -> None:
     """Auto curve points use the app's per-family 0x5A/0x06 encoding."""
     bleled_sent: list[bytes] = []
@@ -589,16 +533,8 @@ def test_set_auto_point_sends_family_specific_encoding() -> None:
             DeviceModel("Commander 4", ("DYNLED",), LedSpec(WRGB_CHANNELS, protocol=LedProtocol.SEA_LED)),  # type: ignore[arg-type]
         )
 
-        async def capture_bleled(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del retry
-            bleled_sent.append(bytes(command))
-
-        async def capture_sealed(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
-            del retry
-            sealed_sent.append(bytes(command))
-
-        bleled._send_command = capture_bleled  # type: ignore[method-assign]
-        sealed._send_command = capture_sealed  # type: ignore[method-assign]
+        _capture_schedule_edits(bleled, bleled_sent)
+        _capture_schedule_edits(sealed, sealed_sent)
 
         await bleled.set_auto_point(2, 8 * 60 + 30, 80)
         await sealed.set_auto_point(3, 8 * 60 + 30, 60)
@@ -613,6 +549,7 @@ def test_set_auto_point_sends_family_specific_encoding() -> None:
     assert sealed_sent[0][10] == calculate_checksum(sealed_sent[0][:-1])
 
 
+@pytest.mark.unit
 def test_set_auto_point_rejects_out_of_range_channel() -> None:
     """Auto curve points validate the channel against the model layout."""
 
@@ -625,6 +562,7 @@ def test_set_auto_point_rejects_out_of_range_channel() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.unit
 def test_set_auto_curve_sends_all_points_in_one_transaction() -> None:
     """Auto curves batch every point frame into a single paced BLE transaction."""
     sent_batches: list[list[bytes]] = []
@@ -635,8 +573,15 @@ def test_set_auto_curve_sends_all_points_in_one_transaction() -> None:
             DeviceModel("Commander 4", ("DYNLED",), LedSpec(WRGB_CHANNELS, protocol=LedProtocol.SEA_LED)),  # type: ignore[arg-type]
         )
 
-        async def capture_command(command: list[bytes] | bytes | bytearray, retry: int | None = None) -> None:
+        async def capture_command(
+            command: list[bytes] | bytes | bytearray,
+            retry: int | None = None,
+            *,
+            boundary: WriteBoundary,
+        ) -> None:
             del retry
+            assert boundary.index == 0
+            boundary.before_write()
             sent_batches.append(list(command) if isinstance(command, list) else [bytes(command)])
 
         device._send_command = capture_command  # type: ignore[method-assign]
@@ -655,6 +600,7 @@ def test_set_auto_curve_sends_all_points_in_one_transaction() -> None:
     assert sent_batches[0][4][5:10] == bytes([6, 2, 12, 0, 0])  # 720 min = 12:00
 
 
+@pytest.mark.unit
 def test_set_auto_curve_rejects_empty_or_out_of_range_points() -> None:
     """Auto curves reject empty input and out-of-range channels before writing."""
 
@@ -677,6 +623,7 @@ def test_set_auto_curve_rejects_empty_or_out_of_range_points() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.unit
 def test_set_manual_mode_sends_mode_switch_command() -> None:
     """Manual mode sends the vendor app's switchToManual frame without touching brightness."""
     sent_commands: list[bytes] = []
@@ -697,6 +644,7 @@ def test_set_manual_mode_sends_mode_switch_command() -> None:
     assert sent_commands[0][5:8] == bytes([5, 11, 255])
 
 
+@pytest.mark.unit
 def test_set_fan_speed_clamps_below_model_minimum() -> None:
     """VIVID3 fan speeds between 1 and 24 percent are clamped to the model minimum."""
     sent_commands: list[bytes] = []
@@ -722,14 +670,7 @@ def test_set_fan_speed_clamps_below_model_minimum() -> None:
     assert [command[6] for command in sent_commands] == [25, 0, 30]
 
 
-def test_dosing_notification_state_starts_empty() -> None:
-    """Dosing notification attributes exist before the first device reply."""
-    device = ChihirosDosingPump(FakeBLEDevice(), DOSING_PUMP)  # type: ignore[arg-type]
-
-    assert device.last_dosing_totals_notification is None
-    assert device.last_dosing_daily_notification is None
-
-
+@pytest.mark.component
 def test_scripted_dosing_totals_notification_is_stored_and_published(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -744,6 +685,8 @@ def test_scripted_dosing_totals_notification_is_stored_and_published(
         device = ChihirosDosingPump(
             ScriptedBLEDevice(transport.name, transport.address), DOSING_PUMP, transport=transport
         )
+        assert device.last_dosing_totals_notification is None
+        assert device.last_dosing_daily_notification is None
         device.add_notification_callback(received.append)
         await device.query_status()
         return device
@@ -751,8 +694,11 @@ def test_scripted_dosing_totals_notification_is_stored_and_published(
     device = asyncio.run(run())
     assert device.last_dosing_totals_notification == DosingTotalsNotification((105500, 0), frame)
     assert received == [device.last_dosing_totals_notification]
+    assert received[0] is device.last_dosing_totals_notification
+    assert received[0].raw == frame
 
 
+@pytest.mark.component
 def test_scripted_dosing_daily_notification_is_stored_and_published(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -774,8 +720,11 @@ def test_scripted_dosing_daily_notification_is_stored_and_published(
     device = asyncio.run(run())
     assert device.last_dosing_daily_notification == DosingDailyNotification((10000, 40000), frame)
     assert received == [device.last_dosing_daily_notification]
+    assert received[0] is device.last_dosing_daily_notification
+    assert received[0].raw == frame
 
 
+@pytest.mark.component
 def test_scripted_fan_notification_is_ignored_on_non_fan_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """A fan readout delivered to a model without fan support is ignored."""
     received: list[FanStatusNotification] = []
@@ -799,6 +748,7 @@ def test_scripted_fan_notification_is_ignored_on_non_fan_model(monkeypatch: pyte
     assert received == []
 
 
+@pytest.mark.unit
 def test_set_fan_auto_sends_auto_mode_command() -> None:
     """Fan auto mode sends the vendor app's autoFan frame and tracks the mode."""
     sent_commands: list[bytes] = []
@@ -817,6 +767,7 @@ def test_set_fan_auto_sends_auto_mode_command() -> None:
         device._send_command = capture_command  # type: ignore[method-assign]
 
         await device.set_fan_auto()
+        assert device.fan_auto is True
 
     asyncio.run(run())
 
@@ -824,6 +775,7 @@ def test_set_fan_auto_sends_auto_mode_command() -> None:
     assert sent_commands[0][8] == 0xFF
 
 
+@pytest.mark.unit
 def test_set_fan_speed_clears_fan_auto_mode() -> None:
     """A manual fan speed leaves temperature-controlled auto mode."""
 
@@ -847,6 +799,7 @@ def test_set_fan_speed_clears_fan_auto_mode() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.unit
 def test_set_fan_start_stop_temp_sends_command_and_stores_values() -> None:
     """Fan start/stop temperatures are sent and kept for the HA number entities."""
     sent_commands: list[bytes] = []
@@ -865,12 +818,14 @@ def test_set_fan_start_stop_temp_sends_command_and_stores_values() -> None:
         device._send_command = capture_command  # type: ignore[method-assign]
 
         await device.set_fan_start_stop_temp(40, 35)
+        assert (device.fan_start_temp, device.fan_stop_temp) == (40, 35)
 
     asyncio.run(run())
 
     assert sent_commands[0][5:8] == bytes([0x2D, 40, 35])
 
 
+@pytest.mark.unit
 def test_set_temp_protect_sends_command_and_tracks_state() -> None:
     """Temperature protection sends the vvd3tempProtect frame and tracks state."""
     sent_commands: list[bytes] = []
@@ -907,6 +862,7 @@ def test_set_temp_protect_sends_command_and_tracks_state() -> None:
     assert sent_commands[1][5:8] == bytes([5, 0x31, 0xFF])
 
 
+@pytest.mark.unit
 def test_set_bluetooth_led_sends_command_and_tracks_state() -> None:
     """Indicator LED sends the vvd3BluetoothLed frame and tracks state."""
     sent_commands: list[bytes] = []
@@ -940,6 +896,7 @@ def test_set_bluetooth_led_sends_command_and_tracks_state() -> None:
     assert sent_commands[0][5:8] == bytes([5, 0x33, 0xFF])
 
 
+@pytest.mark.unit
 def test_vivid3_switches_reject_non_vivid3_models() -> None:
     """Non-VIVID3 models reject the VIVID3-only switches."""
 

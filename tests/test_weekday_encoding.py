@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import pytest
+
 from chihiros_led_control.weekday_encoding import (
     WeekdaySelect,
     encode_selected_weekdays,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_encode_everyday() -> None:

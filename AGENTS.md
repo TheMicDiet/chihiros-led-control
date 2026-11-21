@@ -1,44 +1,29 @@
-# Repository Guidelines
+# Chihiros repository guide
 
-## Project Structure & Module Organization
+## Code and runtime copies
 
-This repository contains a Python library/CLI and a Home Assistant custom integration for controlling Chihiros LEDs over Bluetooth LE.
+- `src/chihiros_led_control/` is the source of truth for the BLE drivers (LEDs, dosing pumps, magnetic stirrers, and heaters) and the `chihirosctl` CLI. See [the architecture guide](docs/architecture.md) for family boundaries and state ownership.
+- `custom_components/chihiros/` is the Home Assistant integration. It imports the generated runtime copy under `custom_components/chihiros/vendor/chihiros_led_control/` so HACS installs are self-contained. Never edit that copy directly. After changing library runtime code, run both commands and include the generated changes:
 
-- `src/chihiros_led_control/`: reusable library code and the `chihirosctl` Typer CLI.
-- `custom_components/chihiros/`: Home Assistant integration files, translations, and manifest.
-- `custom_components/chihiros/vendor/`: vendored copy of the library used by HACS installs.
-- `tests/`: pytest tests for protocol encoding, factory behavior, weekday encoding, and vendor sync.
-- `scripts/sync_vendor.py`: copies package code into the integration vendor directory.
-- `docs/`: architecture and local Home Assistant Docker setup notes.
-- `dev/homeassistant/`: local Home Assistant configuration used with Docker Compose.
+  ```sh
+  uv --cache-dir .uv-cache run python scripts/sync_vendor.py
+  uv --cache-dir .uv-cache run python scripts/sync_vendor.py --check
+  ```
 
-## Build, Test, and Development Commands
+  The CLI and the scripted BLE test harness are not vendored.
 
-- Always pass `--cache-dir .uv-cache` to `uv` commands so dependency/cache writes stay inside the repo.
-- `uv --cache-dir .uv-cache sync --group dev`: install development dependencies.
-- `uv --cache-dir .uv-cache run --group dev pytest`: run the test suite.
-- `uv --cache-dir .uv-cache run --group dev pre-commit run --all-files`: run formatting, linting, doc, YAML/TOML, and AST checks.
-- `uv --cache-dir .uv-cache run chihirosctl --help`: inspect CLI commands after syncing dependencies.
-- `uv --cache-dir .uv-cache run python scripts/sync_vendor.py`: refresh `custom_components/chihiros/vendor/` after library changes.
-- `uv --cache-dir .uv-cache run python scripts/sync_vendor.py --check`: verify the vendored copy is current.
-- `docker compose up`: start the local Home Assistant environment; see `docs/home-assistant-docker.md`.
+## Local validation
 
-## Coding Style & Naming Conventions
+Always pass `--cache-dir .uv-cache` to `uv`. The repo defaults to Python 3.14, which CI uses for Home Assistant tests. The library supports Python 3.13.2 and later; keep library code compatible with Ruff's `py313` target. Ruff uses a 120-character line limit and a maximum cyclomatic complexity of 5; it excludes the vendor tree.
 
-Target Python 3.13. Use 4-space indentation, type hints for public APIs, and descriptive snake_case names for modules, functions, and variables. Classes should use PascalCase; constants should use UPPER_SNAKE_CASE.
+| Task | Command |
+| --- | --- |
+| Library tests without Home Assistant | `uv --cache-dir .uv-cache run --group test pytest -m 'not homeassistant'` |
+| Home Assistant tests | `uv --cache-dir .uv-cache run --group ha-test pytest -m homeassistant` |
+| Full suite | `uv --cache-dir .uv-cache run --group dev pytest` |
+| Pre-commit checks | `uv --cache-dir .uv-cache run --group lint pre-commit run --all-files` |
+| CLI help | `uv --cache-dir .uv-cache run --extra cli chihirosctl --help` |
 
-Ruff is the formatter and linter. The configured line length is 120 characters, and lint rules include docstrings, pycodestyle, pyflakes, imports, warnings, and cyclomatic complexity (mccabe, max complexity 5 — functions must stay below 6). The vendored integration copy is excluded from Ruff checks; edit `src/chihiros_led_control/` first, then sync vendor code.
+Each test needs exactly one layer marker: `unit`, `component`, or `integration`. Mark HA-dependent tests with `homeassistant` in addition to their layer. In HA-dependent test modules, call `pytest.importorskip("homeassistant")` before importing HA-only dependencies, including `voluptuous`; pytest imports modules before applying `-m`. Verify dependency isolation in a fresh environment with only the `test` group; an existing `dev` environment can hide missing imports. Put regressions at the lowest layer that reproduces the failure. See [Testing Without Chihiros Hardware](docs/testing-without-hardware.md#test-pyramid) for layer boundaries and scripted BLE.
 
-## Testing Guidelines
-
-Tests use pytest and live in `tests/` with `test_*.py` names. Prefer focused unit tests for command encoding, protocol behavior, model/factory changes, and Home Assistant-facing compatibility. When changing vendored behavior, run both `pytest` and `scripts/sync_vendor.py --check`.
-
-## Commit & Pull Request Guidelines
-
-Git history uses short imperative subjects, with occasional Conventional Commit prefixes such as `fix:`. Keep commits focused, for example `fix: relax bleak version pin` or `add model code for wrgb2 slim`.
-
-Pull requests should describe the user-visible change, list validation commands run, link related issues, and include screenshots only for Home Assistant UI changes. If library code changes, mention whether the vendored copy was refreshed.
-
-## Security & Configuration Tips
-
-Do not commit Bluetooth device addresses, Home Assistant secrets, tokens, or local `.venv` contents. Keep dependency changes in `pyproject.toml` and `uv.lock` together.
+`docker compose up` starts Home Assistant with fake Chihiros devices enabled. See [the Docker guide](docs/home-assistant-docker.md) for testing with real BLE on Linux.

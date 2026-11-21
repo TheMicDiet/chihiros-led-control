@@ -11,7 +11,7 @@ from ..models import DeviceModel
 from ..protocol import dosing, stirrer
 from ..registry import MAG_STIRRER
 from ..transport import ChihirosTransport
-from .base import BaseChihirosDevice
+from .base import BaseChihirosDevice, DeviceClock
 
 
 class ChihirosMagStirrer(BaseChihirosDevice):
@@ -24,9 +24,10 @@ class ChihirosMagStirrer(BaseChihirosDevice):
         advertisement_data: AdvertisementData | None = None,
         *,
         transport: ChihirosTransport | None = None,
+        clock: DeviceClock | None = None,
     ) -> None:
         """Create a magnetic-stirrer client."""
-        super().__init__(ble_device, model, advertisement_data, transport=transport)
+        super().__init__(ble_device, model, advertisement_data, transport=transport, clock=clock)
 
     async def send_frame(self, frame: bytes | bytearray) -> None:
         """Send a pre-built frame verbatim (master/slave broadcast replay).
@@ -35,8 +36,11 @@ class ChihirosMagStirrer(BaseChihirosDevice):
         byte, including message id and checksum — to every connected device
         when a stirrer slave is linked (DOSING_CONTROL.md §5). This is the
         equivalent primitive for replaying such a frame onto another device.
+
+        Opaque frames may trigger a physical run. Attempt once because a
+        failed write can already have been accepted by the device.
         """
-        await self._send_command(bytearray(frame), 3)
+        await self._send_command(bytearray(frame), 1)
 
     async def set_dose_delay(self, enabled: bool) -> None:
         """Toggle the device-level dose delay flag (app's ``setDosingDelay``)."""

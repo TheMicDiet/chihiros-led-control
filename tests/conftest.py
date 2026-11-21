@@ -7,10 +7,18 @@ import asyncio
 import pytest
 
 
-def pytest_configure(config):
-    """Register custom markers."""
-    config.addinivalue_line("markers", "integration: tests that load the integration through Home Assistant")
-    config.addinivalue_line("markers", "unit: isolated tests that do not load a Home Assistant config entry")
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Require one explicit pyramid layer before marker-based deselection."""
+    invalid = []
+    for item in items:
+        layers = {mark.name for mark in item.iter_markers() if mark.name in {"unit", "component", "integration"}}
+        if len(layers) != 1:
+            invalid.append(f"{item.nodeid}: {', '.join(sorted(layers)) or 'unmarked'}")
+    if invalid:
+        raise pytest.UsageError(
+            "Each test must have exactly one layer marker (unit, component, integration):\n" + "\n".join(invalid)
+        )
 
 
 @pytest.fixture(autouse=True)

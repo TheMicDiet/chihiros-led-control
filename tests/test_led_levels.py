@@ -27,6 +27,7 @@ def _snapshot(*levels: int) -> bytes:
     return prefix + b"".join(bytes([8 + index, 0, level]) for index, level in enumerate(levels))
 
 
+@pytest.mark.component
 def test_verified_vivid_raw_levels_manual_points_and_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     """DYRGBV forwards extended levels; notifications retain valid model units."""
     _fast_waits(monkeypatch)
@@ -80,6 +81,7 @@ def test_verified_vivid_raw_levels_manual_points_and_snapshot(monkeypatch: pytes
     asyncio.run(run())
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("scale", [LedLevelScale.NEW_A_SERIES, LedLevelScale.MAGNETIC])
 def test_explicit_scaled_model_manual_points_and_snapshot(
     monkeypatch: pytest.MonkeyPatch, scale: LedLevelScale
@@ -111,6 +113,7 @@ def test_explicit_scaled_model_manual_points_and_snapshot(
     asyncio.run(run())
 
 
+@pytest.mark.unit
 def test_default_models_do_not_gain_unverified_extended_ranges() -> None:
     """Other prefixes keep max100; decoding must use actual metadata rather than a global allowance."""
     for name in ("DYNVVD-test", "DYNV-test", "DYDD-test", "DYCOM-test", "DYA-test"):
@@ -122,6 +125,7 @@ def test_default_models_do_not_gain_unverified_extended_ranges() -> None:
         assert parse_notification(_snapshot(101), spec).points == ()
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("channel,maximum", [(0, 115), (1, 130), (2, 200)])
 def test_percentage_conversion_is_channel_specific(channel: int, maximum: int) -> None:
     """Percentages use each verified channel maximum, preserving zero."""

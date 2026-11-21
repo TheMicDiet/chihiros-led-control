@@ -97,11 +97,13 @@ class FakeDosingDevice(FakeBaseDevice):
         active: bool,
         compensate: bool = False,
         dose_per_day_ml: float | None = None,
-        frequency: int = 127,
+        frequency: int | None = None,
         is_first_setting: bool = True,
         mode: object = None,
         points: Sequence[object] = (),
     ) -> None:
+        if dose_per_day_ml is None and frequency is not None:
+            raise ValueError("A weekday frequency requires a daily volume")
         await asyncio.sleep(0)
         self.dosing_programming_calls.append(
             {
