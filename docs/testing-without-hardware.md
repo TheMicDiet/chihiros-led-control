@@ -1,24 +1,20 @@
 # Testing Without Chihiros Hardware
 
-The automated suite follows a test pyramid: broad isolated unit coverage, fewer
-component scenarios, and focused Home Assistant integration journeys. Fake
-devices and scripted BLE make every automated layer hardware-independent.
+Test the real code at its public boundaries. Simulate the external BLE
+peripheral in memory; do not mock or monkeypatch drivers, services, entities,
+clocks, or storage. Home Assistant runs with real config entries and disk
+storage in an isolated directory.
 
-## Test pyramid
+## Test boundaries
 
-Each test must have exactly one layer marker. Collection fails for missing or
-conflicting layers, including tests deselected with `-m`; unknown markers also
-fail collection.
+Each test must have exactly one layer marker. Mark Home Assistant tests with
+`homeassistant` as well to select the right dependency group.
 
-| Marker | Boundary | Coverage belongs here |
+| Marker | Boundary | Expect |
 | --- | --- | --- |
-| `unit` | One behavior; external collaborators replaced | Codec bytes, parsing, validation, model selection, RGB/RGBW arithmetic, isolated entity state and errors |
-| `component` | Several real local components; hardware/network replaced | Driver plus production scripted transport, CLI adapter, HA storage/dispatcher, service helper through vendored driver |
-| `integration` | Real HA config-entry/service/entity lifecycle | Service routing, entity registration, restoration/reload, setup/unload cleanup and cross-entity behavior |
-
-`homeassistant` is an independent dependency marker, not a test level. An
-isolated entity test can be both `unit` and `homeassistant`; a scripted
-transport test is `component`, not an end-to-end hardware test.
+| `unit` | BLE codecs, advertised model detection, and public validation | Wire bytes, decoded fields, or a specific validation error |
+| `component` | Driver and transport, CLI, or maintenance command | Ordered GATT transcript, notifications, command output, or files |
+| `integration` | Real HA config flows, services, and lifecycle | Published state, reload behavior, service errors, or GATT traffic |
 
 HA-dependent modules must call `pytest.importorskip("homeassistant")` before
 importing HA-only dependencies, including `voluptuous`. Pytest imports modules
@@ -26,49 +22,35 @@ before applying `-m`, so markers alone cannot protect the library-only job.
 Verify dependency isolation in a fresh environment containing only the `test`
 group; an existing `dev` environment can mask missing-dependency failures.
 
-Place each regression at the lowest boundary that can reproduce the observable
-failure. Keep validation and arithmetic matrices in unit tests. Use component
-tests for transport ordering, retries, cancellation and notification delivery.
-Keep integration cases when HA service dispatch, lifecycle or interactions
-between entities are essential to the failure. Do not duplicate a full
-lower-level matrix through config-entry setup, remove meaningful scenarios to
-meet a ratio, or add trivial tests to inflate the base.
+Put the expected output next to the action. Use literal bytes from the protocol
+or a capture, small ordered transcripts, and specific exceptions. Leave out
+unrelated or variable fields (such as per-session message IDs) unless they are
+part of the behavior under test. Don't generate expected wire bytes with the
+encoder under test.
 
-Before adding a scenario, compare its preconditions, action, observable result
-and failure mode with existing cases. Similar inputs or shared setup alone do
-not make two tests duplicates. When a stronger scenario subsumes another, keep
-the stronger one and transfer any unique assertions before removing the subset.
-Keep separate adapter/lifecycle tests only when they protect a distinct routing,
-state, persistence or cleanup contract.
-
-Prefer assertions about emitted bytes, applied state, persistence and
-user-visible errors over exact source/configuration snapshots. Validation tests
-should name the expected exception type; unrelated failures must not satisfy
-them. Preserve boundary values and race/cancellation orderings instead of
-repeating ordinary values from the same equivalence class.
-
-Run the fast library base without installing Home Assistant:
+Keep one scenario at the lowest public boundary that can reproduce a failure.
+Do not repeat codec matrices through the CLI or HA. Keep separate scenarios for
+retries, cancellation, and writes that may already have reached a device.
 
 ```bash
-uv --cache-dir .uv-cache run --group test pytest -m "unit and not homeassistant"
-uv --cache-dir .uv-cache run --group test pytest -m "component and not homeassistant"
+uv --cache-dir .uv-cache run --group test pytest -m 'not homeassistant'
+uv --cache-dir .uv-cache run --group ha-test pytest -m homeassistant
+uv --cache-dir .uv-cache run --group dev pytest
 ```
 
-Run Home Assistant layers in increasing scope:
-
-```bash
-uv --cache-dir .uv-cache run --group ha-test pytest -m "unit and homeassistant"
-uv --cache-dir .uv-cache run --group ha-test pytest -m "component and homeassistant"
-uv --cache-dir .uv-cache run --group ha-test pytest -m "integration and homeassistant"
-```
-
-`uv --cache-dir .uv-cache run --group dev pytest` runs all automated layers.
-CI runs each layer explicitly, units before components before integration, and
-combines coverage within each dependency group without lowering its threshold.
-Physical BLE/app verification remains a small manual top layer; the automated
+CI measures branch coverage against production code, not the vendor copy or
+hardware simulators. Physical BLE/app verification remains manual; the automated
 suite cannot prove radio or firmware behavior.
 
-## Home Assistant fake devices
+## Home Assistant Bluetooth proxy tests
+
+`tests/ha_peripheral.py` registers an in-memory Bluetooth proxy through the
+normal HA Bluetooth API. It advertises devices and supplies a Bleak backend:
+config flows, services, registries, the vendored driver, and the BLE transport
+all run unchanged. `tests/test_ha_boundary.py` checks public HA state and writes
+observed at the peripheral. Use this path for regressions that need HA.
+
+## Home Assistant demo devices
 
 `custom_components/chihiros/fake/` provides in-memory devices that implement
 family-specific fake device surfaces. They appear in the integration's device
@@ -90,10 +72,8 @@ The roster currently covers:
   RGB+APLUS, `DYREE` RGB VIVID, `DYRGBV` RGB VIVID II, `DYSEA` SEA_LED,
   `DYONE` Commander X, `DYTWO` X300, `DYNLED` Commander 4
 
-This is enough to test entity setup, config flow, controls, sensors, dosing,
-and the fan/auto features in a live Home Assistant UI. To add another family,
-extend `FAKE_DEVICES` with the model's advertised codes and channels and add a
-roster assertion in `tests/test_home_assistant_unit.py`.
+These devices are for manual UI exploration in the Docker demo. To add another
+family, extend `FAKE_DEVICES` with its advertised codes and channels.
 
 ## Scripted BLE transport
 
@@ -132,8 +112,9 @@ asyncio.run(run())
 Rules match on command id, mode byte, and an optional parameter prefix
 (message id bytes and checksums are ignored). `respond` accepts frames or a
 callable; `fail=True` simulates a BLE write error (and exercises the client's
-retry/reconnect path). See `tests/test_scripted_transport.py` for component
-examples covering query status, fan commands, dosing sequences, and retries.
+retry/reconnect path). Use `realtime=False` to skip hardware-only waits and
+`pause(...)` to hold a specific pending GATT operation for a concurrency test.
+See `tests/test_scripted_transport.py` for examples.
 
 Successful transactions reuse the configured connection. Call
 `await device.disconnect()` in a test when the lifecycle boundary itself is
@@ -151,9 +132,8 @@ path. The bounds cover 729 manual-dose sequences and nine sequences for each
 single-frame operation, totaling 756 scenarios. It checks one channel and one
 value per operation, not physical pump behavior or slave firmware deduplication.
 
-The state-machine regression tests additionally exercise cancellation cleanup,
-concurrent schedule edits and paired settings, delayed midnight callbacks,
-storage failures after hardware success, and deferred startup restoration.
+The boundary regression tests also exercise cancellation cleanup, concurrent
+schedule edits, paired settings, and restoration across HA reloads.
 
 `program_channel` is a separate, non-atomic batch. In a scripted run with an
 active setting, daily volume, and one schedule point, failures before every
@@ -173,7 +153,7 @@ ESP32 advertising the Chihiros UART service as a test peripheral.
 
 ## Issue #133 regression scenarios
 
-`test_led_levels.py`, `test_led_levels_ha.py`, and
+`test_led_levels.py`, `test_ha_boundary.py`, and
 `test_schedule_lifecycle.py` exercise model-unit conversion, scene/custom-curve
 selection, safe validation failures, and authoritative Lite reconnect replay.
 The heater and scripted-transport suites cover backlight scheduling, VIVID

@@ -55,9 +55,9 @@ lint = [
 ha-test = [
     {include-group = "test"},
     "aiousbwatcher",
-    "homeassistant",
+    "habluetooth",
+    "homeassistant==2025.12.1",
     "pyserial",
-    "pytest-homeassistant-custom-component==0.13.299",
     "serialx[esphome]",
 ]
 
@@ -95,7 +95,7 @@ asyncio_default_fixture_loop_scope = "function"
 pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
-    "unit: isolated behavior with external collaborators replaced; no config-entry setup or BLE transport",
+    "unit: pure boundary contracts such as BLE codecs and advertised model detection",
     "component: multiple real local components with hardware/network boundaries replaced",
     "integration: Home Assistant config-entry, service, entity, or lifecycle scenarios",
     "homeassistant: requires the Home Assistant test dependency group, independent of test layer",
@@ -105,6 +105,8 @@ markers = [
 branch = true
 omit = [
     "custom_components/chihiros/vendor/*",
+    "custom_components/chihiros/fake/*",
+    "src/chihiros_led_control/testing.py",
 ]
 
 [tool.coverage.report]

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 
+import click
 import typer
 from bleak import BleakScanner
+from bleak.backends.device import BLEDevice
 from rich import print
 from rich.table import Table
 from typing_extensions import Annotated
@@ -42,13 +45,28 @@ DeviceCommand = Callable[[ChihirosDevice], Awaitable[None]]
 DosingDeviceCommand = Callable[[ChihirosDosingPump], Awaitable[None]]
 StirrerDeviceCommand = Callable[[ChihirosMagStirrer], Awaitable[None]]
 HeaterDeviceCommand = Callable[[ChihirosHeater], Awaitable[None]]
+CliDevice = ChihirosDevice | ChihirosDosingPump | ChihirosMagStirrer | ChihirosHeater
+
+
+@dataclass(frozen=True)
+class BluetoothAccess:
+    """Bluetooth discovery and connection provider for an embedded CLI invocation."""
+
+    connect: Callable[[str], Awaitable[CliDevice]] = get_device_from_address
+    discover: Callable[[int], Awaitable[Sequence[BLEDevice]]] = BleakScanner.discover
+
+
+def _bluetooth_access() -> BluetoothAccess:
+    """Use the invocation's Bluetooth provider, or the platform default."""
+    context = click.get_current_context(silent=True)
+    return (context.find_object(BluetoothAccess) if context else None) or BluetoothAccess()
 
 
 def _run_device_func(device_address: str, command: DeviceCommand) -> None:
     """Run an LED-only command, rejecting every other device family."""
 
     async def _async_func() -> None:
-        dev = await get_device_from_address(device_address)
+        dev = await _bluetooth_access().connect(device_address)
         try:
             if getattr(dev, "device_kind", None) is not DeviceKind.LED:
                 raise typer.BadParameter(f"{dev.name} is not a light")
@@ -63,7 +81,7 @@ def _run_dosing_func(device_address: str, command: DosingDeviceCommand) -> None:
     """Run a pump-only command, rejecting non-dosing devices and stirrers."""
 
     async def _async_func() -> None:
-        dev = await get_device_from_address(device_address)
+        dev = await _bluetooth_access().connect(device_address)
         try:
             if getattr(dev, "device_kind", None) is not DeviceKind.DOSING_PUMP:
                 raise typer.BadParameter(f"{dev.name} is not a dosing pump")
@@ -78,7 +96,7 @@ def _run_stirrer_func(device_address: str, command: StirrerDeviceCommand) -> Non
     """Run a stirrer-only command, rejecting every other device."""
 
     async def _async_func() -> None:
-        dev = await get_device_from_address(device_address)
+        dev = await _bluetooth_access().connect(device_address)
         try:
             if getattr(dev, "device_kind", None) is not DeviceKind.MAG_STIRRER:
                 raise typer.BadParameter(f"{dev.name} is not a magnetic stirrer")
@@ -93,7 +111,7 @@ def _run_heater_func(device_address: str, command: HeaterDeviceCommand) -> None:
     """Run a heater-only command, rejecting every other device."""
 
     async def _async_func() -> None:
-        dev = await get_device_from_address(device_address)
+        dev = await _bluetooth_access().connect(device_address)
         try:
             if getattr(dev, "device_kind", None) is not DeviceKind.HEATER:
                 raise typer.BadParameter(f"{dev.name} is not a heater")
@@ -184,7 +202,7 @@ def _parse_work_points(points: list[str], dosing_mode: DosingMode) -> list[Dosin
 def list_devices(timeout: Annotated[int, typer.Option()] = 5) -> None:
     """List all bluetooth devices."""
     table = Table("Name", "Address", "Model")
-    discovered_devices = asyncio.run(BleakScanner.discover(timeout=timeout))
+    discovered_devices = asyncio.run(_bluetooth_access().discover(timeout))
     for device in discovered_devices:
         model = detect_model(device.name)
         model_name = "???" if model.fallback else model.name

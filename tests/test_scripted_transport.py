@@ -1,623 +1,276 @@
-"""End-to-end client tests against a scripted BLE transport (no hardware).
-
-The scripted transport is injected into the real
-``ChihirosDevice`` connect flow (characteristic resolution, notification
-subscription, connection prelude), command writes, and notification parsing
-run against scripted bytes instead of Bluetooth hardware.
-"""
+"""Public device operations against an in-memory BLE peripheral."""
 
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import datetime
 
 import pytest
 from bleak_retry_connector import BleakError
 
-from chihiros_led_control import testing as testing_module
 from chihiros_led_control.const import DFU_CHAR_UUID, HM10_RX_CHAR_UUID, UART_RX_CHAR_UUID, UART_TX_CHAR_UUID
-from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump
-from chihiros_led_control.devices import base as device_base
+from chihiros_led_control.devices import ChihirosDevice, ChihirosDosingPump, ChihirosMagStirrer
 from chihiros_led_control.exceptions import CharacteristicMissingError
-from chihiros_led_control.models import WHITE_CHANNELS, WRGB_CHANNELS, DeviceModel, LedFeature, LedSpec
 from chihiros_led_control.protocol.dosing import DosingMode, DosingWorkPoint
 from chihiros_led_control.protocol.notifications import DosingTotalsNotification, RuntimeNotification
-from chihiros_led_control.registry import DOSING_PUMP
+from chihiros_led_control.registry import DOSING_PUMP, MAG_STIRRER, detect_model
 from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
 from chihiros_led_control.weekday_encoding import WeekdaySelect
 
+pytestmark = pytest.mark.component
 RUNTIME_FRAME = bytes.fromhex("5b 1b 0a 00 01 0a 01 ff")
 
 
-class _FilteredServices:
-    """Expose only selected characteristics from a scripted BLE client."""
-
-    def __init__(self, services: object, allowed: frozenset[str]) -> None:
-        self._services = services
-        self._allowed = allowed
-
-    def get_characteristic(self, uuid: str) -> object | None:
-        if uuid not in self._allowed:
-            return None
-        return self._services.get_characteristic(uuid)
+def _light(ble: ScriptedTransport) -> ChihirosDevice:
+    return ChihirosDevice(ScriptedBLEDevice(ble.name, ble.address), detect_model(ble.name), transport=ble)
 
 
-def _fast_waits(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Remove notification sleeps so scripted sessions run quickly."""
-    monkeypatch.setattr(device_base, "COMMAND_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(device_base, "STATUS_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(testing_module, "BATCH_WRITE_DELAY", 0.0)
+def _pump(ble: ScriptedTransport) -> ChihirosDosingPump:
+    return ChihirosDosingPump(ScriptedBLEDevice(ble.name, ble.address), DOSING_PUMP, transport=ble)
 
 
-@pytest.mark.component
-def test_scripted_fire_and_forget_without_notify_characteristic(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Write-only control endpoints must not subscribe to the separate DFU endpoint."""
-    transport = ScriptedTransport(notify_characteristics=False)
-    transport.expect(90, 4, [1], respond=[RUNTIME_FRAME])
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-            transport=transport,
-        )
-        with caplog.at_level(logging.WARNING):
-            await device.query_status()
-
-        assert transport.connections == 1
-        # No handler is registered, so scripted replies are never delivered.
-        assert device.last_runtime_notification is None
-        assert "No notify characteristic" in caplog.text
-
-    asyncio.run(run())
+def _trace(ble: ScriptedTransport) -> list[str]:
+    """Observe commands in order, omitting length, sequence IDs and checksums."""
+    return [f"{frame[0]:02x}: {frame[5:-1].hex(' ')}" for frame in ble.writes]
 
 
-@pytest.mark.component
 @pytest.mark.parametrize(
-    ("endpoints", "notify_uuid"),
+    ("endpoints", "subscription"),
     [
-        (frozenset({HM10_RX_CHAR_UUID}), HM10_RX_CHAR_UUID),
-        (frozenset({UART_RX_CHAR_UUID, UART_TX_CHAR_UUID}), UART_TX_CHAR_UUID),
-        (frozenset({UART_RX_CHAR_UUID, UART_TX_CHAR_UUID, DFU_CHAR_UUID}), UART_TX_CHAR_UUID),
-        (frozenset({HM10_RX_CHAR_UUID, DFU_CHAR_UUID}), HM10_RX_CHAR_UUID),
-        (None, HM10_RX_CHAR_UUID),
+        ({HM10_RX_CHAR_UUID: ("write", "notify"), UART_RX_CHAR_UUID: ("write",)}, HM10_RX_CHAR_UUID),
+        ({UART_RX_CHAR_UUID: ("write",), UART_TX_CHAR_UUID: ("notify",)}, UART_TX_CHAR_UUID),
+        ({HM10_RX_CHAR_UUID: ("write-without-response",)}, None),
     ],
+    ids=["ffe1-preferred", "nordic-uart", "write-only"],
 )
-def test_scripted_control_notification_pairing(
-    monkeypatch: pytest.MonkeyPatch, endpoints: frozenset[str] | None, notify_uuid: str
+async def test_status_uses_paired_notification_endpoint(
+    endpoints: dict[str, tuple[str, ...]], subscription: str | None
 ) -> None:
-    """Production resolution subscribes only to the selected control family's endpoint."""
-    transport = ScriptedTransport()
-    received: list[RuntimeNotification] = []
-    original_establish = transport._establish_ble_client
+    """DFU is never a control endpoint, even on a write-only device."""
+    ble = ScriptedTransport(realtime=False, characteristics={**endpoints, DFU_CHAR_UUID: ("notify",)})
+    light = _light(ble)
+    seen = []
+    light.add_notification_callback(seen.append)
 
-    async def establish_filtered() -> object:
-        client = await original_establish()
-        if endpoints is not None:
-            monkeypatch.setattr(client, "services", _FilteredServices(client.services, endpoints))
-        return client
+    def reply(_frame: bytes) -> list[bytes]:
+        return [] if seen else [RUNTIME_FRAME]
 
-    monkeypatch.setattr(transport, "_establish_ble_client", establish_filtered)
-    transport.expect(90, 4, [1], respond=lambda _frame: [RUNTIME_FRAME] if not received else [])
-    _fast_waits(monkeypatch)
+    ble.expect(90, 4, [1], respond=reply)
+    await light.query_status()
+    await light.disconnect()
 
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-            transport=transport,
-        )
-        device.add_notification_callback(received.append)
-        await device.query_status()
-        assert transport._read_char.uuid == notify_uuid
-        assert device.last_runtime_notification == RuntimeNotification(27, 511, RUNTIME_FRAME)
-        assert received == [device.last_runtime_notification]
-        assert received[0] is device.last_runtime_notification
-        assert received[0].raw == RUNTIME_FRAME
-        assert transport.connections == 1
-        assert [frame[5] for frame in transport.writes] == [4, 9, 4]
-
-    asyncio.run(run())
+    expected = RuntimeNotification(27, 511, RUNTIME_FRAME) if subscription else None
+    assert light.last_runtime_notification == expected
+    assert seen == ([expected] if subscription else [])
+    assert ble.subscriptions == ([subscription] if subscription else [])
+    assert [frame[5] for frame in ble.writes] == [4, 9, 4]
 
 
-@pytest.mark.component
-@pytest.mark.parametrize("write_properties", [("write", "write-without-response"), ("write-without-response",)])
-async def test_scripted_control_writes_wait_for_supported_ack(
-    monkeypatch: pytest.MonkeyPatch, write_properties: tuple[str, ...]
-) -> None:
-    """A pending write ACK blocks the next frame; legacy endpoints need no ACK."""
-    transport = ScriptedTransport()
-    _fast_waits(monkeypatch)
-    device = ChihirosDevice(
-        ScriptedBLEDevice(transport.name, transport.address),
-        DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-        transport=transport,
-    )
-    await transport._ensure_connected()
-    monkeypatch.setattr(transport._write_char, "properties", frozenset(write_properties))
-    client = transport.clients[0]
-    original_write = client.write_gatt_char
-    manual_started = asyncio.Event()
-    acknowledged = asyncio.Event()
-    unacknowledged = asyncio.Event()
-    unacknowledged.set()
-    completion = {True: acknowledged, False: unacknowledged}
-
-    async def write(characteristic: object, data: bytes | bytearray, response: bool = False) -> None:
-        assert not response or "write" in write_properties, "Endpoint does not support write responses"
-        await original_write(characteristic, data, response)
-        if data[5] == 5:
-            manual_started.set()
-            await completion[response].wait()
-
-    monkeypatch.setattr(client, "write_gatt_char", write)
-    command = asyncio.create_task(device.turn_on())
+@pytest.mark.parametrize("response", [True, False], ids=["acknowledged", "write-only"])
+async def test_writes_use_supported_ack_and_do_not_interleave(response: bool) -> None:
+    """An outstanding GATT write holds its transaction ahead of the next client command."""
+    props = ("write", "write-without-response") if response else ("write-without-response",)
+    ble = ScriptedTransport(realtime=False, characteristics={HM10_RX_CHAR_UUID: props})
+    light = _light(ble)
+    hold = ble.pause("write", mode=5)
+    turning_on = asyncio.create_task(light.turn_on())
+    await hold.wait()
+    turning_off = asyncio.create_task(light.turn_off())
     try:
-        async with asyncio.timeout(1):
-            await manual_started.wait()
-            await asyncio.sleep(0)
-            if "write" in write_properties:
-                assert not command.done()
-                assert not any(frame[5] == 7 for frame in transport.writes)
-            acknowledged.set()
-            await command
-        levels = [list(frame[6:-1]) for frame in transport.writes if frame[5] == 7]
-        assert levels == [[0, 100]]
+        await asyncio.sleep(0)
+        assert _trace(ble)[2:] == ["5a: 05 0b ff ff"]
     finally:
-        acknowledged.set()
-        await asyncio.gather(command, return_exceptions=True)
-        await device.disconnect()
+        hold.release.set()
+        await asyncio.gather(turning_on, turning_off)
+        await light.disconnect()
+    assert ble.write_responses == [response] * 6
+    assert ble.connections == 1
+    assert _trace(ble)[2:] == ["5a: 05 0b ff ff", "5a: 07 00 64", "5a: 05 0b ff ff", "5a: 07 00 00"]
 
 
-@pytest.mark.component
-def test_scripted_fan_commands_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fan auto mode and manual speed write the expected frames."""
-    transport = ScriptedTransport()
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("VIVID3", (), LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25)),
-            transport=transport,
-        )
-        await device.set_fan_auto()
-        assert device.fan_auto is True
-        await device.set_fan_speed(50)
-        assert device.fan_auto is False
-
-        writes = transport.writes
-        # Both actions reuse the same connection and its one-time prelude.
-        assert transport.connections == 1
-        auto_frames = [frame for frame in writes if frame[5] == 5 and frame[6] == 0x11]
-        speed_frames = [frame for frame in writes if frame[5] == 15]
-        assert len(auto_frames) == 1
-        assert auto_frames[0][6:9] == bytes([0x11, 0xFF, 0xFF])  # autoFan frame
-        assert len(speed_frames) == 1
-        assert speed_frames[0][6] == 50  # manual speed frame
-
-    asyncio.run(run())
-
-
-@pytest.mark.component
-def test_scripted_dosing_pump_dose_sequence(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A manual dose writes the pump auth pair plus the dose frame in order."""
-    dosing_frame = bytes.fromhex("5b 10 10 00 01 1e 04 1f 00 00")
-    transport = ScriptedTransport(name="DYDOSE-test")
-    # The pump reports its counters in response to the connect auth frame.
-    transport.expect(90, 4, [1], respond=[dosing_frame])
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = ChihirosDosingPump(
-            ScriptedBLEDevice(transport.name, transport.address), DOSING_PUMP, transport=transport
-        )
-        await device.dose_ml(1, 2.0)
-
-        assert device.last_dosing_totals_notification == DosingTotalsNotification((105500, 0), dosing_frame)
-        writes = [frame for frame in transport.writes if frame[0] == 165]
-        assert [(frame[5], frame[6]) for frame in writes] == [(4, 4), (4, 5), (27, 1)]
-        dose = writes[-1]
-        assert dose[6:11] == bytes([1, 0, 0, 0, 20])  # pump 1, 2.0 ml
-
-    asyncio.run(run())
-
-
-@pytest.mark.component
-def test_scripted_retries_transient_write_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A transient BLE failure is retried on a fresh connection."""
-    transport = ScriptedTransport()
-    call_count = 0
-
-    def flaky(frame: bytes) -> list[bytes]:
-        del frame
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise BleakError("transient")
-        return [RUNTIME_FRAME] if call_count == 2 else []
-
-    transport.expect(90, 4, [1], respond=flaky)
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-            transport=transport,
-        )
-        await device.query_status()
-
-        assert transport.connections == 2
-        assert call_count == 3
-        assert device.last_runtime_notification == RuntimeNotification(27, 511, RUNTIME_FRAME)
-        # The failed attempt still recorded its auth write before raising.
-        assert transport.writes[0][5] == 4
-
-    asyncio.run(run())
-
-
-@pytest.mark.component
-def test_scripted_fan_speed_can_fail_permanently(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A permanently failing rule surfaces the BLE error after retries."""
-    transport = ScriptedTransport()
-    transport.expect(90, 15, [50], fail=True)
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("VIVID3", (), LedSpec(WRGB_CHANNELS, features=frozenset({LedFeature.FAN}), min_fan_speed=25)),
-            transport=transport,
-        )
-        with pytest.raises(BleakError, match="scripted write failure"):
-            await device.set_fan_speed(50)
-
-        assert transport.connections == 3  # initial attempt plus two retries
-
-    asyncio.run(run())
-
-
-@pytest.mark.component
-def test_scripted_turn_on_and_off_write_manual_switch_and_levels(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Turn on/off switch to manual mode and set every channel level."""
-    transport = ScriptedTransport()
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-            transport=transport,
-        )
-        await device.turn_on()
-        await device.turn_off()
-        actions = [(frame[5], list(frame[6:-1])) for frame in transport.writes if frame[5] not in (4, 9)]
-        assert actions == [(5, [11, 255, 255]), (7, [0, 100]), (5, [11, 255, 255]), (7, [0, 0])]
-
-    asyncio.run(run())
-
-
-@pytest.mark.component
-def test_scripted_remove_setting_writes_delete_frame(monkeypatch: pytest.MonkeyPatch) -> None:
-    """remove_setting writes the delete auto-setting frame with padded channels."""
-    transport = ScriptedTransport(name="DYA-test")
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-            transport=transport,
-        )
-        await device.remove_setting(
-            datetime(2024, 1, 1, 6, 0),
-            datetime(2024, 1, 1, 18, 0),
-            ramp_up_in_minutes=30,
-            weekdays=[WeekdaySelect.monday, WeekdaySelect.friday],
-        )
-
-        (delete,) = (frame for frame in transport.writes if frame[0] == 165 and frame[5] == 25)
-        # sunrise 06:00, sunset 18:00, ramp 30, weekdays monday+friday = 64+4
-        assert delete[6:12] == bytes([6, 0, 18, 0, 30, 68])
-        # one white channel, remaining parameter slots padded with 255
-        assert delete[12] == 255
-        assert all(value == 255 for value in delete[13:-1])
-
-    asyncio.run(run())
-
-
-@pytest.mark.component
-def test_scripted_reset_settings_writes_reset_frame(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A fresh client's reset clears scenes, not the independent custom curve."""
-    transport = ScriptedTransport()
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-            transport=transport,
-        )
-        await device.reset_settings()
-
-        (reset,) = (frame for frame in transport.writes if frame[5] not in (4, 9))
-        assert reset[0] == 90 and reset[5] == 5
-        assert reset[6:9] == bytes([0x28, 255, 255])
-
-    asyncio.run(run())
-
-
-@pytest.mark.component
-def test_scripted_disconnect_closes_connection_until_next_command(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An explicit disconnect tears the client down; the next command reconnects."""
-    transport = ScriptedTransport()
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-            transport=transport,
-        )
-        await device.query_status()
-        assert transport.connections == 1
-        await device.disconnect()
-        assert not transport.is_connected
-        await device.query_status()
-        assert transport.connections == 2
-
-    asyncio.run(run())
-
-
-@pytest.mark.unit
-def test_scripted_set_log_level_configures_device_logger() -> None:
-    """set_log_level accepts level names and numeric levels."""
-
-    async def run() -> None:
-        transport = ScriptedTransport()
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-            transport=transport,
-        )
-
-        device.set_log_level("DEBUG")
-        assert device._logger.level == logging.DEBUG  # noqa: SLF001
-        device.set_log_level(logging.WARNING)
-        assert device._logger.level == logging.WARNING  # noqa: SLF001
-        device.set_log_level("NOT-A-LEVEL")
-        assert device._logger.level == logging.INFO  # noqa: SLF001
-
-    asyncio.run(run())
-
-
-@pytest.mark.component
-async def test_missing_write_characteristic_disconnects_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Missing write endpoints raise the transport error with the actual Bleak API."""
-    transport = ScriptedTransport()
-    device = ChihirosDevice(ScriptedBLEDevice(transport.name, transport.address), transport=transport)
-    original_establish = transport._establish_ble_client
-
-    async def establish_without_write_endpoints() -> object:
-        client = await original_establish()
-        monkeypatch.setattr(client, "services", _FilteredServices(client.services, frozenset({DFU_CHAR_UUID})))
-        assert not hasattr(client, "get_services")
-        return client
-
-    monkeypatch.setattr(transport, "_establish_ble_client", establish_without_write_endpoints)
+async def test_no_control_endpoint_closes_session() -> None:
+    """A peripheral without a control endpoint fails before writing any frames."""
+    ble = ScriptedTransport(realtime=False, characteristics={DFU_CHAR_UUID: ("notify",)})
     with pytest.raises(CharacteristicMissingError, match="Write characteristic missing"):
-        await device.query_status()
-
-    assert transport.connections == 1
-    assert not transport.clients[0].is_connected
-    assert not transport.is_connected
-    assert not transport.writes
+        await _light(ble).query_status()
+    assert ble.writes == []
+    assert [client.is_connected for client in ble.clients] == [False]
 
 
-@pytest.mark.component
-async def test_cancel_during_notification_subscription_disconnects_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A cancelled setup cannot leave a connected client untracked."""
-    transport = ScriptedTransport()
-    device = ChihirosDevice(ScriptedBLEDevice(transport.name, transport.address), transport=transport)
-    subscribing = asyncio.Event()
-    original_establish = transport._establish_ble_client
+async def test_retry_reconnects_and_resends_prelude() -> None:
+    """Idempotent status can recover from an error during the connection prelude."""
+    ble = ScriptedTransport(realtime=False)
+    light = _light(ble)
 
-    async def establish_with_slow_subscription() -> object:
-        client = await original_establish()
+    def reply(_frame: bytes) -> list[bytes]:
+        if ble.connections == 1:
+            raise BleakError("transient failure")
+        return [] if light.last_runtime_notification else [RUNTIME_FRAME]
 
-        async def start_notify(*_args: object) -> None:
-            subscribing.set()
-            await asyncio.Event().wait()
+    ble.expect(90, 4, [1], respond=reply)
+    await light.query_status()
+    await light.disconnect()
 
-        monkeypatch.setattr(client, "start_notify", start_notify)
-        return client
+    assert ble.connections == 2
+    assert [client.is_connected for client in ble.clients] == [False, False]
+    assert [frame[5] for frame in ble.writes] == [4, 4, 9, 4]
+    assert light.last_runtime_notification == RuntimeNotification(27, 511, RUNTIME_FRAME)
 
-    monkeypatch.setattr(transport, "_establish_ble_client", establish_with_slow_subscription)
-    pending = asyncio.create_task(device.query_status())
-    await asyncio.wait_for(subscribing.wait(), timeout=5)
-    pending.cancel()
+
+@pytest.mark.parametrize("stage", ["subscribe", "unsubscribe", "disconnect"])
+async def test_cancellation_cannot_orphan_a_connection(stage: str) -> None:
+    """Cancel at a pending BLE setup or teardown operation, then reconnect."""
+    ble = ScriptedTransport(realtime=False)
+    light = _light(ble)
+    if stage != "subscribe":
+        await light.query_status()
+    hold = ble.pause(stage)
+    task = asyncio.create_task(light.query_status() if stage == "subscribe" else light.disconnect())
+    try:
+        await hold.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        if stage != "subscribe":
+            task.cancel()
+            await asyncio.sleep(0)
+    finally:
+        hold.release.set()
     with pytest.raises(asyncio.CancelledError):
-        await pending
+        await asyncio.wait_for(task, 5)
 
-    assert transport.connections == 1
-    assert not transport.clients[0].is_connected
-    assert not transport.is_connected
+    assert [client.is_connected for client in ble.clients] == [False]
+    await light.query_status()
+    assert ble.connections == 2
+    await light.disconnect()
 
 
-@pytest.mark.component
-async def test_program_pump_weekdays_require_daily_volume(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No mask is silently lost, and an accepted mask is present on the wire."""
-    _fast_waits(monkeypatch)
-    transport = ScriptedTransport(name="DYDOSE-test")
-    pump = ChihirosDosingPump(ScriptedBLEDevice(transport.name, transport.address), DOSING_PUMP, transport=transport)
+async def test_fan_auto_then_manual_speed() -> None:
+    """The VIVID III changes mode in the same connection and clamps manual speed."""
+    ble = ScriptedTransport(name="DYVVD3-test", realtime=False)
+    light = _light(ble)
+    assert not light.fan_auto
+    await light.set_fan_auto()
+    assert light.fan_auto
+    await light.set_fan_speed(10)
+    assert not light.fan_auto
+    await light.disconnect()
+
+    assert ble.connections == 1
+    assert _trace(ble)[2:] == ["5a: 05 11 ff ff", "5a: 0f 19"]
+
+
+@pytest.mark.parametrize(
+    ("method", "state", "on", "off"),
+    [("set_temp_protect", "temp_protect", 0x30, 0x31), ("set_bluetooth_led", "bluetooth_led", 0x33, 0x32)],
+)
+async def test_vivid_switch_polarity_and_failed_write_state(method: str, state: str, on: int, off: int) -> None:
+    """Both switches encode their own polarity and only commit successful writes."""
+    ble = ScriptedTransport(name="DYVVD3-test", realtime=False)
+    light = _light(ble)
+    switch = getattr(light, method)
+    await switch(True)
+    assert getattr(light, state) is True
+    await switch(False)
+    assert getattr(light, state) is False
+    assert _trace(ble)[2:] == [f"5a: 05 {on:02x} ff ff", f"5a: 05 {off:02x} ff ff"]
+    ble.expect(90, 5, [on, 255, 255], fail=True)
+    with pytest.raises(BleakError, match="scripted write failure"):
+        await switch(True)
+    assert getattr(light, state) is False
+    assert _trace(ble).count(f"5a: 05 {on:02x} ff ff") == 4
+    assert not ble.is_connected
+
+
+async def test_auto_mode_syncs_supplied_local_clock_before_switch() -> None:
+    """The command uses the caller's wall clock, not time at the BLE peripheral."""
+    ble = ScriptedTransport(name="DYNW60-test", realtime=False)
+    light = _light(ble)
+    await light.enable_auto_mode(datetime(2026, 6, 16, 20, 30, 45))
+    await light.disconnect()
+    assert _trace(ble)[2:] == ["5a: 09 1a 06 02 14 1e 2d", "5a: 05 12 ff ff"]
+
+
+async def test_pump_doses_then_queries_counters_in_order() -> None:
+    """Pump auth, dosing, and counter refresh traverse one session."""
+    ble = ScriptedTransport(name="DYDOSE-test", realtime=False)
+    pump = _pump(ble)
+    totals = bytes.fromhex("5b 10 10 00 01 1e 04 1f 00 00")
+    ble.expect(165, 4, [4], respond=[totals])
+    await pump.dose_ml(1, 2.0)
+    await pump.query_status()
+    await pump.disconnect()
+    assert ble.connections == 1
+    assert [line for line in _trace(ble) if line.startswith("a5:")] == [
+        "a5: 04 04",
+        "a5: 04 05",
+        "a5: 1b 01 00 00 00 14",
+        "a5: 04 04",
+        "a5: 04 05",
+    ]
+    assert pump.last_dosing_totals_notification == DosingTotalsNotification((105500, 0), totals)
+
+
+@pytest.mark.parametrize("timed_calibration", [False, True], ids=["manual-dose", "timed-calibration"])
+async def test_pump_never_replays_an_ambiguous_run(timed_calibration: bool) -> None:
+    """The write may have reached the peripheral before it reported an error."""
+    ble = ScriptedTransport(name="DYDOSE-test", realtime=False)
+    pump = _pump(ble)
+    mode, params = (22, [1, 10]) if timed_calibration else (27, [1])
+    ble.expect(165, mode, params, fail=True)
+    with pytest.raises(BleakError, match="scripted write failure"):
+        if timed_calibration:
+            await pump.calibrate_channel(1, seconds=10)
+        else:
+            await pump.dose_ml(1, 2.0)
+    assert ble.connections == 1
+    assert sum(frame[0] == 165 and frame[5] == mode for frame in ble.writes) == 1
+    assert not ble.is_connected
+
+
+async def test_recording_calibration_volume_can_retry() -> None:
+    """A calibration setting, unlike a pump run, is safe to repeat."""
+    ble = ScriptedTransport(name="DYDOSE-test", realtime=False)
+
+    def reply(_frame: bytes) -> list[bytes]:
+        if ble.connections == 1:
+            raise BleakError("transient failure")
+        return []
+
+    ble.expect(165, 22, [0, 255], respond=reply)
+    pump = _pump(ble)
+    await pump.calibrate_channel(0, volume_ml=4.05)
+    await pump.disconnect()
+    assert ble.connections == 2
+    assert _trace(ble).count("a5: 16 00 ff 04 05") == 2
+
+
+async def test_pump_program_weekdays_require_daily_volume() -> None:
+    """No weekday mask is silently dropped; a valid mask reaches the wire."""
+    ble = ScriptedTransport(name="DYDOSE-test", realtime=False)
+    pump = _pump(ble)
     points = [DosingWorkPoint(8, 0, volume_ml=1.0)]
     with pytest.raises(ValueError, match="daily volume"):
         await pump.program_channel(0, active=True, frequency=64, mode=DosingMode.TIMER, points=points)
-    assert not transport.writes
-    assert transport.connections == 0
-
+    assert not ble.writes
+    assert ble.connections == 0
     await pump.program_channel(0, active=True, frequency=64, dose_per_day_ml=1.0, mode=DosingMode.TIMER, points=points)
     await pump.disconnect()
-    settings = [frame[6:-1] for frame in transport.writes if (frame[0], frame[5]) == (165, 27)]
-    assert settings == [bytes([0, 64, 1, 0, 0, 10])]
+    assert [line for line in _trace(ble) if line.startswith("a5: 1b")] == ["a5: 1b 00 40 01 00 00 0a"]
 
 
-@pytest.mark.component
-@pytest.mark.parametrize("mode,params", [(27, [1]), (22, [1, 10])])
-def test_non_idempotent_pump_command_is_not_replayed_after_failed_write(
-    monkeypatch: pytest.MonkeyPatch, mode: int, params: list[int]
-) -> None:
-    """Manual dosing and timed calibration must not retry an ambiguous write."""
-    transport = ScriptedTransport(name="DYDOSE-test")
-    transport.expect(165, mode, params, fail=True)
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        pump = ChihirosDosingPump(
-            ScriptedBLEDevice(transport.name, transport.address), DOSING_PUMP, transport=transport
-        )
-        with pytest.raises(BleakError, match="scripted write failure"):
-            if mode == 27:
-                await pump.dose_ml(1, 2.0)
-            else:
-                await pump.calibrate_channel(1, seconds=10)
-
-    asyncio.run(run())
-    assert transport.connections == 1
-    assert sum(frame[0] == 165 and frame[5] == mode for frame in transport.writes) == 1
+async def test_stirrer_status_does_not_contact_peripheral() -> None:
+    """Unlike a pump, a stirrer does not expose a counter status query."""
+    ble = ScriptedTransport(name="DYMIXR-test", realtime=False)
+    stirrer = ChihirosMagStirrer(ScriptedBLEDevice(ble.name, ble.address), MAG_STIRRER, transport=ble)
+    await stirrer.query_status()
+    assert ble.connections == 0
+    assert ble.writes == []
 
 
-@pytest.mark.component
-def test_recorded_calibration_volume_retries_transient_write_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Recording a measured volume can safely retry on a fresh connection."""
-    transport = ScriptedTransport(name="DYDOSE-test")
-    _fast_waits(monkeypatch)
-    writes = 0
-
-    def fail_once(_frame: bytes) -> list[bytes]:
-        nonlocal writes
-        writes += 1
-        if writes == 1:
-            raise BleakError("transient calibration failure")
-        return []
-
-    transport.expect(165, 22, [0, 255], respond=fail_once)
-
-    async def run() -> None:
-        pump = ChihirosDosingPump(
-            ScriptedBLEDevice(transport.name, transport.address), DOSING_PUMP, transport=transport
-        )
-        await pump.calibrate_channel(0, volume_ml=4.05)
-
-    asyncio.run(run())
-    assert transport.connections == 2
-    assert writes == 2
-
-
-@pytest.mark.component
-@pytest.mark.parametrize(
-    ("method", "state", "feature", "on", "off"),
-    [
-        ("set_temp_protect", "temp_protect", LedFeature.TEMPERATURE_PROTECTION, 0x30, 0x31),
-        ("set_bluetooth_led", "bluetooth_led", LedFeature.INDICATOR_LED, 0x33, 0x32),
-    ],
-)
-def test_scripted_switch_polarity_and_failed_write_state(
-    monkeypatch: pytest.MonkeyPatch, method: str, state: str, feature: LedFeature, on: int, off: int
-) -> None:
-    """Both polarities traverse production BLE; failed writes cannot change state."""
-    transport = ScriptedTransport()
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("VIVID3", (), LedSpec(WRGB_CHANNELS, features=frozenset({feature}))),
-            transport=transport,
-        )
-        switch = getattr(device, method)
-        await switch(True)
-        assert getattr(device, state) is True
-        await switch(False)
-        assert getattr(device, state) is False
-        frames = [frame for frame in transport.writes if frame[5] == 5 and frame[6] in (on, off)]
-        assert [frame[6:-1] for frame in frames] == [bytes([on, 255, 255]), bytes([off, 255, 255])]
-        transport.expect(90, 5, [on, 255, 255], fail=True)
-        with pytest.raises(BleakError, match="scripted write failure"):
-            await switch(True)
-        assert getattr(device, state) is False
-        transport.responder._rules.clear()
-        await switch(True)
-        transport.expect(90, 5, [off, 255, 255], fail=True)
-        with pytest.raises(BleakError, match="scripted write failure"):
-            await switch(False)
-        assert getattr(device, state) is True
-
-    asyncio.run(run())
-
-
-@pytest.mark.component
-def test_scripted_brightness_90_preserves_payload_and_checksum(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Driver writes preserve level 90; production transport also preserves the exact APK sample."""
-    transport = ScriptedTransport()
-    _fast_waits(monkeypatch)
-
-    async def run() -> None:
-        device = ChihirosDevice(
-            ScriptedBLEDevice(transport.name, transport.address),
-            DeviceModel("Test", (), LedSpec(WHITE_CHANNELS)),
-            transport=transport,
-        )
-        await device.set_brightness(90)
-        frames = [frame for frame in transport.writes if frame[5] == 7]
-        assert len(frames) == 1
-        assert frames[0][6:-1] == bytes([0, 90])
-        # Apart from the sequence bytes, the header contributes XOR 1.
-        assert frames[0][-1] == 90 ^ frames[0][3] ^ frames[0][4] ^ 1
-        sample = bytes.fromhex("5a 01 07 00 01 07 00 5a 5a")
-        await transport.send([sample], attempts=1, notification_wait=0)
-        assert transport.writes[-1] == sample
-
-    asyncio.run(run())
-
-
-@pytest.mark.component
-@pytest.mark.parametrize("stage", ["notify", "disconnect"])
-@pytest.mark.parametrize("cancel_count", [1, 2])
-async def test_cancelled_disconnect_releases_client(
-    monkeypatch: pytest.MonkeyPatch, stage: str, cancel_count: int
-) -> None:
-    """Even repeated cancellation cannot orphan a client during either teardown await."""
-    _fast_waits(monkeypatch)
-    transport = ScriptedTransport()
-    device = ChihirosDevice(ScriptedBLEDevice(transport.name, transport.address), transport=transport)
-    await device.set_manual_mode()
-    client = transport.clients[-1]
-    entered, release = asyncio.Event(), asyncio.Event()
-    method = "stop_notify" if stage == "notify" else "disconnect"
-    original = getattr(client, method)
-
-    async def slow_teardown(*args: object) -> None:
-        entered.set()
-        await release.wait()
-        await original(*args)
-
-    monkeypatch.setattr(client, method, slow_teardown)
-    pending = asyncio.create_task(device.disconnect())
-    await asyncio.wait_for(entered.wait(), timeout=5)
-    for _ in range(cancel_count):
-        pending.cancel()
-        await asyncio.sleep(0)
-    release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await pending
-    assert not client.is_connected
-    assert not transport.is_connected
-    await device.set_manual_mode()
-    assert transport.connections == 2
-    await device.disconnect()
+async def test_scene_remove_writes_schedule_key_and_inactive_levels() -> None:
+    """Removing a period keeps its time, ramp and weekday selection on the wire."""
+    ble = ScriptedTransport(name="DYNW60-test", realtime=False)
+    light = _light(ble)
+    await light.remove_setting(datetime(2026, 1, 1, 2, 30), datetime(2026, 1, 1, 5, 10), 10, [WeekdaySelect.monday])
+    await light.disconnect()
+    assert _trace(ble)[-1] == "a5: 19 02 1e 05 0a 0a 40 ff ff ff ff ff ff ff ff"

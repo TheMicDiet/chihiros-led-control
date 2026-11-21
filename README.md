@@ -540,19 +540,18 @@ uv --cache-dir .uv-cache run --group dev pytest
 uv --cache-dir .uv-cache run --group dev pre-commit run --all-files
 ```
 
-Home Assistant tests at every pyramid level use the `ha-test` dependency group
-because they import Home Assistant and its test-time runtime dependencies. Run
-them explicitly when changing files under `custom_components/chihiros/`:
+Home Assistant config-flow, service, and lifecycle tests use the `ha-test`
+dependency group. Run them when changing files under `custom_components/chihiros/`:
 
 ```bash
 uv --cache-dir .uv-cache run --group ha-test pytest -m homeassistant
 ```
 
-Unit tests exercise isolated behavior; component tests connect real local
-layers with hardware boundaries replaced; integration tests load config entries
-and exercise HA services and entity lifecycle. Start with the lowest layer that
-can reproduce a failure. See the [test pyramid strategy](docs/testing-without-hardware.md#test-pyramid)
-for layer-specific commands and rules for placing new tests.
+Test observable behavior at a boundary: BLE frames, CLI arguments and output,
+or Home Assistant services and state. Use literal inline expectations and
+simulate hardware without mocking the code under test. See
+[Testing Without Chihiros Hardware](docs/testing-without-hardware.md#test-boundaries)
+for examples and test placement.
 
 After changing library code, refresh the vendored copy:
 

@@ -1,4 +1,4 @@
-"""Tests for heater support: model detection, client API, protocol, and CLI."""
+"""Tests for heater support: model detection, client API, and protocol."""
 
 from __future__ import annotations
 
@@ -6,10 +6,8 @@ import asyncio
 
 import pytest
 from bleak.exc import BleakError
-from typer.testing import CliRunner
 
-from chihiros_led_control import cli
-from chihiros_led_control.devices import ChihirosDevice, ChihirosHeater
+from chihiros_led_control.devices import ChihirosHeater
 from chihiros_led_control.factory import create_device, detect_model
 from chihiros_led_control.protocol.heater import (
     HeaterBacklightSchedule,
@@ -34,17 +32,7 @@ from chihiros_led_control.protocol.notifications import (
 from chihiros_led_control.registry import HEATER
 from chihiros_led_control.testing import ScriptedBLEDevice, ScriptedTransport
 
-RUNNER = CliRunner()
 TEST_ADDRESS = "AA:BB:CC:DD:EE:FF"
-
-
-class FakeBLEDevice:
-    """Small BLEDevice stand-in for factory/CLI tests."""
-
-    def __init__(self, name: str = "DYHET-test", address: str = TEST_ADDRESS) -> None:
-        """Initialize fake BLE metadata."""
-        self.name = name
-        self.address = address
 
 
 def _heater_temp_frame(measured_power_watts: int, current_tenths: int) -> bytes:
@@ -98,7 +86,7 @@ def test_create_device_builds_heater_client() -> None:
     """DYHET devices get an independent ChihirosHeater client."""
 
     async def run() -> ChihirosHeater:
-        return create_device(FakeBLEDevice())  # type: ignore[arg-type]
+        return create_device(ScriptedBLEDevice("DYHET-test", TEST_ADDRESS))
 
     device = asyncio.run(run())
     assert isinstance(device, ChihirosHeater)
@@ -189,19 +177,6 @@ def test_heater_backlight_schedule_rejects_invalid_fields(field: str, value: obj
         HeaterBacklightSchedule(**fields)
 
 
-def _fast_waits(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Remove notification sleeps so scripted sessions run quickly."""
-    from chihiros_led_control import transport as transport_module
-    from chihiros_led_control.devices import base as client_module
-    from chihiros_led_control.devices import heater as heater_module
-
-    monkeypatch.setattr(client_module, "COMMAND_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(client_module, "STATUS_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(heater_module, "COMMAND_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(heater_module, "STATUS_NOTIFICATION_WAIT", 0.0)
-    monkeypatch.setattr(transport_module, "BATCH_WRITE_DELAY", 0.0)
-
-
 def _make_heater(transport: ScriptedTransport) -> ChihirosHeater:
     return ChihirosHeater(ScriptedBLEDevice(transport.name, transport.address), HEATER, transport=transport)
 
@@ -215,63 +190,45 @@ def _sent_frames(transport: ScriptedTransport) -> list[tuple[int, list[int]]]:
     return [(frame[5], list(frame[6:-1])) for frame in transport.writes if frame[5] not in (4, 9)]
 
 
-@pytest.mark.unit
-def test_concurrent_manual_setters_preserve_both_values() -> None:
-    """A paired manual update captures its sibling only after prior commits."""
-
-    async def run() -> None:
-        device = ChihirosHeater(FakeBLEDevice(), HEATER)  # type: ignore[arg-type]
-        sent_states: list[list[int]] = []
-        first_write_started = asyncio.Event()
-        release_first_write = asyncio.Event()
-
-        async def capture_locked(
-            commands_to_send: bytes | bytearray | list[bytes | bytearray], attempts: int, notification_wait: float
-        ) -> None:
-            del attempts, notification_wait
-            frames = [commands_to_send] if isinstance(commands_to_send, (bytes, bytearray)) else commands_to_send
-            state_frame = next((command for command in frames if command[5] == 43), None)
-            if state_frame is None:
-                return
-            sent_states.append(list(state_frame[6:-1]))
-            if len(sent_states) == 1:
-                first_write_started.set()
-                await release_first_write.wait()
-
-        device._send_command = capture_locked  # type: ignore[method-assign]
-
-        temperature_task = asyncio.create_task(device.set_temperature(26.5))
-        await first_write_started.wait()
-        power_task = asyncio.create_task(device.set_power(800))
+@pytest.mark.component
+@pytest.mark.parametrize(
+    ("preserve_mode", "first", "second"),
+    [(False, "00 1a 32 14", "00 1a 32 50"), (True, "01 16 32 3c", "00 16 32 50")],
+)
+async def test_concurrent_heater_setters_preserve_both_values(preserve_mode: bool, first: str, second: str) -> None:
+    """Changing power during a temperature write keeps the newly applied target."""
+    transport = ScriptedTransport(name="DYHET-test", realtime=False)
+    device = _make_heater(transport)
+    hold = transport.pause("write", mode=43)
+    target = device.set_state(22.5, 600) if preserve_mode else device.set_temperature(26.5)
+    first_write = asyncio.create_task(target)
+    await hold.wait()
+    second_write = asyncio.create_task(device.set_power(800))
+    try:
         await asyncio.sleep(0)
-        release_first_write.set()
-        await asyncio.gather(temperature_task, power_task)
-
-        assert sent_states == [
-            [0, 26, 50, 20],
-            [0, 26, 50, 80],
-        ]
-        assert device.setting_temperature_celsius == pytest.approx(26.5)
-        assert device.power_watts == 800
-
-    asyncio.run(run())
+        assert not second_write.done()
+    finally:
+        hold.release.set()
+        await asyncio.gather(first_write, second_write)
+        await device.disconnect()
+    assert [bytes(payload).hex(" ") for mode, payload in _sent_frames(transport) if mode == 43] == [first, second]
+    assert device.setting_temperature_celsius == (22.5 if preserve_mode else 26.5)
+    assert device.power_watts == 800
 
 
 @pytest.mark.component
-def test_scripted_heater_settings_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_scripted_heater_settings_commands() -> None:
     """Automatic power, unit, protector, calibration and reset write their frames."""
-    transport = ScriptedTransport(name="DYHET-test")
-    _fast_waits(monkeypatch)
+    transport = ScriptedTransport(realtime=False, name="DYHET-test")
 
     async def run() -> None:
         device = _make_heater(transport)
-        if transport:
-            await device.set_automatic_power(True)
-            await device.set_automatic_power(False)
-            await device.set_temperature_unit(celsius=False)
-            await device.set_protector_temperature(37.0)
-            await device.calibrate(25.5)
-            await device.reset_work_time()
+        await device.set_automatic_power(True)
+        await device.set_automatic_power(False)
+        await device.set_temperature_unit(celsius=False)
+        await device.set_protector_temperature(37.0)
+        await device.calibrate(25.5)
+        await device.reset_work_time()
 
         assert _sent_frames(transport) == [
             (5, [46, 255, 255]),
@@ -289,10 +246,9 @@ def test_scripted_heater_settings_commands(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.component
-def test_scripted_heater_backlight_schedule_and_always_modes(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_scripted_heater_backlight_schedule_and_always_modes() -> None:
     """The production transport writes each form and tracks scheduled state distinctly."""
-    transport = ScriptedTransport(name="DYHET-test")
-    _fast_waits(monkeypatch)
+    transport = ScriptedTransport(realtime=False, name="DYHET-test")
 
     async def run() -> None:
         device = _make_heater(transport)
@@ -324,12 +280,9 @@ def test_scripted_heater_backlight_schedule_and_always_modes(monkeypatch: pytest
 @pytest.mark.component
 @pytest.mark.parametrize("scheduled", [True, False])
 @pytest.mark.parametrize("enabled", [True, False, None])
-def test_scripted_heater_failed_backlight_write_preserves_state(
-    monkeypatch: pytest.MonkeyPatch, enabled: bool | None, scheduled: bool
-) -> None:
+def test_scripted_heater_failed_backlight_write_preserves_state(enabled: bool | None, scheduled: bool) -> None:
     """Failed schedule and Boolean writes never replace the last successful setting."""
-    transport = ScriptedTransport(name="DYHET-test")
-    _fast_waits(monkeypatch)
+    transport = ScriptedTransport(realtime=False, name="DYHET-test")
 
     async def run() -> None:
         device = _make_heater(transport)
@@ -356,10 +309,9 @@ def test_scripted_heater_failed_backlight_write_preserves_state(
 
 
 @pytest.mark.component
-def test_shared_state_drives_manual_mutations(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_shared_state_drives_manual_mutations() -> None:
     """Mode-preserving and manual writes always use one shared target/power pair."""
-    transport = ScriptedTransport(name="DYHET-test")
-    _fast_waits(monkeypatch)
+    transport = ScriptedTransport(realtime=False, name="DYHET-test")
 
     async def run() -> None:
         device = _make_heater(transport)
@@ -403,60 +355,21 @@ def test_shared_state_drives_manual_mutations(monkeypatch: pytest.MonkeyPatch) -
     asyncio.run(run())
 
 
-@pytest.mark.unit
-def test_concurrent_preserving_and_manual_writes_share_the_lock() -> None:
-    """A manual mutation resends the mode-preserving write's committed target."""
-
-    async def run() -> None:
-        device = ChihirosHeater(FakeBLEDevice(), HEATER)  # type: ignore[arg-type]
-        sent_states: list[list[int]] = []
-        first_write_started = asyncio.Event()
-        release_first_write = asyncio.Event()
-
-        async def capture_locked(
-            commands_to_send: bytes | bytearray | list[bytes | bytearray], attempts: int, notification_wait: float
-        ) -> None:
-            del attempts, notification_wait
-            frames = [commands_to_send] if isinstance(commands_to_send, (bytes, bytearray)) else commands_to_send
-            state_frame = next((command for command in frames if command[5] == 43), None)
-            if state_frame is None:
-                return
-            sent_states.append(list(state_frame[6:-1]))
-            if len(sent_states) == 1:
-                first_write_started.set()
-                await release_first_write.wait()
-
-        device._send_command = capture_locked  # type: ignore[method-assign]
-        state_task = asyncio.create_task(device.set_state(22.5, 600))
-        await first_write_started.wait()
-        power_task = asyncio.create_task(device.set_power(800))
-        await asyncio.sleep(0)
-        release_first_write.set()
-        await asyncio.gather(state_task, power_task)
-        assert sent_states == [[1, 22, 50, 60], [0, 22, 50, 80]]
-        assert device.setting_temperature_celsius == 22.5
-        assert device.power_watts == 800
-
-    asyncio.run(run())
-
-
 @pytest.mark.component
-def test_restored_heater_pairs_drive_real_client_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_restored_heater_pairs_drive_real_client_writes() -> None:
     """Restored write-only values replace fresh defaults without touching BLE."""
-    transport = ScriptedTransport(name="DYHET-test")
-    _fast_waits(monkeypatch)
+    transport = ScriptedTransport(realtime=False, name="DYHET-test")
 
     async def run() -> None:
         device = _make_heater(transport)
-        if transport:
-            device.restore_setting_temperature(27.5)
-            device.restore_power(800)
-            assert transport.connections == 0
-            assert transport.writes == []
+        device.restore_setting_temperature(27.5)
+        device.restore_power(800)
+        assert transport.connections == 0
+        assert transport.writes == []
 
-            await device.set_power(600)
-            await device.set_temperature(26.5)
-            await device.set_state(23.0, 900)
+        await device.set_power(600)
+        await device.set_temperature(26.5)
+        await device.set_state(23.0, 900)
 
         assert _sent_frames(transport) == [
             (5, [11, 255, 255]),
@@ -470,10 +383,9 @@ def test_restored_heater_pairs_drive_real_client_writes(monkeypatch: pytest.Monk
 
 
 @pytest.mark.component
-def test_scripted_heater_notifications_track_device_state(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_scripted_heater_notifications_track_device_state() -> None:
     """Query responses report configured power/runtime; periodic measurements stay separate."""
-    transport = ScriptedTransport(name="DYHET-test")
-    _fast_waits(monkeypatch)
+    transport = ScriptedTransport(realtime=False, name="DYHET-test")
     temperature_frame = _heater_temp_frame(30, 258)
     status_frame = _heater_status_frame(work_hours=1994, alarms=0x09)
     power_frame = _heater_power_frame(800, 734032)
@@ -490,7 +402,7 @@ def test_scripted_heater_notifications_track_device_state(monkeypatch: pytest.Mo
             assert device.power_watts == 800
             assert device.heating_time_seconds == 734032
             assert device.last_heater_power_notification is not None
-            device._notification_handler(None, bytearray(temperature_frame))
+            transport.notify(temperature_frame)
             assert device.measured_power_watts == 30
             assert device.current_temperature_celsius == pytest.approx(25.8)
             assert device.setting_temperature_celsius == 25.0
@@ -508,17 +420,16 @@ def test_scripted_heater_notifications_track_device_state(monkeypatch: pytest.Mo
 
 
 @pytest.mark.component
-def test_real_measured_power_never_becomes_target(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_real_measured_power_never_becomes_target() -> None:
     """A real 30 W/25 °C measurement must not turn the next target into 3 °C."""
-    transport = ScriptedTransport(name="DYHET-test")
-    _fast_waits(monkeypatch)
+    transport = ScriptedTransport(realtime=False, name="DYHET-test")
     measurement = bytes.fromhex("5b060e017b25001e0bff00fa00")
 
     async def run() -> None:
         device = _make_heater(transport)
         try:
             await device.set_manual_mode()
-            device._notification_handler(None, bytearray(measurement))
+            transport.notify(measurement)
             assert device.measured_power_watts == 30
             assert device.current_temperature_celsius == 25.0
             assert device.setting_temperature_celsius == 25.0
@@ -605,15 +516,13 @@ def test_heater_configured_power_and_lifetime_byte_boundaries(power_watts: int, 
     ],
 )
 def test_failed_heater_writes_never_commit_tracked_state(
-    monkeypatch: pytest.MonkeyPatch,
     method: str,
     args: tuple[float | int | bool, ...],
     mode: int,
     payload: list[int],
 ) -> None:
     """Failed shared writes, including partially sent manual batches, preserve committed state."""
-    transport = ScriptedTransport(name="DYHET-test")
-    _fast_waits(monkeypatch)
+    transport = ScriptedTransport(realtime=False, name="DYHET-test")
 
     async def run() -> None:
         device = _make_heater(transport)
@@ -635,12 +544,9 @@ def test_failed_heater_writes_never_commit_tracked_state(
 @pytest.mark.component
 @pytest.mark.parametrize(("method", "flag"), [("set_state", 1), ("set_manual_state", 0)])
 @pytest.mark.parametrize("reported_power", [200, 800])
-def test_power_readback_during_write_stays_authoritative(
-    monkeypatch: pytest.MonkeyPatch, method: str, flag: int, reported_power: int
-) -> None:
+def test_power_readback_during_write_stays_authoritative(method: str, flag: int, reported_power: int) -> None:
     """A 0x0B received during a successful write beats the requested optimistic power."""
-    transport = ScriptedTransport(name="DYHET-test")
-    _fast_waits(monkeypatch)
+    transport = ScriptedTransport(realtime=False, name="DYHET-test")
     transport.expect(
         90,
         43,
@@ -677,15 +583,13 @@ def test_power_readback_during_write_stays_authoritative(
     ],
 )
 def test_cold_heater_mutations_preserve_actual_configured_power(
-    monkeypatch: pytest.MonkeyPatch,
     method: str,
     args: tuple[float | int, ...],
     initial_power: int,
     expected_payloads: list[list[int]],
 ) -> None:
     """Pre-write status cannot undo a new power setting or replace an existing power with defaults."""
-    _fast_waits(monkeypatch)
-    transport = ScriptedTransport(name="DYHET-test")
+    transport = ScriptedTransport(realtime=False, name="DYHET-test")
     configured_power = initial_power
 
     def report_state(_frame: bytes) -> list[bytes]:
@@ -717,215 +621,25 @@ def test_cold_heater_mutations_preserve_actual_configured_power(
 @pytest.mark.unit
 def test_heater_validates_before_touching_the_device() -> None:
     """Invalid settings are rejected before the client opens a BLE connection."""
-    transport = ScriptedTransport(name="DYHET-test")
+    transport = ScriptedTransport(realtime=False, name="DYHET-test")
 
     async def run() -> None:
         device = _make_heater(transport)
-        if transport:
-            with pytest.raises(ValueError, match="temperature"):
-                await device.set_temperature(-5.0)
-            with pytest.raises(ValueError, match="power"):
-                await device.set_power(3000)
-            with pytest.raises(ValueError, match="divisible by 10"):
-                await device.set_power(805)
-            with pytest.raises(ValueError, match="divisible by 10"):
-                await device.set_state(20.0, 805)
-            with pytest.raises(ValueError, match="temperature"):
-                await device.set_protector_temperature(200.0)
-            with pytest.raises(ValueError, match="start_hour"):
-                await device.set_backlight_schedule(24, 0, 21, 30)
-            with pytest.raises(ValueError, match="weekdays"):
-                await device.set_backlight_schedule(8, 15, 21, 30, weekdays=128)
+        with pytest.raises(ValueError, match="temperature"):
+            await device.set_temperature(-5.0)
+        with pytest.raises(ValueError, match="power"):
+            await device.set_power(3000)
+        with pytest.raises(ValueError, match="divisible by 10"):
+            await device.set_power(805)
+        with pytest.raises(ValueError, match="divisible by 10"):
+            await device.set_state(20.0, 805)
+        with pytest.raises(ValueError, match="temperature"):
+            await device.set_protector_temperature(200.0)
+        with pytest.raises(ValueError, match="start_hour"):
+            await device.set_backlight_schedule(24, 0, 21, 30)
+        with pytest.raises(ValueError, match="weekdays"):
+            await device.set_backlight_schedule(8, 15, 21, 30, weekdays=128)
         assert transport.connections == 0
         assert transport.writes == []
 
     asyncio.run(run())
-
-
-@pytest.mark.component
-def test_heater_cli_rejects_unrepresentable_power_before_device_resolution(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """CLI power arguments that cannot reach the wire never start BLE resolution."""
-    resolutions = 0
-
-    async def get_device_from_address(_address: str) -> ChihirosDevice:
-        nonlocal resolutions
-        resolutions += 1
-        raise AssertionError("device resolution must not run")
-
-    monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
-
-    manual = RUNNER.invoke(cli.app, ["heater", "manual-set", TEST_ADDRESS, "26.5", "805"])
-    state = RUNNER.invoke(cli.app, ["heater", "set-state", TEST_ADDRESS, "20", "805"])
-
-    assert manual.exit_code != 0
-    assert state.exit_code != 0
-    assert "divisible by 10" in manual.output
-    assert "divisible by 10" in state.output
-    assert resolutions == 0
-
-
-@pytest.mark.component
-@pytest.mark.parametrize(
-    ("arguments", "expected_frames"),
-    [
-        (["set-state", TEST_ADDRESS, "26.5", "800"], [(43, [1, 26, 50, 80])]),
-        (["manual-set", TEST_ADDRESS, "26.5", "800"], [(5, [11, 255, 255]), (43, [0, 26, 50, 80])]),
-        (["mode", TEST_ADDRESS, "auto"], [(5, [18, 255, 255])]),
-        (["mode", TEST_ADDRESS, "manual"], [(5, [11, 255, 255])]),
-        (["automatic-power", TEST_ADDRESS, "--enable"], [(5, [46, 255, 255])]),
-        (["automatic-power", TEST_ADDRESS, "--disable"], [(5, [47, 255, 255])]),
-    ],
-)
-def test_heater_cli_state_and_modes_write_production_transport(
-    monkeypatch: pytest.MonkeyPatch,
-    arguments: list[str],
-    expected_frames: list[tuple[int, list[int]]],
-) -> None:
-    """CLI control writes the firmware's mode-preserving/manual flags and non-destructive modes."""
-    _fast_waits(monkeypatch)
-    transport = ScriptedTransport(name="DYHET-test")
-
-    async def get_device_from_address(_address: str) -> ChihirosHeater:
-        return _make_heater(transport)
-
-    monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
-    result = RUNNER.invoke(cli.app, ["heater", *arguments])
-    assert result.exit_code == 0, result.output
-    assert _sent_frames(transport) == expected_frames
-    assert not transport.is_connected
-
-
-@pytest.mark.component
-@pytest.mark.parametrize(
-    ("options", "payload"),
-    [
-        ([], [8, 15, 21, 30, 127]),
-        (["--weekdays", "monday", "--weekdays", "wednesday", "--weekdays", "sunday"], [8, 15, 21, 30, 81]),
-    ],
-)
-def test_heater_cli_backlight_schedule_writes_production_transport(
-    monkeypatch: pytest.MonkeyPatch, options: list[str], payload: list[int]
-) -> None:
-    """The distinct CLI schedule operation encodes clocks and named weekdays over BLE."""
-    _fast_waits(monkeypatch)
-    transports: list[ScriptedTransport] = []
-    devices: list[ChihirosHeater] = []
-
-    async def get_device_from_address(address: str) -> ChihirosHeater:
-        assert address == TEST_ADDRESS
-        transport = ScriptedTransport(name="DYHET-test")
-        device = _make_heater(transport)
-        transports.append(transport)
-        devices.append(device)
-        return device
-
-    monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
-    result = RUNNER.invoke(cli.app, ["heater", "backlight-schedule", TEST_ADDRESS, "08:15", "21:30", *options])
-    assert result.exit_code == 0, result.output
-    assert _sent_frames(transports[0]) == [(56, payload)]
-    assert devices[0].backlight is None
-    assert devices[0].backlight_schedule == HeaterBacklightSchedule(*payload)
-    assert not transports[0].is_connected
-
-
-@pytest.mark.component
-@pytest.mark.parametrize(("option", "level"), [("--enable", 200), ("--disable", 100)])
-def test_heater_cli_backlight_always_modes_write_production_transport(
-    monkeypatch: pytest.MonkeyPatch, option: str, level: int
-) -> None:
-    """The Boolean CLI command replaces scheduled mode with the corrected sentinel."""
-    _fast_waits(monkeypatch)
-    transports: list[ScriptedTransport] = []
-    devices: list[ChihirosHeater] = []
-
-    async def get_device_from_address(_address: str) -> ChihirosHeater:
-        transport = ScriptedTransport(name="DYHET-test")
-        device = _make_heater(transport)
-        await device.set_backlight_schedule(8, 15, 21, 30, weekdays=81)
-        transports.append(transport)
-        devices.append(device)
-        return device
-
-    monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
-    result = RUNNER.invoke(cli.app, ["heater", "backlight", TEST_ADDRESS, option])
-    assert result.exit_code == 0, result.output
-    assert _sent_frames(transports[0]) == [(56, [8, 15, 21, 30, 81]), (56, [level] * 4 + [127])]
-    assert devices[0].backlight is (option == "--enable")
-    assert devices[0].backlight_schedule is None
-    assert not transports[0].is_connected
-
-
-@pytest.mark.component
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        ["24:00", "21:30"],
-        ["08:60", "21:30"],
-        ["08:15", "-1:30"],
-        ["08:15", "21:60"],
-        ["08:15", "bad"],
-        ["08:15", "21:30", "--weekdays", "noday"],
-        ["08:15", "21:30", "--disable"],
-    ],
-)
-def test_heater_cli_backlight_schedule_rejects_invalid_input_before_resolution(
-    monkeypatch: pytest.MonkeyPatch, arguments: list[str]
-) -> None:
-    """Schedules cannot select always-off sentinels or invalid clocks and weekdays."""
-
-    async def get_device_from_address(_address: str) -> ChihirosHeater:
-        raise AssertionError("device resolution must not run")
-
-    monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
-    result = RUNNER.invoke(cli.app, ["heater", "backlight-schedule", TEST_ADDRESS, *arguments])
-    assert result.exit_code == 2, result.output
-
-
-@pytest.mark.component
-def test_heater_cli_status_displays_reported_measurements(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Real readbacks expose measured and configured power without inventing target/firmware."""
-    _fast_waits(monkeypatch)
-    transport = ScriptedTransport(name="DYHET-test")
-    transport.expect(
-        90,
-        4,
-        [1],
-        respond=[
-            bytes.fromhex("5b060e017b25001e0bff00fa00"),
-            bytes.fromhex("5b060e00010a0000cbffffff22050022"),
-            bytes.fromhex("5b011000010b00000000000014000b335022"),
-        ],
-    )
-
-    async def get_device_from_address(_address: str) -> ChihirosHeater:
-        return _make_heater(transport)
-
-    monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
-    result = RUNNER.invoke(cli.app, ["heater", "status", TEST_ADDRESS])
-    assert result.exit_code == 0, result.output
-    assert "25.0" in result.output
-    assert "30" in result.output
-    assert "200" in result.output
-    assert "203" in result.output
-    assert "734032" in result.output
-    assert "Setting temperature" not in result.output
-    assert "Firmware" not in result.output
-    assert not transport.is_connected
-
-
-@pytest.mark.component
-def test_heater_cli_commands_reject_other_devices(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Heater commands fail clearly when pointed at another device family."""
-
-    async def get_device_from_address(address: str) -> ChihirosDevice:
-        assert address == TEST_ADDRESS
-        return create_device(FakeBLEDevice(name="DYMIXR-test"))  # type: ignore[arg-type]
-
-    monkeypatch.setattr(cli, "get_device_from_address", get_device_from_address)
-
-    result = RUNNER.invoke(cli.app, ["heater", "manual-set", TEST_ADDRESS, "25", "200"])
-
-    assert result.exit_code != 0
-    assert "not a heater" in result.output
