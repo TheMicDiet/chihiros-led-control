@@ -18,7 +18,7 @@ from homeassistant.components.number import NumberDeviceClass, NumberMode, Resto
 from homeassistant.components.select import SelectEntity
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, UnitOfTemperature
+from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, STATE_OFF, STATE_ON, UnitOfTemperature
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -266,31 +266,28 @@ class ChihirosHeaterCalibrationNumber(ChihirosHeaterNumber):
 class ChihirosHeaterOptimisticSwitch(ChihirosHeaterEntity, SwitchEntity, RestoreEntity):
     """Base for the heater's write-only switches.
 
-    The device does not report automatic-power or backlight state, so both are
-    optimistic and restored across restarts without being re-sent.
+    The device does not report these settings. A known value is restored without
+    being re-sent; otherwise the switch stays unknown until a successful write.
     """
 
-    _state_property = ""
     _unique_id_suffix = ""
     _name_suffix = ""
 
     def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: HeaterChihirosClient) -> None:
         """Initialize the heater switch."""
         super().__init__(coordinator, device, self._unique_id_suffix, self._name_suffix)
-        self._restored_state: bool | None = None
+        self._tracked_state: bool | None = None
 
     async def async_added_to_hass(self) -> None:
         """Restore the last known state."""
         await super().async_added_to_hass()
-        if last_state := await self.async_get_last_state():
-            self._restored_state = last_state.state == "on"
+        if (last_state := await self.async_get_last_state()) and last_state.state in (STATE_ON, STATE_OFF):
+            self._tracked_state = last_state.state == STATE_ON
 
     @property
     def is_on(self) -> bool | None:
-        """Return the tracked switch state."""
-        if self._restored_state is not None:
-            return self._restored_state
-        return bool(getattr(self._client, self._state_property))
+        """Return the tracked switch state, or None if unknown."""
+        return self._tracked_state
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable the setting on the device."""
@@ -306,7 +303,7 @@ class ChihirosHeaterOptimisticSwitch(ChihirosHeaterEntity, SwitchEntity, Restore
             await self._async_write(enabled)
         except Exception as ex:
             raise HomeAssistantError(f"Failed to set {self._attr_name}") from ex
-        self._restored_state = enabled
+        self._tracked_state = enabled
         self.async_write_ha_state()
 
     async def _async_write(self, enabled: bool) -> None:
@@ -317,7 +314,6 @@ class ChihirosHeaterOptimisticSwitch(ChihirosHeaterEntity, SwitchEntity, Restore
 class ChihirosHeaterAutomaticPowerSwitch(ChihirosHeaterOptimisticSwitch):
     """Enable automatic power escalation, independently of the selected mode."""
 
-    _state_property = "automatic_power"
     _unique_id_suffix = "heater_auto_heating"
     _name_suffix = "Automatic power increase"
 
@@ -329,7 +325,6 @@ class ChihirosHeaterAutomaticPowerSwitch(ChihirosHeaterOptimisticSwitch):
 class ChihirosHeaterBacklightSwitch(ChihirosHeaterOptimisticSwitch):
     """Switch the heater's display backlight on or off."""
 
-    _state_property = "backlight"
     _unique_id_suffix = "heater_backlight"
     _name_suffix = "Backlight"
     _attr_entity_category = EntityCategory.CONFIG
@@ -367,8 +362,8 @@ class ChihirosHeaterModeSelect(ChihirosHeaterEntity, SelectEntity, RestoreEntity
                 self.coordinator.async_set_heater_mode(last_state.state)
 
     @property
-    def current_option(self) -> str:
-        """Return the mode the integration last drove or restored."""
+    def current_option(self) -> str | None:
+        """Return the last written or restored mode, or None if unknown."""
         return self.coordinator.heater_mode
 
     async def async_select_option(self, option: str) -> None:
@@ -396,23 +391,12 @@ class ChihirosHeaterTemperatureUnitSelect(ChihirosHeaterEntity, SelectEntity, Re
     def __init__(self, coordinator: ChihirosDataUpdateCoordinator, device: HeaterChihirosClient) -> None:
         """Initialize the temperature unit select."""
         super().__init__(coordinator, device, "heater_temperature_unit", "Temperature unit")
-        self._restored_option: str | None = None
 
     async def async_added_to_hass(self) -> None:
         """Restore the last known display unit."""
         await super().async_added_to_hass()
-        if last_state := await self.async_get_last_state():
-            if last_state.state in self._attr_options:
-                self._restored_option = last_state.state
-
-    @property
-    def current_option(self) -> str:
-        """Return the unit the device displays."""
-        if self._restored_option is not None:
-            return self._restored_option
-        if self._client.is_celsius:
-            return UnitOfTemperature.CELSIUS
-        return UnitOfTemperature.FAHRENHEIT
+        if (last_state := await self.async_get_last_state()) and last_state.state in self._attr_options:
+            self._attr_current_option = last_state.state
 
     async def async_select_option(self, option: str) -> None:
         """Set the display unit."""
@@ -420,7 +404,7 @@ class ChihirosHeaterTemperatureUnitSelect(ChihirosHeaterEntity, SelectEntity, Re
             await self._client.set_temperature_unit(celsius=option == UnitOfTemperature.CELSIUS)
         except Exception as ex:
             raise HomeAssistantError(f"Failed to set {self._attr_name}") from ex
-        self._restored_option = option
+        self._attr_current_option = option
         self.async_write_ha_state()
 
 

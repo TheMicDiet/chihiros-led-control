@@ -151,6 +151,15 @@ and curve replacements select their respective auto controller and update the
 `Auto Mode` switch after a successful write. After incremental edits, enable
 the switch to run the stored schedule.
 
+The `Auto Mode` switch is `unknown` after Home Assistant starts or the
+integration reloads, even when the Schedule sensor shows stored points. The
+integration cannot read the lamp's active mode. The switch reflects the last
+successful Home Assistant command that selected auto or manual mode since setup.
+
+The VIVID III **Temperature Protection** and **Indicator LED** switches restore
+Home Assistant's last known values without sending commands. With nothing to
+restore, they stay `unknown` until set from Home Assistant.
+
 Home Assistant light brightness and schedule/curve levels retain their existing
 percentage units. Percentages are converted to each channel's raw maximum:
 for the verified `DYRGBV` profile, 100% RGB means raw `[115, 130, 200]`, not
@@ -339,8 +348,10 @@ Heaters expose the controls of the vendor app as ordinary entities:
 - **Reset runtime** (button) — zeroes the runtime counter after cleaning the
   heating tube (the app warns to clean past ~1944 h).
 
-Mode and automatic power adjustment are tracked optimistically and restored
-across restarts; the device does not report those settings.
+The heater does not report **Mode**, **Automatic power increase**, **Backlight**,
+or **Temperature unit**. Home Assistant restores the last known values without
+sending commands. With nothing to restore, these controls stay `unknown` until
+set from Home Assistant.
 
 The firmware-backed correction for [issue #57](https://github.com/TheMicDiet/chihiros-led-control/issues/57)
 removes the separate **Auto temperature** and **Auto power** numbers: both
