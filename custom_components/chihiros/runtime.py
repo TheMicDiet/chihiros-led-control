@@ -115,14 +115,6 @@ class LedChihirosClient(BaseChihirosClient, Protocol):
     def fan_stop_temp(self) -> int:
         """Return the fan stop temperature."""
 
-    @property
-    def temp_protect(self) -> bool:
-        """Return whether temperature protection is enabled."""
-
-    @property
-    def bluetooth_led(self) -> bool:
-        """Return whether the indicator LED is enabled."""
-
     async def set_brightness(self, brightness: int | Sequence[int] | Mapping[str | int, int]) -> None: ...
 
     async def turn_on(self) -> None: ...
@@ -270,12 +262,6 @@ class HeaterChihirosClient(BaseChihirosClient, Protocol):
 
     @property
     def heating_time_seconds(self) -> int | None: ...
-
-    @property
-    def automatic_power(self) -> bool: ...
-
-    @property
-    def is_celsius(self) -> bool: ...
 
     @property
     def backlight(self) -> bool | None: ...

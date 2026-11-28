@@ -137,6 +137,37 @@ async def test_light_curve_manual_override_and_unload(ha: HomeAssistant, proxy: 
     assert not ha.services.has_service(DOMAIN, "set_auto_curve")
 
 
+async def test_auto_mode_unknown_on_setup_and_reload(ha: HomeAssistant, proxy: PeripheralProxy) -> None:
+    """A stored schedule doesn't confirm which mode is active after setup or reload."""
+    ble = ScriptedResponder()
+    snapshot = bytes.fromhex(
+        "5b 15 30 00 01 fe 01 0c 0b 02 04 04 16 09 00 01 3b 02 04 02 16 00 01 0c 0b "
+        "09 00 00 09 01 05 10 3b 05 11 00 00 11 01 41 15 3b 41 16 00 00 00 00 00 00"
+    )
+    ble.expect(90, 4, [1], respond=[snapshot])
+    proxy.advertise(LIGHT, "DYNW60-test", ble)
+    entry = await _add_device(ha, LIGHT)
+    auto = _entity(ha, entry, "switch", "auto_mode")
+    schedule = _entity(ha, entry, "sensor", "schedule_points")
+    assert ha.states.get(schedule).attributes["points"][0]["time"] == "09:00"
+    assert ha.states.is_state(auto, "unknown")
+    assert [frame[5] for frame in ble.writes] == [4, 9, 4]  # auth, clock sync, status query
+
+    await _call(ha, DOMAIN, "set_auto_curve", entry_id=entry.entry_id, curve={"0": [[480, 50]]})
+    assert ha.states.is_state(auto, "on")
+
+    ble.writes.clear()
+    assert await ha.config_entries.async_reload(entry.entry_id)
+    await ha.async_block_till_done()
+    assert ha.states.get(schedule).attributes["points"][0]["time"] == "09:00"
+    assert ha.states.is_state(auto, "unknown")
+    assert [frame[5] for frame in ble.writes] == [4, 9, 4]
+
+    await _call(ha, "switch", "turn_off", entity_id=auto)
+    assert _payloads(ble, 5) == ["0b ff ff"]
+    assert ha.states.is_state(auto, "off")
+
+
 async def test_white_light_scene_service_rejects_duplicate_weekdays_before_replacing(
     ha: HomeAssistant, proxy: PeripheralProxy
 ) -> None:
@@ -179,7 +210,7 @@ async def test_partial_curve_failure_is_reported_and_cleaned_up(ha: HomeAssistan
         await _call(ha, DOMAIN, "set_auto_curve", entry_id=entry.entry_id, curve={"2": [[480, 50], [510, 100]]})
     assert _payloads(ble, 6) == ["02 10 64", "02 11 c8"] * 3
     assert _payloads(ble, 5)[-1] == "05 ff ff"  # custom curve reset, not an auto-mode switch
-    assert ha.states.is_state(auto, "off")
+    assert ha.states.is_state(auto, "unknown")
 
 
 async def test_dosing_distinguishes_reported_volume_from_persisted_local_total(
@@ -251,6 +282,55 @@ async def test_fan_thresholds_restore_after_reload_with_hysteresis(ha: HomeAssis
     assert (float(ha.states.get(start).state), float(ha.states.get(stop).state)) == (40, 36)
 
 
+async def test_vivid_switches_restore_only_known_states(ha: HomeAssistant, proxy: PeripheralProxy) -> None:
+    """The VIVID III settings have no readback or reliable startup defaults."""
+    ble = ScriptedResponder()
+    proxy.advertise(FAN, "DYVVD3-test", ble)
+    entry = await _add_device(ha, FAN)
+    protection = _entity(ha, entry, "switch", "temp_protect")
+    indicator = _entity(ha, entry, "switch", "bluetooth_led")
+    assert ha.states.is_state(protection, "unknown")
+    assert ha.states.is_state(indicator, "unknown")
+
+    await _call(ha, "switch", "turn_on", entity_id=protection)
+    assert ha.states.is_state(protection, "on")
+    assert _payloads(ble, 5) == ["30 ff ff"]
+
+    ble.writes.clear()
+    assert await ha.config_entries.async_reload(entry.entry_id)
+    await ha.async_block_till_done()
+    assert ha.states.is_state(protection, "on")
+    assert ha.states.is_state(indicator, "unknown")
+    assert _payloads(ble, 5) == []  # Fan threshold restoration uses a separate command.
+
+
+async def test_heater_write_only_settings_restore_without_writes(ha: HomeAssistant, proxy: PeripheralProxy) -> None:
+    """Unknown settings stay unknown; actual selections are restored without reapplying them."""
+    ble = ScriptedResponder()
+    proxy.advertise(HEATER, "DYHET-test", ble)
+    entry = await _add_device(ha, HEATER)
+    mode = _entity(ha, entry, "select", "heater_mode")
+    unit = _entity(ha, entry, "select", "heater_temperature_unit")
+    automatic_power = _entity(ha, entry, "switch", "heater_auto_heating")
+    backlight = _entity(ha, entry, "switch", "heater_backlight")
+    entities = (mode, unit, automatic_power, backlight)
+    assert [ha.states.get(entity).state for entity in entities] == ["unknown"] * 4
+
+    await _call(ha, "select", "select_option", entity_id=mode, option="auto")
+    await _call(ha, "select", "select_option", entity_id=unit, option="°F")
+    await _call(ha, "switch", "turn_off", entity_id=backlight)
+    assert _payloads(ble, 5) == ["12 ff ff", "2d ff ff"]
+    assert _payloads(ble, 56) == ["64 64 64 64 7f"]
+    expected = ["auto", "°F", "unknown", "off"]
+    assert [ha.states.get(entity).state for entity in entities] == expected
+
+    ble.writes.clear()
+    assert await ha.config_entries.async_reload(entry.entry_id)
+    await ha.async_block_till_done()
+    assert [ha.states.get(entity).state for entity in entities] == expected
+    assert [frame[5] for frame in ble.writes] == [4, 9, 4]
+
+
 async def test_heater_measurement_and_configured_power_are_independent(
     ha: HomeAssistant, proxy: PeripheralProxy
 ) -> None:
@@ -270,7 +350,9 @@ async def test_heater_measurement_and_configured_power_are_independent(
     power = _entity(ha, entry, "number", "heater_power")
     measured_power = _entity(ha, entry, "sensor", "heater_measured_power_watts")
     water = _entity(ha, entry, "sensor", "heater_current_temperature_celsius")
+    mode = _entity(ha, entry, "select", "heater_mode")
     await _call(ha, "number", "set_value", entity_id=target, value=25.2)
+    assert ha.states.is_state(mode, "manual")
     await _call(ha, "number", "set_value", entity_id=power, value=400)
     assert _payloads(ble, 43) == ["00 19 0a 14", "00 19 14 14", "00 19 14 28"]
     assert tuple(float(ha.states.get(entity).state) for entity in (target, power, water, measured_power)) == (

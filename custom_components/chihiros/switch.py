@@ -1,6 +1,7 @@
 """Switch platform for Chihiros LED Control to toggle auto/manual mode."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from homeassistant.components.bluetooth.passive_update_coordinator import (
@@ -8,6 +9,7 @@ from homeassistant.components.bluetooth.passive_update_coordinator import (
 )
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -76,8 +78,8 @@ def _accessory_switches(chihiros_data: ChihirosData) -> list[SwitchEntity]:
 def _vivid3_switches(device: LedChihirosClient) -> list[SwitchEntity]:
     """Build the VIVID III temperature-protection and indicator-LED switches."""
     return [
-        ChihirosVivid3Switch(device, "temp_protect", "set_temp_protect", "Temperature Protection"),
-        ChihirosVivid3Switch(device, "bluetooth_led", "set_bluetooth_led", "Indicator LED"),
+        ChihirosVivid3Switch(device, "temp_protect", device.set_temp_protect, "Temperature Protection"),
+        ChihirosVivid3Switch(device, "bluetooth_led", device.set_bluetooth_led, "Indicator LED"),
     ]
 
 
@@ -107,8 +109,8 @@ class ChihirosAutoManualSwitch(
         return super().available
 
     @property
-    def is_on(self) -> bool:
-        """Return True if the switch is in auto mode."""
+    def is_on(self) -> bool | None:
+        """Return the tracked auto mode, or None if unknown."""
         return self.coordinator.auto_mode
 
     async def async_turn_on(self, **kwargs: Any) -> None:
@@ -129,10 +131,8 @@ class ChihirosAutoManualSwitch(
 class ChihirosVivid3Switch(SwitchEntity, RestoreEntity):
     """Optimistic VIVID III switch (temperature protection / indicator LED).
 
-    The device sends no notification for these settings, so the state is
-    tracked optimistically and restored across HA restarts. The restored value
-    is *not* re-sent to the device: the hardware default is unknown, and a
-    surprise write on startup could contradict what the device actually uses.
+    The device sends no notification for these settings. A known value is restored
+    without being re-sent; otherwise the switch stays unknown until a successful write.
     """
 
     _attr_should_poll = False
@@ -140,40 +140,30 @@ class ChihirosVivid3Switch(SwitchEntity, RestoreEntity):
     def __init__(
         self,
         device: LedChihirosClient,
-        state_property: str,
-        setter_name: str,
+        unique_id_suffix: str,
+        setter: Callable[[bool], Awaitable[None]],
         name_suffix: str,
     ) -> None:
         """Initialize the switch."""
-        self._device = device
-        self._state_property = state_property
-        self._setter_name = setter_name
-        self._restored_state: bool | None = None
+        self._setter = setter
         self._attr_name = chihiros_entity_name(device, name_suffix)
-        self._attr_unique_id = chihiros_unique_id(device.address, state_property)
+        self._attr_unique_id = chihiros_unique_id(device.address, unique_id_suffix)
         self._attr_device_info = chihiros_device_info(device, device.address)
 
     async def async_added_to_hass(self) -> None:
         """Restore the last known state."""
         await super().async_added_to_hass()
-        if last_state := await self.async_get_last_state():
-            self._restored_state = last_state.state == "on"
-
-    @property
-    def is_on(self) -> bool:
-        """Return the optimistic switch state."""
-        if self._restored_state is not None:
-            return self._restored_state
-        return bool(getattr(self._device, self._state_property))
+        if (last_state := await self.async_get_last_state()) and last_state.state in (STATE_ON, STATE_OFF):
+            self._attr_is_on = last_state.state == STATE_ON
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable the setting on the device."""
-        await getattr(self._device, self._setter_name)(True)
-        self._restored_state = True
+        await self._setter(True)
+        self._attr_is_on = True
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Disable the setting on the device."""
-        await getattr(self._device, self._setter_name)(False)
-        self._restored_state = False
+        await self._setter(False)
+        self._attr_is_on = False
         self.async_write_ha_state()

@@ -70,8 +70,9 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         """Initialize."""
         self.api: BaseChihirosClient = client
         self.data: dict[str, Any] = {}
-        self._auto_mode = False
-        self._heater_mode = HEATER_MODE_MANUAL
+        # A schedule snapshot reports stored points, not the active LED mode.
+        self._auto_mode: bool | None = None
+        self._heater_mode: str | None = None
         self._closed = False
         self.always_available = always_available
         self._remove_notification_callback = client.add_notification_callback(self._queue_notification)
@@ -85,8 +86,8 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         )
 
     @property
-    def auto_mode(self) -> bool:
-        """Return whether the device is currently assumed to be in auto mode."""
+    def auto_mode(self) -> bool | None:
+        """Return the last successfully commanded LED mode, or None if unknown."""
         return self._auto_mode
 
     @callback
@@ -98,8 +99,8 @@ class ChihirosDataUpdateCoordinator(PassiveBluetoothDataUpdateCoordinator):
         self.async_update_listeners()
 
     @property
-    def heater_mode(self) -> str:
-        """Return the heater mode the integration last wrote or restored."""
+    def heater_mode(self) -> str | None:
+        """Return the last written or restored heater mode, or None if unknown."""
         return self._heater_mode
 
     @callback
