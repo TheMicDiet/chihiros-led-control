@@ -16,8 +16,14 @@ from ..protocol.notifications import (
     ParsedNotification,
 )
 from ..registry import HEATER
-from ..transport import ChihirosTransport
+from ..transport import BATCH_WRITE_DELAY, ChihirosTransport
 from .base import COMMAND_NOTIFICATION_WAIT, STATUS_NOTIFICATION_WAIT, BaseChihirosDevice, DeviceClock
+
+
+def _temperature_tenths(temperature_c: float) -> int:
+    """Use the same tenths-of-a-degree resolution as the heater."""
+    whole, hundredths = commands.split_heater_temperature(temperature_c)
+    return whole * 10 + hundredths // 10
 
 
 class ChihirosHeater(BaseChihirosDevice):
@@ -131,13 +137,17 @@ class ChihirosHeater(BaseChihirosDevice):
     async def set_temperature(self, temperature_c: float) -> None:
         """Switch to manual mode and set the target temperature.
 
-        Mirrors the app's ``setTemperature`` → ``initManual`` sequence: one
-        paced batch with ``switchToManual`` followed by the state frame
-        carrying refreshed configured power.
+        Mirror an app slider drag: send a manual-mode/state pair for each
+        tenth of a degree between the cached and requested targets. The
+        heater does not report its target, so the starting point is optimistic.
         """
         async with self._state_lock:
-            commands.split_heater_temperature(temperature_c)
+            target = _temperature_tenths(temperature_c)
+            start = _temperature_tenths(self._setting_temperature)
             await self.query_status()
+            direction = 1 if target >= start else -1
+            for step in range(start + direction, target, direction):
+                await self._set_manual_state_locked(step / 10, self._power_watts, notification_wait=BATCH_WRITE_DELAY)
             await self._set_manual_state_locked(temperature_c, self._power_watts)
 
     async def set_power(self, power_watts: int) -> None:
@@ -177,8 +187,9 @@ class ChihirosHeater(BaseChihirosDevice):
 
     async def set_auto_mode(self) -> None:
         """Select the stored auto schedule without changing setpoints or deleting scenes."""
-        cmd = commands.create_heater_auto_mode_command(self.get_next_msg_id())
-        await self._send_command(cmd, 3)
+        async with self._state_lock:
+            cmd = commands.create_heater_auto_mode_command(self.get_next_msg_id())
+            await self._send_command(cmd, 3)
 
     async def set_automatic_power(self, enabled: bool) -> None:
         """Enable or disable automatic power escalation without switching mode."""
@@ -260,7 +271,9 @@ class ChihirosHeater(BaseChihirosDevice):
             await self.query_status()
             await self._set_manual_state_locked(temperature_c, power_watts)
 
-    async def _set_manual_state_locked(self, temperature_c: float, power_watts: int) -> None:
+    async def _set_manual_state_locked(
+        self, temperature_c: float, power_watts: int, *, notification_wait: float = COMMAND_NOTIFICATION_WAIT
+    ) -> None:
         """Set and track both manual values while holding the state lock."""
         commands_to_send = [
             commands.create_switch_to_manual_mode_command(self.get_next_msg_id()),
@@ -272,15 +285,16 @@ class ChihirosHeater(BaseChihirosDevice):
             ),
         ]
         power_sequence = self._power_notification_sequence
-        await self._send_command(commands_to_send, 3, COMMAND_NOTIFICATION_WAIT)
+        await self._send_command(commands_to_send, 3, notification_wait)
         self._setting_temperature = temperature_c
         if self._power_notification_sequence == power_sequence:
             self._power_watts = power_watts
 
     async def set_manual_mode(self) -> None:
         """Switch the heater to manual mode without changing its state."""
-        cmd = commands.create_switch_to_manual_mode_command(self.get_next_msg_id())
-        await self._send_command(cmd, 3)
+        async with self._state_lock:
+            cmd = commands.create_switch_to_manual_mode_command(self.get_next_msg_id())
+            await self._send_command(cmd, 3)
 
     async def query_status(self) -> None:
         """Request runtime, alarms and configured power; measurements arrive periodically."""

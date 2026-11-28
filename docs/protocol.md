@@ -795,16 +795,22 @@ Both flag values write the same target at `0x20002af0` and power at
 `0x20002af8`. A flag-1 write while in manual mode changes its active setpoints;
 it does not enter auto mode or populate a separate setpoint bank.
 
-`set_temperature`, `set_power` and `set_manual_state` send manual mode followed
-by the flag-0 state frame in one 30 ms-paced batch. `set_state` sends flag `1`,
-updates the same tracked pair, and preserves mode. `set_auto_mode` sends
-`[18, 255, 255]`; `[3, 255, 255]` has no handler in DYHET-6. Mode switches
-neither resend stale app presets nor delete the stored schedule.
+`set_temperature` mirrors the app's slider traffic: from the locally tracked
+starting target, it sends one manual-mode/flag-0 state pair per 0.1 °C step.
+This is an app behavior, not a firmware-imposed step limit. The starting target
+can be stale because the heater does not report it. If a step fails, the driver
+stops and keeps the last successfully sent target; this is not device readback.
+`set_power` and `set_manual_state` still send a single pair. Manual-mode pairs
+use the existing 30 ms write pacing. `set_state` sends flag `1`, updates the
+same tracked pair, and preserves mode. `set_auto_mode` sends `[18, 255, 255]`;
+`[3, 255, 255]` has no handler in DYHET-6. Mode switches neither resend stale
+app presets nor delete the stored schedule.
 
-Before a paired write, the client completes a status refresh under its state
-lock. Temperature-only writes then resend the device's configured power, not
-a stale default. Connection-prelude readback is consumed before the write's
-power-generation snapshot, so old startup status cannot undo the new setting.
+Before a paired write or temperature walk, the client completes one status
+refresh under its state lock. Temperature-only writes then resend the device's
+configured power, not a stale default. Connection-prelude readback is consumed
+before the write's power-generation snapshot, so old startup status cannot undo
+the new setting.
 
 The regulator at `0x31596–0x315d6` uses the automatic-power flag to increase
 configured wattage when its adjustment threshold is reached, even in manual

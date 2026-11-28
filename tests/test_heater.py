@@ -192,15 +192,63 @@ def _sent_frames(transport: ScriptedTransport) -> list[tuple[int, list[int]]]:
 
 @pytest.mark.component
 @pytest.mark.parametrize(
-    ("preserve_mode", "first", "second"),
-    [(False, "00 1a 32 14", "00 1a 32 50"), (True, "01 16 32 3c", "00 16 32 50")],
+    ("start", "target", "steps"),
+    [
+        (25.0, 26.0, [(25, fraction) for fraction in range(10, 100, 10)] + [(26, 0)]),
+        (25.1, 24.9, [(25, 0), (24, 90)]),
+        (25.0, 25.0, [(25, 0)]),
+        (25.29, 25.41, [(25, 30), (25, 41)]),
+    ],
 )
-async def test_concurrent_heater_setters_preserve_both_values(preserve_mode: bool, first: str, second: str) -> None:
+async def test_heater_temperature_write_follows_app_slider(
+    start: float, target: float, steps: list[tuple[int, int]]
+) -> None:
+    """Send one manual-mode/state pair per tenth, using refreshed configured power."""
+    transport = ScriptedTransport(name="DYHET-test", realtime=False)
+    transport.expect(90, 4, [1], respond=[_heater_power_frame(600, 734032)])
+    device = _make_heater(transport)
+    device.restore_setting_temperature(start)
+    try:
+        await device.set_temperature(target)
+        assert [frame[5] for frame in transport.writes[:3]] == [4, 9, 4]
+        assert _sent_frames(transport) == [
+            frame for whole, fraction in steps for frame in [(5, [11, 255, 255]), (43, [0, whole, fraction, 60])]
+        ]
+        assert len(transport.writes) == 3 + 2 * len(steps)
+        assert device.setting_temperature_celsius == target
+        assert device.power_watts == 600
+    finally:
+        await device.disconnect()
+
+
+@pytest.mark.component
+async def test_failed_heater_temperature_step_stops_at_last_completed_pair() -> None:
+    """A mid-drag failure does not commit the failed step or send later steps."""
+    transport = ScriptedTransport(name="DYHET-test", realtime=False)
+    transport.expect(90, 43, [0, 25, 20, 20], fail=True)
+    device = _make_heater(transport)
+    try:
+        with pytest.raises(BleakError, match="scripted write failure"):
+            await device.set_temperature(25.3)
+        assert device.setting_temperature_celsius == 25.1
+        state_writes = [payload for mode, payload in _sent_frames(transport) if mode == 43]
+        assert state_writes[0] == [0, 25, 10, 20]
+        assert set(map(tuple, state_writes[1:])) == {(0, 25, 20, 20)}
+    finally:
+        await device.disconnect()
+
+
+@pytest.mark.component
+@pytest.mark.parametrize(
+    ("preserve_mode", "payloads"),
+    [(False, ["00 19 0a 14", "00 19 14 14", "00 19 14 50"]), (True, ["01 16 32 3c", "00 16 32 50"])],
+)
+async def test_concurrent_heater_setters_preserve_both_values(preserve_mode: bool, payloads: list[str]) -> None:
     """Changing power during a temperature write keeps the newly applied target."""
     transport = ScriptedTransport(name="DYHET-test", realtime=False)
     device = _make_heater(transport)
     hold = transport.pause("write", mode=43)
-    target = device.set_state(22.5, 600) if preserve_mode else device.set_temperature(26.5)
+    target = device.set_state(22.5, 600) if preserve_mode else device.set_temperature(25.2)
     first_write = asyncio.create_task(target)
     await hold.wait()
     second_write = asyncio.create_task(device.set_power(800))
@@ -211,8 +259,8 @@ async def test_concurrent_heater_setters_preserve_both_values(preserve_mode: boo
         hold.release.set()
         await asyncio.gather(first_write, second_write)
         await device.disconnect()
-    assert [bytes(payload).hex(" ") for mode, payload in _sent_frames(transport) if mode == 43] == [first, second]
-    assert device.setting_temperature_celsius == (22.5 if preserve_mode else 26.5)
+    assert [bytes(payload).hex(" ") for mode, payload in _sent_frames(transport) if mode == 43] == payloads
+    assert device.setting_temperature_celsius == (22.5 if preserve_mode else 25.2)
     assert device.power_watts == 800
 
 
@@ -316,15 +364,15 @@ def test_shared_state_drives_manual_mutations() -> None:
     async def run() -> None:
         device = _make_heater(transport)
         try:
-            await device.set_temperature(26.5)
+            await device.set_temperature(25.1)
             await device.set_power(800)
-            assert device.setting_temperature_celsius == 26.5
+            assert device.setting_temperature_celsius == 25.1
             assert device.power_watts == 800
             await device.set_auto_mode()
             await device.set_state(22.5, 800)
             assert device.setting_temperature_celsius == 22.5
             assert device.power_watts == 800
-            await device.set_temperature(26.5)
+            await device.set_temperature(22.6)
             await device.set_state(24.0, 600)
             await device.set_power(400)
             await device.set_manual_state(27.0, 1000)
@@ -332,13 +380,13 @@ def test_shared_state_drives_manual_mutations() -> None:
             await device.set_manual_mode()
             assert _sent_frames(transport) == [
                 (5, [11, 255, 255]),
-                (43, [0, 26, 50, 20]),  # A fresh client pairs the target with its default 200 W.
+                (43, [0, 25, 10, 20]),  # A fresh client pairs the target with its default 200 W.
                 (5, [11, 255, 255]),
-                (43, [0, 26, 50, 80]),  # The next power write keeps the committed target.
+                (43, [0, 25, 10, 80]),  # The next power write keeps the committed target.
                 (5, [18, 255, 255]),
                 (43, [1, 22, 50, 80]),
                 (5, [11, 255, 255]),
-                (43, [0, 26, 50, 80]),
+                (43, [0, 22, 60, 80]),
                 (43, [1, 24, 0, 60]),
                 (5, [11, 255, 255]),
                 (43, [0, 24, 0, 40]),
@@ -368,14 +416,14 @@ def test_restored_heater_pairs_drive_real_client_writes() -> None:
         assert transport.writes == []
 
         await device.set_power(600)
-        await device.set_temperature(26.5)
+        await device.set_temperature(27.4)
         await device.set_state(23.0, 900)
 
         assert _sent_frames(transport) == [
             (5, [11, 255, 255]),
             (43, [0, 27, 50, 60]),
             (5, [11, 255, 255]),
-            (43, [0, 26, 50, 60]),
+            (43, [0, 27, 40, 60]),
             (43, [1, 23, 0, 90]),
         ]
 
@@ -408,9 +456,9 @@ def test_scripted_heater_notifications_track_device_state() -> None:
             assert device.setting_temperature_celsius == 25.0
             assert device.power_watts == 800
             assert device.last_heater_status_notification is not None
-            await device.set_temperature(26.5)
+            await device.set_temperature(25.1)
             state_frame = next(frame for frame in transport.writes if frame[5] == 43)
-            assert list(state_frame[6:-1]) == [0, 26, 50, 80]
+            assert list(state_frame[6:-1]) == [0, 25, 10, 80]
         finally:
             await device.disconnect()
         assert device.work_time_hours == 1994
@@ -510,7 +558,7 @@ def test_heater_configured_power_and_lifetime_byte_boundaries(power_watts: int, 
         ("set_state", (26.5, 600), 43, [1, 26, 50, 60]),
         ("set_manual_state", (26.5, 600), 43, [0, 26, 50, 60]),
         ("set_manual_state", (26.5, 600), 5, [11, 255, 255]),
-        ("set_temperature", (26.5,), 43, [0, 26, 50, 80]),
+        ("set_temperature", (27.4,), 43, [0, 27, 40, 80]),
         ("set_power", (600,), 43, [0, 27, 50, 60]),
         ("set_automatic_power", (False,), 5, [47, 255, 255]),
     ],
@@ -576,16 +624,17 @@ def test_power_readback_during_write_stays_authoritative(method: str, flag: int,
 
 @pytest.mark.component
 @pytest.mark.parametrize(
-    ("method", "args", "initial_power", "expected_payloads"),
+    ("method", "args", "initial_power", "next_target", "expected_payloads"),
     [
-        ("set_power", (400,), 200, [[0, 25, 0, 40], [0, 27, 0, 40]]),
-        ("set_temperature", (26.5,), 600, [[0, 26, 50, 60], [0, 27, 0, 60]]),
+        ("set_power", (400,), 200, 25.1, [[0, 25, 0, 40], [0, 25, 10, 40]]),
+        ("set_temperature", (25.1,), 600, 25.2, [[0, 25, 10, 60], [0, 25, 20, 60]]),
     ],
 )
 def test_cold_heater_mutations_preserve_actual_configured_power(
     method: str,
     args: tuple[float | int, ...],
     initial_power: int,
+    next_target: float,
     expected_payloads: list[list[int]],
 ) -> None:
     """Pre-write status cannot undo a new power setting or replace an existing power with defaults."""
@@ -608,7 +657,7 @@ def test_cold_heater_mutations_preserve_actual_configured_power(
         try:
             await getattr(device, method)(*args)
             assert device.power_watts == configured_power == expected_payloads[0][-1] * 10
-            await device.set_temperature(27.0)
+            await device.set_temperature(next_target)
             assert device.power_watts == configured_power == expected_payloads[-1][-1] * 10
             state_frames = [frame for frame in transport.writes if frame[5] == 43]
             assert [list(frame[6:-1]) for frame in state_frames] == expected_payloads

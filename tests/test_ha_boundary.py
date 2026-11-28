@@ -270,11 +270,11 @@ async def test_heater_measurement_and_configured_power_are_independent(
     power = _entity(ha, entry, "number", "heater_power")
     measured_power = _entity(ha, entry, "sensor", "heater_measured_power_watts")
     water = _entity(ha, entry, "sensor", "heater_current_temperature_celsius")
-    await _call(ha, "number", "set_value", entity_id=target, value=27.5)
+    await _call(ha, "number", "set_value", entity_id=target, value=25.2)
     await _call(ha, "number", "set_value", entity_id=power, value=400)
-    assert _payloads(ble, 43) == ["00 1b 32 14", "00 1b 32 28"]
+    assert _payloads(ble, 43) == ["00 19 0a 14", "00 19 14 14", "00 19 14 28"]
     assert tuple(float(ha.states.get(entity).state) for entity in (target, power, water, measured_power)) == (
-        27.5,
+        25.2,
         400,
         25,
         30,
