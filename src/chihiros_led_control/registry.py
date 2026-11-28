@@ -76,7 +76,7 @@ SUPPORTED_MODELS: tuple[DeviceModel, ...] = (
     _led("WRGB II", ("DYWRGB",), RGB_CHANNELS),
     _led(
         "WRGB II",
-        ("DYNT90", "DYNW30", "DYNW45", "DYNW60", "DYNW90", "DYNW12P", "DYNWRGB"),
+        ("DYNT90", "DYNW30", "DYNW45", "DYNW60", "DYNW90", "DYNW120", "DYNW12P", "DYNWRGB"),
         RGB_CHANNELS,
         protocol=LedProtocol.SEA_LED,
     ),

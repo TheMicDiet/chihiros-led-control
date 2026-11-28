@@ -45,12 +45,14 @@ def test_detect_model_wrgb2_generation_split() -> None:
         "DYNW451234567890",
         "DYNW601234567890",
         "DYNW901234567890",
+        "DYNW120CDA1ECD07A4D",
         "DYNW12P1234567890",
         "DYNWRGB1234567890",
     ):
         model = detect_model(name)
         assert model.name == "WRGB II"
         assert model.spec.protocol is LedProtocol.SEA_LED
+        assert needs_device_type(name) is False
 
 
 def test_detect_model_new_gen_families_are_sea_led() -> None:
