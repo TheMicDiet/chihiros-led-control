@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 from .frame import create_command_encoding
-from .notifications import DosingDailyNotification, DosingTotalsNotification
+from .notifications import DosingDailyNotification, DosingModesNotification, DosingTotalsNotification
 
 AUTO_SETTING_PARAMETER_COUNT = 14
 AUTO_SETTING_METADATA_PARAMETER_COUNT = 6
@@ -154,6 +154,36 @@ def _flush_batched_frames(
     return frames
 
 
+def _validate_dydose_free_window(point: DosingWorkPoint) -> None:
+    _validate_work_point_time(point)
+    start = point.start_hour * 60 + point.start_minute
+    if point.duration_minutes < 1 or start + point.duration_minutes >= 24 * 60:
+        raise ValueError("DYDOSE free windows must end later on the same day")
+    if not 1 <= point.number <= min(24, point.duration_minutes + 1):
+        raise ValueError("DYDOSE free windows need 1–24 doses in distinct minute slots")
+
+
+def _dydose_free_minutes(point: DosingWorkPoint) -> range:
+    _validate_dydose_free_window(point)
+    start = point.start_hour * 60 + point.start_minute
+    step = point.duration_minutes // (point.number - 1) if point.number > 1 else 1
+    return range(start, start + point.number * step, step)
+
+
+def validate_dydose_schedule(mode: DosingMode, points: Sequence[DosingWorkPoint]) -> None:
+    """Reject schedules the four-channel DYDOSE firmware cannot represent."""
+    if mode in (DosingMode.SINGLE, DosingMode.AUTO) and len(points) != 1:
+        raise ValueError("DYDOSE Single and Auto schedules need exactly one point")
+    if mode is DosingMode.FREE:
+        minutes = [minute for point in points for minute in _dydose_free_minutes(point)]
+    else:
+        minutes = [point.start_hour * 60 + point.start_minute for point in points]
+    if len(minutes) > 24:
+        raise ValueError("DYDOSE schedules support at most 24 slots per channel")
+    if len(set(minutes)) != len(minutes):
+        raise ValueError("DYDOSE schedules require distinct dose minutes")
+
+
 def create_dosing_schedule_command(
     msg_id: tuple[int, int],
     channel: int,
@@ -293,27 +323,41 @@ def create_general_temp_run_command(
     return create_command_encoding(165, 20, msg_id, [*duration, *channel_bytes])
 
 
+def create_dydose_info_query(msg_id: tuple[int, int]) -> bytearray:
+    """Request the device info snapshot, including per-channel schedule modes."""
+    return create_command_encoding(90, 4, msg_id, [1])
+
+
 def create_dose_auth_1_command(msg_id: tuple[int, int]) -> bytearray:
-    """Create the first dosing pump auth command."""
+    """Request lifetime counters (legacy function name; not authentication)."""
     return create_command_encoding(165, 4, msg_id, [4])
 
 
 def create_dose_auth_2_command(msg_id: tuple[int, int]) -> bytearray:
-    """Create the second dosing pump auth command."""
+    """Request today's counters (legacy function name; not authentication)."""
     return create_command_encoding(165, 4, msg_id, [5])
 
 
-def create_manual_dose_command(msg_id: tuple[int, int], pump_idx: int, volume_ml: float) -> bytearray:
-    """Create a manual dosing command for one pump.
-
-    Volumes are encoded as ``high * 25.6 mL + low * 0.1 mL``. This is compatible
-    with the older single-byte examples for doses up to 25.5 mL because
-    ``high`` is then zero. Dosing pumps expose up to eight channels.
-    """
+def create_manual_dose_command(
+    msg_id: tuple[int, int], pump_idx: int, volume_ml: float, *, extra: bool = False
+) -> bytearray:
+    """Encode a 0.1 mL-step dose. Extra doses count toward today; test doses do not."""
     if pump_idx < 0 or pump_idx > 7:
         raise ValueError("Pump index must be between 0 and 7")
     high, low = split_dose_volume_ml(volume_ml)
-    return create_command_encoding(165, 27, msg_id, [pump_idx, 0, 0, high, low])
+    return create_command_encoding(165, 27, msg_id, [pump_idx, 0, 2 if extra else 0, high, low])
+
+
+# Internal scheduler modes, NOT the programming command's DosingMode order.
+DYDOSE_REPORTED_MODES = ("single", "auto", "timer", "free", "inactive")
+
+
+def parse_dydose_info(data: bytes | bytearray) -> DosingModesNotification | None:
+    """Decode the full 50-byte DYDOSE-8 info reply (firmware 0x27cdc–0x27db4)."""
+    if len(data) != 50 or data[0] != 0x5B or data[2] != 0x30 or data[5] != 0xFE:
+        return None
+    modes = tuple(DYDOSE_REPORTED_MODES[n] if n < len(DYDOSE_REPORTED_MODES) else None for n in data[9:37:9])
+    return DosingModesNotification(modes, bytes(data))
 
 
 def parse_notification(data: bytes | bytearray):

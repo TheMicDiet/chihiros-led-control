@@ -16,6 +16,7 @@ from .runtime import BaseChihirosClient
 from .vendor.chihiros_led_control.protocol.heater import heater_alarm_names
 from .vendor.chihiros_led_control.protocol.notifications import (
     DosingDailyNotification,
+    DosingModesNotification,
     DosingTotalsNotification,
     FanStatusNotification,
     HeaterPowerNotification,
@@ -38,6 +39,7 @@ ATTR_FAN_RPM = "fan_rpm"
 ATTR_FAN_TEMPERATURE_CELSIUS = "fan_temperature_celsius"
 ATTR_DOSING_LIFETIME_UL = "dosing_lifetime_ul"
 ATTR_DOSING_DAILY_UL = "dosing_daily_ul"
+ATTR_DOSING_SCHEDULE_MODE = "schedule_mode"
 ATTR_HEATER_MEASURED_POWER_WATTS = "heater_measured_power_watts"
 ATTR_HEATER_POWER_WATTS = "heater_power_watts"
 ATTR_HEATER_HEATING_TIME_SECONDS = "heater_heating_time_seconds"
@@ -239,6 +241,14 @@ def _apply_dosing_totals_notification(
     coordinator.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "dosing_totals")
 
 
+def _apply_dosing_modes_notification(
+    coordinator: ChihirosDataUpdateCoordinator, notification: DosingModesNotification
+) -> None:
+    """Store channel schedule modes reported by legacy pumps."""
+    coordinator.data[ATTR_DOSING_SCHEDULE_MODE] = notification.modes
+    coordinator.data[ATTR_LAST_NOTIFICATION] = _notification_to_debug_dict(notification, "dosing_modes")
+
+
 def _apply_dosing_daily_notification(
     coordinator: ChihirosDataUpdateCoordinator, notification: DosingDailyNotification
 ) -> None:
@@ -281,6 +291,7 @@ _NOTIFICATION_APPLIERS: dict[type, Callable[[ChihirosDataUpdateCoordinator, Pars
     ScheduleSnapshotNotification: _apply_schedule_snapshot_notification,
     DosingTotalsNotification: _apply_dosing_totals_notification,
     DosingDailyNotification: _apply_dosing_daily_notification,
+    DosingModesNotification: _apply_dosing_modes_notification,
     HeaterTemperatureNotification: _apply_heater_temperature_notification,
     HeaterPowerNotification: _apply_heater_power_notification,
     HeaterStatusNotification: _apply_heater_status_notification,

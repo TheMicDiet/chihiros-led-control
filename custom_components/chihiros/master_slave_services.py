@@ -30,11 +30,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import CONF_MASTER_ADDRESS, DOMAIN
-from .dosing import (
-    derive_first_setting,
-    deserialize_points,
-    serialize_points,
-)
+from .dosing import derive_first_setting, deserialize_points, is_legacy_dosing_pump, serialize_points
 from .models import DosingChihirosData, StirrerChihirosData
 from .service_utils import (
     ATTR_ADDRESS,
@@ -86,6 +82,7 @@ ATTR_DAILY_ML = "daily_ml"
 
 MINUTES_PER_DAY = 24 * 60
 DOSE_MODES = ("single", "auto", "free", "timer")
+FREQUENCY_SUNDAY_FIRST = "frequency_sunday_first"
 
 DOSE_POINT_SCHEMA = vol.Schema(
     {
@@ -249,57 +246,74 @@ def _validate_pump_channel(data: DosingChihirosData, channel: int) -> None:
         raise HomeAssistantError(f"{data.device.name} has {data.dosing_totals.pump_count} pump channels configured")
 
 
-async def _apply_channel_setup(
-    stirrer_device: object, channel: int, setup: dict[str, Any], *, start_as_slave: bool = False
-) -> None:
-    """Replay one recorded channel write onto a stirrer in one transaction.
+def _recorded_frequency(setup: dict[str, Any], *, sunday_first: bool) -> int:
+    """Translate weekday bits between legacy pump and ISO order, preserving bit 7."""
+    frequency = setup.get("frequency", 127)
+    # Preserve the actual run days under the old ISO clock, even for an old raw mask.
+    if setup.get(FREQUENCY_SUNDAY_FIRST, False) == sunday_first:
+        return frequency
+    if sunday_first:
+        return (frequency & 0x80) | ((frequency & 0x7E) >> 1) | ((frequency & 0x01) << 6)
+    return (frequency & 0x80) | ((frequency & 0x3F) << 1) | ((frequency & 0x40) >> 6)
 
-    Live mirroring (``start_as_slave=False``) replays exactly the frames the
-    pump was sent. The full replay (``start_as_slave=True``, the app's
-    ``startAsSlave``, DOSING_CONTROL.md §6.4) follows ``_startDosingWork``:
-    the ``dosingSet`` frame is *always* sent — with the recorded daily volume
-    or the channel-model default of 0 — and ``first=true`` is hard-coded.
-    Schedule frames are always sent on both paths (§6.4 does not check
-    channel activity).
+
+def _recorded_schedule(setup: dict[str, Any]) -> tuple[DosingMode | None, list[DosingWorkPoint]]:
+    if not setup.get("mode"):
+        return None, []
+    return DosingMode[setup["mode"].upper()], deserialize_points(setup.get("points", []))
+
+
+async def _apply_channel_setup(
+    stirrer_device: object,
+    channel: int,
+    setup: dict[str, Any],
+    *,
+    legacy_pump: bool,
+    start_as_slave: bool = False,
+) -> None:
+    """Mirror channel programming, without installing slots for an inactive legacy pump.
+
+    A full replay (the app's ``startAsSlave``) includes daily settings even
+    if absent from the record, in which case the daily volume defaults to 0.
     """
     client = stirrer_client(stirrer_device)
+    active = setup.get("active", False)
     try:
-        mode = DosingMode[setup["mode"].upper()] if setup.get("mode") else None
-        if start_as_slave:
-            daily_ml: float | None = setup.get("dose_per_day_ml", 0.0)
-            first_setting = True
-        else:
-            daily_ml = setup.get("dose_per_day_ml")
-            first_setting = setup.get("first_setting", True)
+        mode, points = _recorded_schedule(setup) if active or not legacy_pump else (None, [])
         await client.program_channel(
             channel,
-            active=setup.get("active", False),
+            active=active,
             compensate=setup.get("compensate", False),
-            dose_per_day_ml=daily_ml,
-            frequency=setup.get("frequency", 127),
-            is_first_setting=first_setting,
+            dose_per_day_ml=setup.get("dose_per_day_ml", 0.0 if start_as_slave else None),
+            frequency=_recorded_frequency(setup, sunday_first=False),
+            is_first_setting=start_as_slave or setup.get("first_setting", True),
             mode=mode,
-            points=deserialize_points(setup.get("points", [])) if mode is not None else [],
+            points=points,
         )
-    except HomeAssistantError:
-        raise
     except (KeyError, ValueError) as ex:
-        raise HomeAssistantError(f"Corrupt programming record for channel {channel}: {ex}") from ex
+        raise HomeAssistantError(f"Corrupt programming record for channel {channel + 1}: {ex}") from ex
 
 
 async def _replay_recorded_channels(
+    master_data: DosingChihirosData,
     stirrer_data: StirrerChihirosData,
-    channels: dict[int, dict[str, Any]],
     channel_count: int | None = None,
 ) -> list[int]:
     """Replay recorded pump channels, returning skipped 1-based channels."""
+    tracker = master_data.dosing_programming
+    legacy_pump = is_legacy_dosing_pump(master_data.device)
     configured_channels = len(stirrer_data.stirrer_states) if channel_count is None else channel_count
     skipped: list[int] = []
-    for channel in sorted(channels):
+    for channel in sorted(tracker.channels):
         if configured_channels and channel >= configured_channels:
             skipped.append(channel + 1)
             continue
-        await _apply_channel_setup(stirrer_data.device, channel, channels[channel], start_as_slave=True)
+        async with tracker.channel_lock(channel):
+            setup = tracker.channels.get(channel)
+            if setup is not None:
+                await _apply_channel_setup(
+                    stirrer_data.device, channel, setup, legacy_pump=legacy_pump, start_as_slave=True
+                )
     return skipped
 
 
@@ -325,7 +339,7 @@ async def async_mirror_pump_to_stirrer(
     if delay is None:
         delay = bool(tracker.device_settings.get("dose_delay", False))
     stirrer = stirrer_client(stirrer_data.device)
-    skipped = await _replay_recorded_channels(stirrer_data, tracker.channels, channel_count=channel_count)
+    skipped = await _replay_recorded_channels(master_data, stirrer_data, channel_count=channel_count)
     await stirrer.set_dose_delay(delay)
     if skipped:
         _LOGGER.warning(
@@ -337,7 +351,7 @@ async def async_mirror_pump_to_stirrer(
 
 
 async def _mirror_to_linked_stirrers(
-    hass: HomeAssistant, master_address: str, channel: int, setup: dict[str, Any]
+    hass: HomeAssistant, data: DosingChihirosData, channel: int, setup: dict[str, Any]
 ) -> None:
     """Replay one channel write onto every stirrer linked to this pump.
 
@@ -346,7 +360,8 @@ async def _mirror_to_linked_stirrers(
     others silently un-mirrored.
     """
     failures: list[str] = []
-    for slave in _linked_stirrers(hass, master_address):
+    legacy_pump = is_legacy_dosing_pump(data.device)
+    for slave in _linked_stirrers(hass, data.device.address):
         configured_channels = len(slave.stirrer_states)
         if configured_channels and channel >= configured_channels:
             _LOGGER.debug(
@@ -357,7 +372,7 @@ async def _mirror_to_linked_stirrers(
             )
             continue
         try:
-            await _apply_channel_setup(slave.device, channel, setup)
+            await _apply_channel_setup(slave.device, channel, setup, legacy_pump=legacy_pump)
         except Exception as ex:  # noqa: BLE001 — collect every failure for the combined error
             failures.append(f"{slave.device.name}: {ex}")
     if failures:
@@ -406,7 +421,7 @@ async def _record_and_mirror(
     """Persist accepted programming and mirror even if local persistence fails."""
     await _record_and_propagate(
         functools.partial(data.dosing_programming.async_record, channel, setup, stamp_programmed=stamp_programmed),
-        functools.partial(_mirror_to_linked_stirrers, hass, data.device.address, channel, setup),
+        functools.partial(_mirror_to_linked_stirrers, hass, data, channel, setup),
         "programming",
     )
 
@@ -454,13 +469,44 @@ async def _async_reset_dosing_channel(hass: HomeAssistant, call: ServiceCall) ->
         )
 
 
-def _pump_schedule_frequency(data: dict[str, Any], daily_ml: float | None) -> int | None:
+def _pump_schedule_frequency(data: dict[str, Any], daily_ml: float | None, *, sunday_first: bool) -> int | None:
     """Only the daily-volume frame can set weekdays on the pump."""
     if daily_ml is not None:
-        return frequency_from_service_data(data)
+        return frequency_from_service_data(data, sunday_first=sunday_first)
     if ATTR_WEEKDAYS in data or ATTR_FREQUENCY in data:
         raise HomeAssistantError("Setting weekdays or frequency requires daily_ml")
     return None
+
+
+async def _resume_legacy_channel(
+    hass: HomeAssistant, data: DosingChihirosData, channel: int, *, compensate: bool
+) -> None:
+    """Reinstall the saved schedule; a state-only write cannot enable a legacy pump."""
+    tracker = data.dosing_programming
+    setup = tracker.channels.get(channel, {})
+    try:
+        mode, points = _recorded_schedule(setup)
+    except (KeyError, ValueError) as ex:
+        raise HomeAssistantError(f"Corrupt programming record for channel {channel + 1}: {ex}") from ex
+    if mode is None or not points:
+        raise HomeAssistantError(f"No stored schedule for pump channel {channel + 1}; use set_dosing_schedule first")
+    daily_ml = setup.get("dose_per_day_ml")
+    frequency = _recorded_frequency(setup, sunday_first=True) if daily_ml is not None else None
+    first_setting = derive_first_setting(tracker, channel, None)
+    await data.device.program_channel(
+        channel,
+        active=True,
+        compensate=compensate,
+        dose_per_day_ml=daily_ml,
+        frequency=frequency,
+        is_first_setting=first_setting,
+        mode=mode,
+        points=points,
+    )
+    setup.update(active=True, compensate=compensate, first_setting=first_setting)
+    if daily_ml is not None:
+        setup.update({"frequency": frequency, FREQUENCY_SUNDAY_FIRST: True})
+    await _record_and_mirror(hass, data, channel, setup, stamp_programmed=daily_ml is not None)
 
 
 def async_register_pump_services(hass: HomeAssistant) -> None:
@@ -475,7 +521,8 @@ def async_register_pump_services(hass: HomeAssistant) -> None:
         mode = call.data[ATTR_MODE]
         points = build_work_points(mode, call.data[ATTR_POINTS])
         daily_ml = call.data.get(ATTR_DAILY_ML)
-        frequency = _pump_schedule_frequency(call.data, daily_ml)
+        sunday_first = is_legacy_dosing_pump(data.device)
+        frequency = _pump_schedule_frequency(call.data, daily_ml, sunday_first=sunday_first)
         async with data.dosing_programming.channel_lock(channel):
             first_setting = derive_first_setting(data.dosing_programming, channel, call.data.get(ATTR_FIRST_SETTING))
             # Structured programming retains its existing idempotent batch retry policy.
@@ -499,7 +546,9 @@ def async_register_pump_services(hass: HomeAssistant) -> None:
                 "first_setting": first_setting,
             }
             if daily_ml is not None:
-                setup.update(dose_per_day_ml=float(daily_ml), frequency=frequency)
+                setup.update(
+                    {"dose_per_day_ml": float(daily_ml), "frequency": frequency, FREQUENCY_SUNDAY_FIRST: sunday_first}
+                )
             await _record_and_mirror(hass, data, channel, setup, stamp_programmed=daily_ml is not None)
 
     async def async_set_channel_active(call: ServiceCall) -> None:
@@ -508,9 +557,13 @@ def async_register_pump_services(hass: HomeAssistant) -> None:
         _ensure_programmable(data)
         channel = int(call.data[ATTR_CHANNEL]) - 1
         _validate_pump_channel(data, channel)
-        setup = {"active": bool(call.data[ATTR_ENABLE]), "compensate": bool(call.data[ATTR_COMPENSATE])}
+        active, compensate = bool(call.data[ATTR_ENABLE]), bool(call.data[ATTR_COMPENSATE])
         async with data.dosing_programming.channel_lock(channel):
-            await data.device.set_channel_active(channel, active=setup["active"], compensate=setup["compensate"])
+            if active and is_legacy_dosing_pump(data.device):
+                await _resume_legacy_channel(hass, data, channel, compensate=compensate)
+                return
+            await data.device.set_channel_active(channel, active=active, compensate=compensate)
+            setup = {"active": active, "compensate": compensate}
             await _record_and_mirror(hass, data, channel, setup, stamp_programmed=False)
 
     hass.services.async_register(

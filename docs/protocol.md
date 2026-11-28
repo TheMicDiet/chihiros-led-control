@@ -1,7 +1,7 @@
 # Chihiros Bluetooth Protocol
 
 These notes describe the application-level BLE protocol used by supported
-Chihiros LED devices. They are based on the working implementation in this
+Chihiros devices. They are based on the working implementation in this
 repository plus reverse-engineering notes from the old Chihiros Magic app, the
 newer Flutter app, and BLE captures.
 
@@ -396,7 +396,9 @@ The current time is required for auto mode and can be set with:
 
 The third date field is firmware/app-generation dependent:
 
-- This repository sends ISO weekday, `1` to `7` for Monday to Sunday.
+- The default is ISO weekday, `1` to `7` for Monday to Sunday.
+- The legacy `DYDOSE` / `DYDOSED` profile uses `1` to `7` for Sunday to
+  Saturday. The generic pump and stirrer time sync is unchanged.
 - The old Chihiros Magic 2.6.0e app used day of month.
 
 Captured newer-style examples use the weekday-like form.
@@ -580,40 +582,25 @@ The old Chihiros Magic app identifies these Doctor commands:
 ## Dosing Pump Commands
 
 Chihiros dosing pumps use the same Nordic UART-style transport, frame format,
-and checksum. The current implementation recognizes devices whose BLE name
-starts with `DYDOSE` and supports manual one-shot dosing.
+and checksum. The four-channel legacy profile covers BLE names `DYDOSE` /
+`DYDOSED`; `DYTDOS` / `DYNDOS` retain the generic pump profile.
 
-Dosing pump interactions use the normal connection prelude (`90 / 4`, then
-one `90 / 9` time sync command), followed by two dosing auth commands:
+The connection prelude queries device info (`0x5A / 0x04 [1]`) and syncs the
+clock (`0x5A / 0x09`). Dosing counter queries (`0xA5 / 0x04 [4]` and `[5]`)
+read lifetime and daily totals, respectively; they do not authenticate.
 
-| Command ID | Mode | Parameters | Meaning |
+| Command ID | Mode | Parameters | Use |
 | ---: | ---: | --- | --- |
-| `165` | `4` | `[4]` | Dosing auth step 1 |
-| `165` | `4` | `[5]` | Dosing auth step 2 |
+| `0xA5` | `0x1B` | `[ch, 0, 2, ml_hi, ml_lo]` | Legacy extra manual dose; increments lifetime and today |
+| `0xA5` | `0x1B` | `[ch, 0, 0, ml_hi, ml_lo]` | Legacy calibration verification (lifetime only); also the unchanged generic manual-dose encoding |
 
-Manual dose command:
-
-| Command ID | Mode | Parameters | Meaning |
-| ---: | ---: | --- | --- |
-| `165` | `27` | `[pump, 0, 0, ml_hi, ml_lo]` | Dose one pump channel immediately |
-
-Parameter details:
-
-- `pump`: zero-based pump index, `0` to `7` (the vendor app exposes eight channels).
-- Dose volume is encoded in tenths of a milliliter as `ml_hi * 25.6 mL + ml_lo * 0.1 mL`.
-- The Home Assistant integration currently accepts `0.2 mL` to `999.9 mL`.
-
-Python equivalent:
-
-```python
-tenths_ml = round(ml * 10)
-ml_hi, ml_lo = divmod(tenths_ml, 256)
-```
-
-Example for pump `0`, `2.0 mL`:
+The zero-based channel index is `0`–`3` for legacy pumps; the generic protocol
+allows `0`–`7`. The two volume bytes are a big-endian word in tenths of a mL.
+For example, a legacy extra manual dose of 2.0 mL on channel `0` with sequence
+`0x0006` is:
 
 ```text
-165 1 10 0 6 27 0 0 0 0 20 2
+A5 01 0A 00 06 1B 00 00 02 00 14 00
 ```
 
 ### Dosing Pump Notifications
@@ -628,6 +615,13 @@ Dosing pumps answer the `[4]`/`[5]` queries with `0x5b` uplink frames
 | `0x5b` | `0x1e` / `30` | Lifetime totals | Per channel `i`: `(data[6+2i] << 8 | data[7+2i]) * 100` µL |
 | `0x5b` | `0x22` / `34` | Dosed today | Same layout/scaling |
 
+On DYDOSE-8, the info query (`0x5A / 0x04 [1]`) also returns a 50-byte
+`0x5B / 0xFE` snapshot (length field `0x30`). Offsets 9, 18, 27 and 36
+hold the channel modes in **firmware** order: single (0), auto (1), timer (2),
+free (3), inactive (4). See `uart_app.bin` at `0x27cfa–0x27d14`. This is
+not the mode numbering used by the schedule programming API. The legacy status
+refresh requests this snapshot separately from the two counter queries.
+
 Example lifetime frame (channels `0..1` = `105.5 mL`, `0 mL`):
 
 ```text
@@ -640,15 +634,19 @@ sensors, as well as attributes (`device_total_ml`, `device_dosed_today_ml`) on t
 locally tracked diagnostics. It queries the pump at setup and every five minutes:
 external doses appear after the next successful readout, and values stay unknown
 until the first notification. The `HA manual dose total`, `HA manual doses today`,
-and `HA manual dose cycles` diagnostics count only successful manual doses
-initiated by Home Assistant and keep their previous entity IDs.
+and `HA manual dose cycles` diagnostics count successful manual doses initiated
+by Home Assistant, including the calibration verification dose on legacy pumps,
+and keep their previous entity IDs. The legacy firmware books requested volume,
+not measured output.
 
 ### Dosing Pump Schedules, Settings, and Calibration (2.8.59 app)
 
-Reverse-engineered from `My Chihiros` 2.8.59 (`chihiros_xapk/DOSING_CONTROL.md`);
-all frames use header `165` (`0xA5`) and payload bytes are sent verbatim (no
-reserved-byte escaping). Volumes ride as 0.1 mL buckets: `hi * 25.6 mL + lo *
-0.1 mL` (0 to 6553.5 mL); 105.5 mL encodes as `(4, 31)`.
+These frame layouts come from `My Chihiros` 2.8.59
+(`chihiros_xapk/DOSING_CONTROL.md`); see the legacy firmware notes below for
+how that profile interprets them. All frames use header `165` (`0xA5`) and
+payload bytes are sent verbatim (no reserved-byte escaping). The wire volume
+word represents 0–6553.5 mL in 0.1 mL increments, not a verified safe dosing
+range; 105.5 mL encodes as `(4, 31)`.
 
 Schedule modes (`DosingMode`, the enum index is the wire mode byte):
 
@@ -668,8 +666,8 @@ total itself.
 
 | Command ID | Mode | Parameters | Meaning |
 | ---: | ---: | --- | --- |
-| `165` | `27` | `[ch, frequency, 1, first?0:1, vol_hi, vol_lo]` | Program a channel's daily dose (`dosingSet`); byte 4 is polarity-inverted: `0` when this is the channel's first programming of the day; `vol = [255, 255]` for a null volume |
-| `165` | `32` | `[ch, compensate?1:0, active?1:0]` | Enable/disable a channel and interrupt compensation (`setDosingInterruptCompensationAndActive`) |
+| `165` | `27` / `0x1B` | `[ch, frequency, 1, first?0:1, vol_hi, vol_lo]` | Program the weekday mask and daily volume (`dosingSet`); the app encodes `first` as `0` and null volume as `[255, 255]` |
+| `165` | `32` / `0x20` | `[ch, compensate?1:0, active?1:0]` | App's channel activation and interrupt compensation command; legacy firmware instead clears the schedule slots |
 | `165` | `22` | `[ch, time?255, vol_int, vol_frac]` | Calibration: `time` = test-dose seconds (255 = omitted); volume splits as `[int mL, 2-digit fraction]` (2.5 mL = `(2, 50)`), fraction rounded half-up (`LibcRound` @ 0xa69398) so it can be `100` = next whole mL (2.999 mL = `(2, 100)`); `255/255` when omitted |
 | `165` | `5` | `[ch+25, 255, 255]` | Reset a channel's programming (`resetDosingChannel`) |
 | `165` | `5` | `[ch+21, 255, 255]` | Zero a channel's lifetime counter (`resetTotalDosing`) |
@@ -678,11 +676,67 @@ total itself.
 | `165` | `4` | `[4]` | Query lifetime totals (reply: `0x5B` mode `0x1E`) |
 | `165` | `4` | `[5]` | Query dosed-today (reply: `0x5B` mode `0x22`) |
 
+### Legacy DYDOSE / DYDOSED Firmware
+
+The behavior below comes from `DYDOSE-8.zip` (`uart_app.bin`, loaded at
+`0x26000`, SHA-256
+`c6cea1cf39df534226b5e3738e149b5433da7d6f1355d1a1a758b0413ad298bf`).
+A vendor-app HCI capture of one `DYDOSE` (firmware `07.25.18`) shows the
+subtype `0x02` manual write and both counter increments. The firmware audit
+and that capture do not establish compatibility across hardware revisions.
+
+- **Weekdays:** Time sync uses Sunday=`1` through Saturday=`7`. Named
+  schedule weekdays use bit 6 for Sunday through bit 0 for Saturday. Raw
+  `frequency` is passed through as the on-wire mask (Monday only is `0x20`;
+  every day is `0x7F`). Home Assistant translates older saved ISO-ordered named
+  weekday masks when resuming a legacy schedule. Generic pumps and stirrers
+  keep their existing encoding.
+- **Daily settings:** Subtype `0x01` stores the weekday mask and daily/base
+  volume. The following byte (`first?0:1`) sets a same-day scheduled-dose
+  inhibit latch only when it equals `1`; any other value clears it. Bulk legacy
+  programming sends `0` when writing daily settings. Slot-only writes
+  do not change this latch. The firmware clears it at rollover, *after* checking
+  the `00:00` dose.
+- **Clearing and resuming:** `0x20` writes the compensation flag and clears the
+  mode, slots, and free-mode count, preserving the weekday mask, daily volume,
+  counters, and inhibit latch. It ignores the active flag and does not stop
+  in-progress work or block manual doses. Home Assistant disables by clearing
+  and enables by replaying its saved schedule; without one, reprogram the pump.
+  CLI `schedule` clears before writing replacement slots without rewriting the
+  daily settings; standalone `active --enable` cannot restore the slots.
+- **Calibration:** A `0x16` time byte other than `0xFF` starts a fixed 100-tick
+  run (about five seconds), not a user-selected duration. A `0xFF` time byte
+  stores the measured result. The separate `0x1B` subtype `0x00` verification
+  dose increments only the device lifetime counter.
+- **Reset selectors:** `0x05` selectors `21`–`24` clear lifetime totals, `25`–`28`
+  clear slots, both counters, compensation, and the per-minute run latch (not
+  the same-day inhibit latch), and `29`–`32` clear today's total. Do not use
+  the generic reset formulas beyond channel index `3`: the
+  selector ranges overlap, so a reset can affect a different channel or counter.
+
+Each channel has **24 stored slots** for timer or expanded free-mode points.
+The firmware drops writes beyond that capacity. The modes use the daily
+volume differently:
+
+| Mode | Legacy scheduler behavior |
+| --- | --- |
+| Single | Uses the first slot's time and the daily volume; ignores that slot's volume. |
+| Auto | Runs at the configured minute each hour, using the daily volume divided by 24 with truncation. |
+| Timer | Uses each slot's own volume, not the daily volume. |
+| Free | Divides the daily volume by the total programmed dose count with truncation. Each window starts at its start minute, with spacing `floor((end − start) / (count − 1))` for `count > 1`; the last dose can land before the end. A count of one uses only the start. |
+
+Use same-day free windows and keep the combined expanded count within 24 slots.
+The firmware does not roll free-mode windows over to the next day. Dosing time
+also depends on calibration: the firmware divides volume by the flow coefficient
+and stores the result in a 16-bit motor-tick count. A volume that fits on the
+wire can still exceed that count.
+
 ### Magnetic Stirrer (DYMIXR)
 
-The magnetic stirrer (`DYMIXR...` names, app device type `MagStirrer`) speaks
-the dosing-pump protocol verbatim: its eight channels are programmed in timer
-mode through `dosingSet` / `setDosingInterruptCompensationAndActive` /
+The magnetic stirrer (`DYMIXR...` names, app device type `MagStirrer`) uses
+shared dosing protocol frames, not the legacy pump profile. Its eight channels
+are programmed in timer mode through `dosingSet` /
+`setDosingInterruptCompensationAndActive` /
 `dosingWorkNew`, and each timer point's "volume" encodes the stir workload at
 the pump's 0.6 mL/min dosing-rate equivalence (`minutes = dosage_ml / 0.6`).
 The vendor app's stirrer UI is fire-and-forget: it never parses stirrer

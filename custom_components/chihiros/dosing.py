@@ -15,7 +15,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .vendor.chihiros_led_control.models import DeviceKind
+from .vendor.chihiros_led_control.models import DeviceKind, DosingPumpSpec
 from .vendor.chihiros_led_control.protocol.dosing import DosingWorkPoint
 
 STORAGE_KEY = f"{DOMAIN}_dosing_daily_totals"
@@ -338,10 +338,10 @@ class DosingProgrammingTracker:
 def derive_first_setting(tracker: DosingProgrammingTracker | None, channel: int, explicit: bool | None) -> bool:
     """Return the device's ``first_setting`` flag for a channel write.
 
-    The device resets its daily counters on the first ``dosingSet`` of the day
-    for a channel, so the flag is True unless this channel was already
-    programmed through Home Assistant today. An explicit service value wins;
-    without a programming record the flag defaults to True.
+    The flag is True unless this channel was already programmed through Home
+    Assistant today. An explicit service value wins; without a programming
+    record the flag defaults to True. Legacy DYDOSE pumps clear the same-day
+    inhibit latch on every daily-settings write, independent of this flag.
     """
     if explicit is not None:
         return explicit
@@ -378,13 +378,32 @@ def deserialize_points(raw: list[dict[str, Any]]) -> list[DosingWorkPoint]:
     ]
 
 
-def normalize_pump_count(value: object) -> int:
+def _dosing_pump_spec(device: object) -> DosingPumpSpec | None:
+    spec = getattr(getattr(device, "model", None), "spec", None)
+    return spec if isinstance(spec, DosingPumpSpec) else None
+
+
+def is_legacy_dosing_pump(device: object) -> bool:
+    """Return whether the pump uses the legacy DYDOSE protocol."""
+    spec = _dosing_pump_spec(device)
+    return spec is not None and spec.dydose_8
+
+
+def pump_count_options(device: object) -> tuple[int, ...]:
+    """Return the selectable pump counts supported by this device profile."""
+    spec = _dosing_pump_spec(device)
+    if spec is None:
+        return PUMP_COUNT_OPTIONS
+    return tuple(count for count in PUMP_COUNT_OPTIONS if count <= spec.channel_limit)
+
+
+def normalize_pump_count(value: object, options: tuple[int, ...] = PUMP_COUNT_OPTIONS) -> int:
     """Return a supported dosing pump count, defaulting to four pumps."""
     try:
         pump_count = int(value)
     except (TypeError, ValueError):
         return PUMP_COUNT
-    if pump_count in PUMP_COUNT_OPTIONS:
+    if pump_count in options:
         return pump_count
     return PUMP_COUNT
 
@@ -400,9 +419,10 @@ def normalize_stirrer_channel_count(value: object) -> int:
     return STIRRER_CHANNEL_MAX
 
 
-def entry_pump_count(entry: ConfigEntry) -> int:
-    """Return a config entry's pump count, preferring options over data."""
-    return normalize_pump_count(entry.options.get(CONF_PUMP_COUNT, entry.data.get(CONF_PUMP_COUNT)))
+def entry_pump_count(entry: ConfigEntry, device: object = None) -> int:
+    """Return a supported pump count, preferring entry options over data."""
+    value = entry.options.get(CONF_PUMP_COUNT, entry.data.get(CONF_PUMP_COUNT))
+    return normalize_pump_count(value, pump_count_options(device))
 
 
 def entry_stirrer_channel_count(entry: ConfigEntry) -> int:

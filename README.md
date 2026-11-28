@@ -27,7 +27,9 @@ compatibility; see [protocol evidence and limits](docs/protocol.md).
 - Chihiros Commander 1
 - Chihiros Commander 4
 - Chihiros Commander X
-- Chihiros dosing pump (`DYDOSE*`, `DYNDOS`) with first Home Assistant support for manual dosing, per-channel calibration, daily dose totals, and lifetime pump cycle/ml counters
+- Chihiros dosing pumps: four-channel legacy profile (`DYDOSE` / `DYDOSED`)
+  and generic profile (`DYTDOS` / `DYNDOS`), with manual dosing, scheduling,
+  calibration, and volume counters. See [legacy firmware evidence and limits](docs/protocol.md#legacy-dydose--dydosed-firmware).
 - Chihiros heater (`DYHET*`, `DYH1T*`) with target temperature, configured power, overheat-protection and calibration numbers, automatic power adjustment, display-unit and mode selects, and measured-power/temperature/runtime/alarm sensors
 - Chihiros magnetic stirrer (`DYMIXR*`) with per-channel stir switches, speed and pre-run numbers, timer schedule programming, and master/slave mirroring of a linked dosing pump
 - [Chihiros LED A2](https://www.chihirosaquaticstudio.com/products/chihiros-a-ii-built-in-bluetooth)
@@ -187,9 +189,16 @@ These local history sensors remain available independently of Bluetooth.
 A channel that has never been calibrated shows `unknown`, not a fabricated
 calibration timestamp.
 
-The first setup asks how many channels the pump has (2, 4, or 8; changeable later from the
-integration's Configure dialog). Manual doses can also be triggered
-from automations with `chihiros.dose_ml`:
+On legacy DYDOSE pumps, **Pump N schedule mode** in Diagnostics shows the mode
+reported by that channel: `single`, `auto`, `timer`, `free`, or `inactive`.
+It refreshes with the five-minute status poll; no valid readback means no
+initial value. `inactive` means the schedule is cleared, not that manual dosing
+is blocked. The sensor does not indicate whether the motor is running.
+
+Legacy `DYDOSE` / `DYDOSED` pumps have four physical channels (1–4). Home
+Assistant can expose 2 or 4 of them; generic `DYTDOS` / `DYNDOS` pumps retain
+2, 4, or 8 as options. You can change the count in the integration's Configure
+dialog. Use `chihiros.dose_ml` to trigger a manual dose from an automation:
 
 ```yaml
 service: chihiros.dose_ml
@@ -209,7 +218,11 @@ the vendor app's calibration:
 1. **Calibration dose** — a fixed 5-second timed run.
 2. **Enter the measured volume** — what the pump dispensed, to the nearest
    0.05 ml.
-3. **Dose 4ml test** — a fixed 4 ml manual dose (counted in the daily totals).
+3. **Dose 4ml test** — a fixed 4 mL verification dose. On legacy pumps it
+   increments the device's lifetime total, but not `dosed today`; Home Assistant
+   still counts it in its local manual-dose diagnostics. A normal manual dose
+   increments both device totals on legacy pumps. Generic pumps still use their
+   normal manual-dose command for verification.
 4. **"Was this accurate?"** — *Yes* finishes the wizard, *No* restarts it
    from step 1.
 
@@ -217,6 +230,33 @@ While a stirrer slave is linked, every calibration frame is broadcast to the
 stirrer verbatim, like the vendor app. A per-channel `last calibration`
 sensor shows when each channel was last calibrated. Magnetic stirrers are not
 calibratable (matching the app).
+
+#### Scheduling a legacy dosing pump
+
+`chihiros.set_channel_active` disables a legacy schedule by clearing its time
+slots, leaving its weekday mask and daily volume on the pump. It does not stop
+an in-progress dose or block manual doses. Enabling replays the schedule saved
+by Home Assistant. If Home Assistant has no saved schedule (for example, it was
+only set in the vendor app), reprogram it with `chihiros.set_dosing_schedule`.
+
+**Upgrading an existing legacy pump?** Reapply any schedule that runs on
+specific weekdays. The first connection uses the corrected Sunday-first clock,
+but does not rewrite weekday masks already stored on the pump. Home Assistant
+can translate an older saved mask when you re-enable a schedule it programmed.
+This preserves the physical days it ran under the old clock. If you supplied a
+raw mask on the old version or programmed it in the app, check the days and
+reprogram them explicitly. An every-day
+schedule needs no weekday change. Use named `weekdays` where possible; a raw
+`frequency` is an on-wire mask (Monday only is `0x20` on legacy pumps).
+
+Legacy pumps have 24 slots per channel. Single mode uses `daily_ml` for its
+one dose, auto divides it across 24 hourly doses, and free mode divides it
+across the programmed dose count. Timer mode uses each slot's own volume.
+Keep free-mode windows within one day and their combined dose count within
+24 slots. See [legacy firmware behavior](docs/protocol.md#legacy-dydose--dydosed-firmware)
+for details.
+
+#### Magnetic stirrer controls
 
 Magnetic stirrers (`DYMIXR`) expose one stir switch and a unitless speed number
 (0-20, app default 20) per channel; the pre-run number (0-999 s) is
@@ -472,12 +512,12 @@ uv run chihirosctl reset-settings <device-address> --controller-mode custom_curv
 # trigger a manual dose on a dosing pump: channel 1, 2.5 mL
 uv run chihirosctl dosing <device-address> dose 1 2.5
 
-# program a pump channel in one connection (active + daily volume + timer schedule)
+# program weekday repetition, daily volume, and timer slots in one connection
 uv run chihirosctl dosing <device-address> program 1 08:00:5.5 20:00:5.5 \
     --daily-ml 60 --weekdays monday --weekdays tuesday
 uv run chihirosctl dosing <device-address> schedule 1 08:00:5.5 20:00:5.5
 uv run chihirosctl dosing <device-address> active 1 --disable
-uv run chihirosctl dosing <device-address> calibrate 1 --seconds 10
+uv run chihirosctl dosing <device-address> calibrate 1 --seconds 5
 uv run chihirosctl dosing <device-address> reset 1
 
 # read the pump's counters back
@@ -509,6 +549,13 @@ uv run chihirosctl heater reset-work-time <device-address>
 uv run chihirosctl heater status <device-address>
 
 ```
+
+On legacy dosing pumps, CLI `schedule` replaces the old slots without changing
+the saved weekday mask or daily volume; it turns off interrupt compensation.
+The `--disable` option to `active` clears slots rather than stopping a running
+dose. Standalone `active --enable` cannot restore a schedule; use `schedule` to
+rewrite the slots or `program` to also set the daily volume and weekday mask.
+For a legacy calibration run, use `--seconds 5`.
 
 ## Protocol
 

@@ -84,7 +84,7 @@ async def _async_create_entry_data(
         await programming.async_load()
         return StirrerChihirosData(entry.title, client, coordinator, states, programming)
     if is_device_kind(client, DeviceKind.DOSING_PUMP):
-        totals = DosingDailyTotals(hass, address, entry_pump_count(entry))
+        totals = DosingDailyTotals(hass, address, entry_pump_count(entry, client))
         cleanup.callback(totals.async_close)
         await totals.async_load()
         programming = DosingProgrammingTracker(hass, address)

@@ -169,11 +169,15 @@ class BaseChihirosDevice:
         """Read local wall time for device clock frames."""
         return datetime.datetime.now() if self._clock is None else self._clock()
 
+    def _encode_device_timestamp(self) -> list[int]:
+        """Encode this device's wall clock for the common connection prelude."""
+        return encode_timestamp(self._device_time())
+
     async def _connection_prelude(self) -> Sequence[bytes]:
         """Build the startup batch lazily for a newly established connection."""
         prelude = [
             create_command_encoding(90, 4, self.get_next_msg_id(), [1]),
-            create_command_encoding(90, 9, self.get_next_msg_id(), encode_timestamp(self._device_time())),
+            create_command_encoding(90, 9, self.get_next_msg_id(), self._encode_device_timestamp()),
         ]
         self._logger.debug(
             "%s: Sending connection prelude %s",

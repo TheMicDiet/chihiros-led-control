@@ -58,9 +58,11 @@ async def async_trigger_dose_ml(
     chihiros_data: DosingChihirosData,
     pump_idx: int,
     volume_ml: float,
+    *,
+    extra: bool = True,
 ) -> None:
     """Trigger a manual dose, then update local totals and broadcast to slaves."""
-    manual_dose_frame = await chihiros_data.device.dose_ml(pump_idx, volume_ml)
+    manual_dose_frame = await chihiros_data.device.dose_ml(pump_idx, volume_ml, extra=extra)
     try:
         await chihiros_data.dosing_totals.async_add_dose(pump_idx, volume_ml)
     except Exception as ex:  # noqa: BLE001 — the physical dose already succeeded

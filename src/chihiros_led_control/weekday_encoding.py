@@ -27,8 +27,9 @@ _WEEKDAY_BITS: dict[WeekdaySelect, int] = {
 }
 
 
-def encode_selected_weekdays(selection: list[WeekdaySelect]) -> int:
-    """Encode list of weekdays."""
+def encode_selected_weekdays(selection: list[WeekdaySelect], *, sunday_first: bool = False) -> int:
+    """Encode weekday names in ISO or Sunday-first wire order."""
     if WeekdaySelect.everyday in selection:
         return 127
-    return sum(bit for day, bit in _WEEKDAY_BITS.items() if day in selection)
+    mask = sum(bit for day, bit in _WEEKDAY_BITS.items() if day in selection)
+    return (mask >> 1) | ((mask & 1) << 6) if sunday_first else mask

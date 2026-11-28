@@ -31,6 +31,7 @@ from .const import DOMAIN
 from .coordinator import (
     ATTR_DOSING_DAILY_UL,
     ATTR_DOSING_LIFETIME_UL,
+    ATTR_DOSING_SCHEDULE_MODE,
     ATTR_FAN_RPM,
     ATTR_FAN_TEMPERATURE_CELSIUS,
     ATTR_FIRMWARE_VERSION,
@@ -42,12 +43,13 @@ from .coordinator import (
     ATTR_SCHEDULE_POINTS,
     ChihirosDataUpdateCoordinator,
 )
-from .dosing import DosingCalibrationTracker, DosingDailyTotals
+from .dosing import DosingCalibrationTracker, DosingDailyTotals, is_legacy_dosing_pump
 from .entity import chihiros_device_info, chihiros_entity_name, chihiros_unique_id
 from .heater import ChihirosHeaterAlarmSensor, heater_client, is_heater_capable
 from .models import ChihirosData, DosingChihirosData
 from .runtime import BaseChihirosClient, DosingChihirosClient, has_led_feature
 from .vendor.chihiros_led_control.models import LedFeature
+from .vendor.chihiros_led_control.protocol.dosing import DYDOSE_REPORTED_MODES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -125,13 +127,34 @@ DOSING_DEVICE_SENSOR_DESCRIPTIONS = (
     SensorEntityDescription(
         key=ATTR_DOSING_DAILY_UL,
         name="Dosed today",
+        device_class=SensorDeviceClass.VOLUME,
+        native_unit_of_measurement=UnitOfVolume.MILLILITERS,
+        suggested_display_precision=1,
     ),
     SensorEntityDescription(
         key=ATTR_DOSING_LIFETIME_UL,
         name="Total ml",
+        device_class=SensorDeviceClass.VOLUME,
+        native_unit_of_measurement=UnitOfVolume.MILLILITERS,
+        suggested_display_precision=1,
         state_class=SensorStateClass.TOTAL_INCREASING,
     ),
 )
+
+
+DYDOSE_MODE_DESCRIPTION = SensorEntityDescription(
+    key=ATTR_DOSING_SCHEDULE_MODE,
+    name="Schedule mode",
+    device_class=SensorDeviceClass.ENUM,
+    options=list(DYDOSE_REPORTED_MODES),
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
+
+
+def _pump_sensor_descriptions(device: DosingChihirosClient) -> tuple[SensorEntityDescription, ...]:
+    if is_legacy_dosing_pump(device):
+        return (*DOSING_DEVICE_SENSOR_DESCRIPTIONS, DYDOSE_MODE_DESCRIPTION)
+    return DOSING_DEVICE_SENSOR_DESCRIPTIONS
 
 
 async def async_setup_entry(
@@ -145,6 +168,7 @@ async def async_setup_entry(
         totals = chihiros_data.dosing_totals
         _migrate_local_dosing_categories(hass, chihiros_data.coordinator.address, totals.pump_count)
         entities: list[SensorEntity] = []
+        descriptions = _pump_sensor_descriptions(chihiros_data.device)
         for pump_idx in range(totals.pump_count):
             entities.append(
                 ChihirosDosingDailyTotalSensor(chihiros_data.coordinator, chihiros_data.device, totals, pump_idx)
@@ -153,10 +177,8 @@ async def async_setup_entry(
                 ChihirosDosingLifetimeTotalSensor(chihiros_data.coordinator, chihiros_data.device, totals, pump_idx)
             )
             entities.extend(
-                ChihirosDosingDeviceCounterSensor(
-                    chihiros_data.coordinator, chihiros_data.device, pump_idx, description
-                )
-                for description in DOSING_DEVICE_SENSOR_DESCRIPTIONS
+                ChihirosDosingDeviceSensor(chihiros_data.coordinator, chihiros_data.device, pump_idx, description)
+                for description in descriptions
             )
             entities.append(
                 ChihirosDosingLifetimeCyclesSensor(chihiros_data.coordinator, chihiros_data.device, totals, pump_idx)
@@ -423,16 +445,13 @@ class ChihirosDosingLifetimeTotalSensor(ChihirosDosingSensorBase):
         return {"device_total_ml": device_value}
 
 
-class ChihirosDosingDeviceCounterSensor(
+class ChihirosDosingDeviceSensor(
     PassiveBluetoothCoordinatorEntity[ChihirosDataUpdateCoordinator],
     SensorEntity,
 ):
-    """Per-pump volume read from a device notification, not local dose history."""
+    """Per-channel value read from a device notification, not HA's local record."""
 
     _attr_should_poll = False
-    _attr_device_class = SensorDeviceClass.VOLUME
-    _attr_native_unit_of_measurement = UnitOfVolume.MILLILITERS
-    _attr_suggested_display_precision = 1
 
     def __init__(
         self,
@@ -441,7 +460,7 @@ class ChihirosDosingDeviceCounterSensor(
         pump_idx: int,
         description: SensorEntityDescription,
     ) -> None:
-        """Create a device-reported volume sensor for one pump."""
+        """Create a device-reported sensor for one pump."""
         super().__init__(coordinator)
         self.entity_description = description
         self._pump_idx = pump_idx
@@ -459,9 +478,12 @@ class ChihirosDosingDeviceCounterSensor(
         return super().available
 
     @property
-    def native_value(self) -> float | None:
-        """Return the device counter only after its notification arrives."""
-        return _dosing_ul_value(self.coordinator.data.get(self.entity_description.key), self._pump_idx)
+    def native_value(self) -> str | float | None:
+        """Return the reported mode or volume only after its notification arrives."""
+        values = self.coordinator.data.get(self.entity_description.key)
+        if self.entity_description.key == ATTR_DOSING_SCHEDULE_MODE:
+            return values[self._pump_idx] if values is not None else None
+        return _dosing_ul_value(values, self._pump_idx)
 
 
 class ChihirosDosingLifetimeCyclesSensor(ChihirosDosingSensorBase):
